@@ -30,7 +30,16 @@ CRAFTY_TOKEN = os.environ.get("CRAFTY_TOKEN", "") or ""
 CRAFTY_VERIFY_SSL = _bool("CRAFTY_VERIFY_SSL", False)
 
 # --- CurseForge --------------------------------------------------------
-CURSEFORGE_API_KEY = os.environ.get("CURSEFORGE_API_KEY", "") or ""
+CURSEFORGE_API_KEY = (os.environ.get("CURSEFORGE_API_KEY", "") or "").strip()
+if len(CURSEFORGE_API_KEY) >= 2 and (
+    (CURSEFORGE_API_KEY.startswith("'") and CURSEFORGE_API_KEY.endswith("'"))
+    or (CURSEFORGE_API_KEY.startswith('"') and CURSEFORGE_API_KEY.endswith('"'))
+):
+    CURSEFORGE_API_KEY = CURSEFORGE_API_KEY[1:-1]
+# Replace escaped double-dollar if user escaped for compose
+if "$$" in CURSEFORGE_API_KEY and not CURSEFORGE_API_KEY.startswith("$2a$"):
+    CURSEFORGE_API_KEY = CURSEFORGE_API_KEY.replace("$$", "$")
+
 CURSEFORGE_API_BASE = os.environ.get(
     "CURSEFORGE_API_BASE", "https://api.curseforge.com"
 ).rstrip("/")
