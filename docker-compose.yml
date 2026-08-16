@@ -41,11 +41,11 @@ services:
       - blessforge-cache:/data
 
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8710/api/health > /dev/null || exit 1"]
-      interval: 30s
-      timeout: 6s
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8710/api/healthz"]
+      interval: 20s
+      timeout: 4s
       retries: 3
-      start_period: 15s
+      start_period: 10s
 
     # ---- CasaOS app-store metadata ------------------------------------
     x-casaos:

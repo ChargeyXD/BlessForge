@@ -48,6 +48,13 @@ def _err(e: Exception) -> HTTPException:
 # --- health & config ---------------------------------------------------
 
 
+@app.get("/healthz")
+@app.get("/api/healthz")
+async def healthz() -> dict:
+    """Instant liveness probe for Docker and CasaOS container healthchecks."""
+    return {"status": "ok", "app": "BlessForge"}
+
+
 @app.get("/api/health")
 async def health() -> dict:
     state = config.configured()
@@ -55,7 +62,7 @@ async def health() -> dict:
 
     if state["crafty"]:
         try:
-            servers = await crafty.list_servers()
+            servers = await asyncio.wait_for(crafty.list_servers(), timeout=5.0)
             checks["crafty"] = {"ok": True, "servers": len(servers)}
         except Exception as e:
             checks["crafty"] = {"ok": False, "error": str(e)}
@@ -64,7 +71,7 @@ async def health() -> dict:
 
     if state["curseforge"]:
         try:
-            await curseforge.search(query="", page_size=1)
+            await asyncio.wait_for(curseforge.search(query="", page_size=1), timeout=5.0)
             checks["curseforge"] = {"ok": True}
         except Exception as e:
             error = str(e)
@@ -78,14 +85,14 @@ async def health() -> dict:
 
     if state["modrinth"]:
         try:
-            await modrinth.search(query="", page_size=1)
+            await asyncio.wait_for(modrinth.search(query="", page_size=1), timeout=5.0)
             checks["modrinth"] = {"ok": True}
         except Exception as e:
             checks["modrinth"] = {"ok": False, "error": str(e)}
     else:
         checks["modrinth"] = {"ok": False, "error": "disabled"}
 
-    ready = bool(checks["crafty"].get("ok"))
+    ready = bool(checks["crafty"] and checks["crafty"].get("ok"))
     return {"ready": ready, "config": state, "checks": checks}
 
 

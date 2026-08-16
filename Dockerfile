@@ -32,7 +32,7 @@ USER studio
 VOLUME ["/data"]
 EXPOSE 8710
 
-HEALTHCHECK --interval=30s --timeout=6s --start-period=15s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${PORT:-8710}/api/health" > /dev/null || exit 1
+HEALTHCHECK --interval=20s --timeout=4s --start-period=10s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-8710}/api/healthz" > /dev/null || exit 1
 
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8710} --proxy-headers --forwarded-allow-ips='*'"]
