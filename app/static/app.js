@@ -1,11 +1,11 @@
 /* BlessForge -- Single-Page Application (SPA) Frontend.
- * Modern Glassmorphic UI with full API, SSE background job streaming,
+ * Ultra-Modern Glassmorphic Studio Interface with real-time SSE task streaming,
  * modpack installer, mod manager, config editor, diagnostics, AI assistant, and optimizer.
  */
 (() => {
 "use strict";
 
-// --- Helpers -----------------------------------------------------------
+// --- DOM Helpers --------------------------------------------------------
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -29,9 +29,9 @@ function toast(msg, kind = "") {
   }
 
   el.innerHTML = `
-    <div style="display:flex;align-items:flex-start;gap:10px">
+    <div style="display:flex;align-items:flex-start;gap:12px">
       <span style="color:inherit;flex-shrink:0;margin-top:1px">${icon}</span>
-      <div style="flex:1;min-width:0;word-break:break-word">${esc(msg)}</div>
+      <div style="flex:1;min-width:0;word-break:break-word;font-weight:500">${esc(msg)}</div>
     </div>
   `;
   $("#toasts").appendChild(el);
@@ -63,7 +63,7 @@ function modal({ title, body, actions = [], wide = false }) {
         <div class="row tight">
           <strong style="font-size:16px">${esc(title)}</strong>
         </div>
-        <button class="btn btn-sm btn-ghost" data-x title="Close modal">
+        <button class="btn btn-sm btn-ghost modal-close-btn" data-x title="Close modal">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
       </header>
@@ -99,7 +99,7 @@ function iconHTML(logo, name, cls = "mod-icon") {
 
 const state = {
   instances: [],
-  inst: null,        // full detail of the open instance
+  inst: null,        // full detail of the active open instance
   mods: [],
   configs: [],
   cfgPath: null,
@@ -108,11 +108,6 @@ const state = {
 };
 
 // --- Top-Level Navigation ---------------------------------------------
-
-$$("#topNav button").forEach((b) => { b.onclick = () => showView(b.dataset.view); });
-$("#homeBtn").onclick = () => showView("instances");
-$("#backToList").onclick = () => showView("instances");
-$("#gotoBrowse").onclick = () => showView("browse");
 
 function showView(name) {
   $$("#topNav button").forEach((b) =>
@@ -124,8 +119,6 @@ function showView(name) {
   window.scrollTo(0, 0);
 }
 
-$$("#instTabs button").forEach((b) => { b.onclick = () => showTab(b.dataset.tab); });
-
 function showTab(name) {
   $$("#instTabs button").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
@@ -136,6 +129,16 @@ function showTab(name) {
   if (name === "pack") loadPackTab();
   if (name === "troubleshoot") prewarmAI();
 }
+
+// Expose navigation to window for any inline handlers
+window.showView = showView;
+window.showTab = showTab;
+
+$$("#topNav button").forEach((b) => { b.onclick = () => showView(b.dataset.view); });
+$("#homeBtn").onclick = () => showView("instances");
+$("#backToList").onclick = () => showView("instances");
+$("#gotoBrowse").onclick = () => showView("browse");
+$$("#instTabs button").forEach((b) => { b.onclick = () => showTab(b.dataset.tab); });
 
 let warmed = false;
 function prewarmAI() {
@@ -216,17 +219,19 @@ async function loadInstances() {
             <line x1="6" y1="6" x2="6.01" y2="6"></line>
             <line x1="6" y1="18" x2="6.01" y2="18"></line>
           </svg>
-          <div style="font-size:16px;font-weight:700;color:var(--text-main);margin-bottom:6px">No Server Instances Found</div>
-          <div class="faint" style="margin-bottom:16px">Install your first modpack from CurseForge to start managing servers.</div>
-          <button class="btn btn-primary" onclick="showView('browse')">Browse Modpacks</button>
+          <div style="font-size:17px;font-weight:700;color:var(--text-main);margin-bottom:6px">No Server Instances Found</div>
+          <div class="faint" style="margin-bottom:18px">Install your first modpack from CurseForge to start managing servers with BlessForge.</div>
+          <button class="btn btn-primary" id="emptyBrowseBtn">Browse Modpacks</button>
         </div>`;
+      const btn = $("#emptyBrowseBtn");
+      if (btn) btn.onclick = () => showView("browse");
       return;
     }
 
     host.innerHTML = r.items.map((i) => {
       const isRunning = Boolean(i.running);
-      const memStat = i.mem ? `${i.mem}% RAM` : null;
-      const cpuStat = i.cpu ? `${i.cpu}% CPU` : null;
+      const memVal = i.mem != null ? Number(i.mem) : null;
+      const cpuVal = i.cpu != null ? Number(i.cpu) : null;
       const playerStat = i.players != null ? `${i.players} online` : null;
 
       return `
@@ -244,7 +249,7 @@ async function loadInstances() {
             </span>
           </div>
 
-          <div class="row tight" style="margin:8px 0">
+          <div class="row tight" style="margin:10px 0">
             ${i.managed ? '<span class="pill accent">BlessForge</span>' : ""}
             ${i.loader ? `<span class="pill info">${esc(i.loader)}</span>` : ""}
             ${i.minecraft ? `<span class="pill">${esc(i.minecraft)}</span>` : ""}
@@ -254,44 +259,72 @@ async function loadInstances() {
           ${isRunning ? `
             <div class="inst-stats-bar">
               ${playerStat ? `<div class="inst-stat-item"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg> ${playerStat}</div>` : ""}
-              ${memStat ? `<div class="inst-stat-item"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect></svg> ${memStat}</div>` : ""}
-              ${cpuStat ? `<div class="inst-stat-item"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg> ${cpuStat}</div>` : ""}
+              ${memVal != null ? `
+                <div class="inst-stat-item" title="RAM Usage">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect></svg>
+                  <span>${memVal}% RAM</span>
+                  <div class="mini-gauge"><div class="mini-gauge-fill ${memVal > 85 ? "high" : memVal > 65 ? "mid" : "ok"}" style="width:${Math.min(100, memVal)}%"></div></div>
+                </div>` : ""}
+              ${cpuVal != null ? `
+                <div class="inst-stat-item" title="CPU Usage">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                  <span>${cpuVal}% CPU</span>
+                  <div class="mini-gauge"><div class="mini-gauge-fill ${cpuVal > 85 ? "high" : cpuVal > 65 ? "mid" : "ok"}" style="width:${Math.min(100, cpuVal)}%"></div></div>
+                </div>` : ""}
             </div>
           ` : ""}
 
-          <div class="row" style="margin-top:auto;padding-top:14px;justify-content:space-between">
+          <div class="row inst-card-foot" style="margin-top:auto;padding-top:14px;justify-content:space-between">
             <div class="row tight">
               <button class="btn btn-sm ${isRunning ? "btn-power-stop" : "btn-power-start"}" 
                       data-card-power="${isRunning ? "stop_server" : "start_server"}" 
                       data-sid="${esc(i.server_id)}"
-                      onclick="event.stopPropagation(); executeCardPower(this)">
+                      title="${isRunning ? "Gracefully stop server" : "Start server"}">
                 ${isRunning ? "Stop" : "Start"}
               </button>
               ${isRunning ? `
                 <button class="btn btn-sm btn-power-restart" 
                         data-card-power="restart_server" 
                         data-sid="${esc(i.server_id)}"
-                        onclick="event.stopPropagation(); executeCardPower(this)">
+                        title="Restart server">
                   Restart
                 </button>
               ` : ""}
             </div>
-            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); openInstance('${esc(i.server_id)}')">
-              <span>Manage →</span>
+            <button class="btn btn-sm btn-secondary btn-manage" data-manage="${esc(i.server_id)}">
+              <span>Manage Server →</span>
             </button>
           </div>
         </div>`;
     }).join("");
 
-    $$("#instances [data-open]").forEach((el) => {
-      el.onclick = () => openInstance(el.dataset.open);
+    // Direct event listener bindings
+    $$("#instances .inst-card").forEach((card) => {
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("button") || e.target.closest(".switch") || e.target.closest("input")) return;
+        openInstance(card.dataset.open);
+      });
+    });
+
+    $$("#instances .btn-manage").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openInstance(btn.dataset.manage);
+      });
+    });
+
+    $$("#instances [data-card-power]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        executeCardPower(btn);
+      });
     });
   } catch (e) {
     toast(e.message, "err");
   }
 }
 
-window.executeCardPower = async (btn) => {
+async function executeCardPower(btn) {
   const sid = btn.dataset.sid;
   const act = btn.dataset.cardPower;
   btn.disabled = true;
@@ -306,7 +339,8 @@ window.executeCardPower = async (btn) => {
     toast(e.message, "err");
     btn.disabled = false;
   }
-};
+}
+window.executeCardPower = executeCardPower;
 
 async function openInstance(id) {
   showView("instance");
@@ -329,6 +363,7 @@ async function openInstance(id) {
     toast(e.message, "err");
   }
 }
+window.openInstance = openInstance;
 
 function renderInstanceHead() {
   const i = state.inst;
