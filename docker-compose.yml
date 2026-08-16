@@ -18,23 +18,10 @@ services:
     ports:
       - "8710:8710"
 
-    # Environment variables: loads .env if present, plus environment overrides.
+    # Environment variables are loaded directly from .env (copy .env.example).
     env_file:
       - path: .env
         required: false
-
-    environment:
-      - CRAFTY_URL=${CRAFTY_URL:-}
-      - CRAFTY_TOKEN=${CRAFTY_TOKEN:-}
-      - CRAFTY_VERIFY_SSL=${CRAFTY_VERIFY_SSL:-false}
-      - CURSEFORGE_API_KEY=${CURSEFORGE_API_KEY:-}
-      - MODRINTH_ENABLED=${MODRINTH_ENABLED:-true}
-      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
-      - AI_MODEL=${AI_MODEL:-qwen2.5:3b-instruct-q4_K_M}
-      - AI_ENABLED=${AI_ENABLED:-true}
-      - HOST_RAM_GB=${HOST_RAM_GB:-}
-      - HOST_CPU_COUNT=${HOST_CPU_COUNT:-}
-      - PORT=8710
 
     volumes:
       # Named volume for modpack & mod download cache with proper image ownership.
