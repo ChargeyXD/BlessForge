@@ -13,9 +13,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# curl is only here so the container has a working HEALTHCHECK.
+# curl for healthcheck + ca-certificates for secure outbound API calls (CurseForge/Modrinth/Crafty)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -23,17 +23,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
-# Run unprivileged. /data holds the download cache only -- all durable state
-# lives in Crafty itself, so losing this volume costs nothing but bandwidth.
+# Run unprivileged. /data holds download & unpack cache.
 RUN useradd -u 1000 -m studio \
- && mkdir -p /data \
+ && mkdir -p /data/cache /data/downloads /app \
  && chown -R studio:studio /data /app
 USER studio
 
 VOLUME ["/data"]
 EXPOSE 8710
 
-HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${PORT}/api/health" > /dev/null || exit 1
+HEALTHCHECK --interval=30s --timeout=6s --start-period=15s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-8710}/api/health" > /dev/null || exit 1
 
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8710} --proxy-headers --forwarded-allow-ips='*'"]

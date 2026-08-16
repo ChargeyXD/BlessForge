@@ -2,59 +2,50 @@ name: blessforge
 
 services:
   blessforge:
-    # Build locally, or swap for a published image once you push one.
     build: .
     image: blessforge:latest
     container_name: blessforge
     restart: unless-stopped
 
-    # BlessForge only talks outward -- to Crafty over the LAN, to the
-    # CurseForge/Modrinth APIs, and to Ollama -- so it needs no
-    # container-to-container DNS. Using the default bridge avoids allocating
-    # another subnet, which matters on a busy CasaOS box: Docker's address
-    # pools run out after ~30 app networks and compose then fails with
-    # "all predefined address pools have been fully subnetted".
+    # BlessForge talks outward to Crafty, CurseForge/Modrinth, and Ollama.
+    # Default bridge avoids consuming unnecessary Docker subnet address pools on CasaOS.
     network_mode: bridge
 
-    # Lets the container reach services on the host (Ollama, and Crafty if it
-    # is on this machine) as host.docker.internal.
+    # Lets the container reach host services (Ollama, local Crafty) as host.docker.internal.
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
     ports:
-      # host:container -- change the host port if 8710 is taken.
       - "8710:8710"
 
-    # Settings are read straight from .env (copy .env.example).
-    #
-    # `format: raw` is load-bearing, not tidiness. CurseForge API keys are
-    # bcrypt-style and contain '$' (e.g. $2a$10$D3Bo...). Compose expands
-    # '$NAME' inside env values by default, so the key silently arrives
-    # truncated and every CurseForge call 403s with no hint as to why.
-    # Raw format passes values through verbatim.
-    #
-    # Needs Compose v2.24+. On older Compose, or in an `environment:` block
-    # (which is what the CasaOS install dialog writes), double every '$'
-    # instead: $$2a$$10$$D3Bo...
+    # Environment variables: loads .env if present, plus environment overrides.
     env_file:
       - path: .env
-        format: raw
+        required: false
+
+    environment:
+      - CRAFTY_URL=${CRAFTY_URL:-}
+      - CRAFTY_TOKEN=${CRAFTY_TOKEN:-}
+      - CRAFTY_VERIFY_SSL=${CRAFTY_VERIFY_SSL:-false}
+      - CURSEFORGE_API_KEY=${CURSEFORGE_API_KEY:-}
+      - MODRINTH_ENABLED=${MODRINTH_ENABLED:-true}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - AI_MODEL=${AI_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+      - AI_ENABLED=${AI_ENABLED:-true}
+      - HOST_RAM_GB=${HOST_RAM_GB:-}
+      - HOST_CPU_COUNT=${HOST_CPU_COUNT:-}
+      - PORT=8710
 
     volumes:
-      # Modpack/mod download cache. Safe to delete; it just re-downloads.
-      #
-      # A named volume rather than a bind mount on purpose: Docker seeds a new
-      # named volume with the image's ownership (uid 1000, which the container
-      # runs as), whereas a fresh bind-mounted host directory is created
-      # root-owned and the unprivileged process cannot write to it.
+      # Named volume for modpack & mod download cache with proper image ownership.
       - blessforge-cache:/data
 
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8710/api/health"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8710/api/health > /dev/null || exit 1"]
       interval: 30s
-      timeout: 8s
+      timeout: 6s
       retries: 3
-      start_period: 20s
+      start_period: 15s
 
     # ---- CasaOS app-store metadata ------------------------------------
     x-casaos:
@@ -62,20 +53,18 @@ services:
         - amd64
         - arm64
       main: blessforge
-      author: self-hosted
-      category: Games
+      author: BlessForge
+      category: Utilities
       description:
         en_us: >-
-          A CurseForge-style browser for Crafty Controller. Search modpacks and
-          install the server build -- or assemble one from the pack manifest
-          when no server build exists, reviewing what gets stripped first.
-          Then manage mods with automatic dependency resolution, edit configs,
-          tune JVM flags to the host's specs, and diagnose failed launches with
-          help from a small local AI model.
-      developer: self-hosted
-      icon: https://raw.githubusercontent.com/docker-library/docs/master/minecraft-server/logo.png
+          A CurseForge and Modrinth browser & management studio for Crafty Controller.
+          Search modpacks and assemble server builds, review client mod stripping,
+          manage mods with automatic recursive dependency resolution, edit configs,
+          tune JVM flags to the host specs, and diagnose launch issues with a local AI assistant.
+      developer: BlessForge
+      icon: https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/minecraft.png
       tagline:
-        en_us: CurseForge modpacks for Crafty, made manageable
+        en_us: CurseForge modpacks for Crafty Controller, made manageable
       title:
         en_us: BlessForge
       port_map: "8710"
@@ -84,29 +73,29 @@ services:
       envs:
         - container: CRAFTY_URL
           description:
-            en_us: "Crafty base URL, e.g. https://192.168.1.10:8443 (use the LAN IP, not localhost)"
+            en_us: "Crafty Controller base URL, e.g. https://192.168.1.100:8443 (use LAN IP, not localhost)"
         - container: CRAFTY_TOKEN
           description:
-            en_us: "Crafty API token from your Crafty user profile"
+            en_us: "Crafty API token (Crafty > User Profile > API Keys)"
         - container: CURSEFORGE_API_KEY
           description:
-            en_us: "CurseForge Core API key. If you paste it here rather than in .env, double every $ character"
+            en_us: "CurseForge Core API key from console.curseforge.com (double $$ if setting via UI)"
         - container: CRAFTY_VERIFY_SSL
           description:
-            en_us: "Verify Crafty's TLS certificate (leave false for self-signed)"
+            en_us: "Verify Crafty TLS cert (leave false for self-signed)"
         - container: OLLAMA_URL
           description:
-            en_us: "Ollama endpoint for the AI assistant (blank to disable)"
+            en_us: "Ollama endpoint for local AI diagnostics (e.g. http://host.docker.internal:11434)"
         - container: AI_MODEL
           description:
-            en_us: "Local model for troubleshooting, e.g. qwen2.5:3b-instruct-q4_K_M"
+            en_us: "Local Ollama model name, e.g. qwen2.5:3b-instruct-q4_K_M"
         - container: HOST_RAM_GB
           description:
-            en_us: "Override detected RAM when Crafty runs on a different machine"
+            en_us: "Manual RAM override (GB) if Crafty runs on another machine"
       volumes:
         - container: /data
           description:
-            en_us: "Modpack download cache"
+            en_us: "Modpack download and assembly cache"
 
 volumes:
   blessforge-cache:
@@ -116,17 +105,18 @@ x-casaos:
     - amd64
     - arm64
   main: blessforge
-  author: self-hosted
-  category: Games
+  author: BlessForge
+  category: Utilities
   description:
     en_us: >-
       Install CurseForge modpacks into Crafty Controller, then manage mods,
       configs, performance and startup problems from one place.
-  developer: self-hosted
+  developer: BlessForge
   tagline:
     en_us: CurseForge modpacks for Crafty, made manageable
   title:
     en_us: BlessForge
+  icon: https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/minecraft.png
   port_map: "8710"
   scheme: http
   index: /

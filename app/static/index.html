@@ -1,136 +1,235 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BlessForge</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9878;</text></svg>">
-<link rel="stylesheet" href="/static/style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlessForge — Modpack Studio for Crafty</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='%23f59e0b'/><stop offset='50%' stop-color='%23f97316'/><stop offset='100%' stop-color='%23ef4444'/></linearGradient></defs><rect width='100' height='100' rx='22' fill='url(%23g)'/><path d='M28 65 L48 25 L58 25 L38 65 Z M48 65 L68 25 L78 25 L58 65 Z' fill='%23ffffff'/><circle cx='68' cy='62' r='8' fill='%23ffffff'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<header>
-  <div class="brand" id="homeBtn" title="Back to instances">
-    <span class="logo">BF</span> BlessForge
+<header class="app-header">
+  <div class="header-inner">
+    <div class="brand" id="homeBtn" title="Back to instances">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <span class="brand-name">BlessForge</span>
+        <span class="brand-tag">Studio</span>
+      </div>
+    </div>
+
+    <nav id="topNav" class="nav-links">
+      <button data-view="instances" class="nav-btn active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+        <span>Instances</span>
+      </button>
+      <button data-view="browse" class="nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <span>Browse Packs</span>
+      </button>
+      <button data-view="jobs" class="nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+        <span>Activity</span>
+        <span id="activeJobsBadge" class="badge-dot hidden"></span>
+      </button>
+    </nav>
+
+    <div class="header-status">
+      <span id="aiPill" class="pill pill-ai hidden" title="Local AI assistant">
+        <span class="pill-dot"></span>
+        <span class="pill-text">AI Ready</span>
+      </span>
+      <span id="health" class="pill pill-health">
+        <span class="pill-dot"></span>
+        <span class="pill-text">checking…</span>
+      </span>
+    </div>
   </div>
-  <nav id="topNav">
-    <button data-view="instances" class="active">Instances</button>
-    <button data-view="browse">Browse packs</button>
-    <button data-view="jobs">Activity</button>
-  </nav>
-  <span id="aiPill" class="pill hidden" title="Local AI assistant"></span>
-  <span id="health" class="pill">checking…</span>
 </header>
 
-<main>
-  <div id="setup" class="banner hidden"></div>
+<main class="app-main">
+  <div id="setup" class="banner banner-setup hidden"></div>
 
   <!-- ============ INSTANCES (list) ============ -->
   <section id="view-instances" class="view active">
-    <div class="page-head row">
-      <div>
-        <h2>Instances</h2>
-        <div class="faint">Open an instance to manage its mods, configs,
-          performance and problems.</div>
+    <div class="view-header">
+      <div class="view-titles">
+        <h1 class="view-title">Server Instances</h1>
+        <p class="view-subtitle">Manage Minecraft server instances, installed modpacks, configs, and live telemetry.</p>
       </div>
-      <div class="spacer"></div>
-      <button class="btn" id="refreshInstances">Refresh</button>
-      <button class="btn primary" id="gotoBrowse">Install a modpack</button>
+      <div class="view-actions">
+        <button class="btn btn-secondary" id="refreshInstances">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+          <span>Refresh</span>
+        </button>
+        <button class="btn btn-primary" id="gotoBrowse">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <span>Install Modpack</span>
+        </button>
+      </div>
     </div>
     <div id="instances" class="grid-cards"></div>
   </section>
 
   <!-- ============ BROWSE ============ -->
   <section id="view-browse" class="view">
-    <div class="page-head">
-      <h2>Browse modpacks</h2>
-      <div class="faint">Packs without a server build are assembled from their
-        manifest — you get to review what gets stripped before it happens.</div>
-    </div>
-    <div class="card">
-      <div class="row">
-        <input type="search" id="q" placeholder="Search modpacks…">
-        <select id="mcv"><option value="">Any MC version</option></select>
-        <select id="loader">
-          <option value="">Any loader</option>
-          <option value="neoforge">NeoForge</option>
-          <option value="forge">Forge</option>
-          <option value="fabric">Fabric</option>
-        </select>
-        <select id="sort">
-          <option value="2">Popular</option>
-          <option value="6">Most downloaded</option>
-          <option value="3">Recently updated</option>
-        </select>
-        <button class="btn primary" id="searchBtn">Search</button>
+    <div class="view-header">
+      <div class="view-titles">
+        <h1 class="view-title">Browse Modpacks</h1>
+        <p class="view-subtitle">Search CurseForge modpacks with automatic server assembly and client-only mod stripping review.</p>
       </div>
     </div>
-    <div id="packs" class="grid"></div>
-    <div class="row" style="justify-content:center;margin-top:16px">
-      <button class="btn" id="morePacks">Load more</button>
+
+    <div class="card filter-card">
+      <div class="search-toolbar">
+        <div class="search-input-wrap">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="search" id="q" placeholder="Search modpacks by name, theme or author…">
+        </div>
+        <div class="filter-selects">
+          <select id="mcv" class="custom-select"><option value="">All MC Versions</option></select>
+          <select id="loader" class="custom-select">
+            <option value="">All Loaders</option>
+            <option value="neoforge">NeoForge</option>
+            <option value="forge">Forge</option>
+            <option value="fabric">Fabric</option>
+          </select>
+          <select id="sort" class="custom-select">
+            <option value="2">Popularity</option>
+            <option value="6">Total Downloads</option>
+            <option value="3">Recently Updated</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" id="searchBtn">
+          <span>Search</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="packs" class="grid pack-grid"></div>
+
+    <div class="load-more-wrap">
+      <button class="btn btn-secondary" id="morePacks">Load More Modpacks</button>
     </div>
   </section>
 
   <!-- ============ INSTANCE DETAIL ============ -->
   <section id="view-instance" class="view">
-    <div class="crumb row">
-      <button class="btn sm" id="backToList">← Instances</button>
-      <span class="faint" id="crumbName"></span>
+    <div class="crumb-nav">
+      <button class="btn btn-sm btn-ghost" id="backToList">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+        <span>All Instances</span>
+      </button>
+      <span class="crumb-sep">/</span>
+      <span class="crumb-current" id="crumbName"></span>
     </div>
 
-    <div class="card inst-head">
-      <div class="row">
-        <div style="flex:1;min-width:0">
-          <div class="row tight">
-            <h2 id="instName" style="margin:0"></h2>
-            <span id="instState" class="pill"></span>
+    <div class="card inst-hero-card">
+      <div class="inst-hero-inner">
+        <div class="inst-hero-info">
+          <div class="inst-title-row">
+            <h2 id="instName" class="inst-main-title"></h2>
+            <span id="instState" class="pill pill-status"></span>
           </div>
-          <div class="faint" id="instMeta" style="margin-top:5px"></div>
+          <div class="inst-meta-tags" id="instMeta"></div>
         </div>
-        <div class="row tight">
-          <button class="btn sm" data-power="start_server">Start</button>
-          <button class="btn sm" data-power="stop_server">Stop</button>
-          <button class="btn sm" data-power="restart_server">Restart</button>
+        <div class="inst-power-actions">
+          <button class="btn btn-sm btn-power btn-power-start" data-power="start_server" title="Start Server">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <span>Start</span>
+          </button>
+          <button class="btn btn-sm btn-power btn-power-stop" data-power="stop_server" title="Gracefully Stop Server">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12"></rect></svg>
+            <span>Stop</span>
+          </button>
+          <button class="btn btn-sm btn-power btn-power-restart" data-power="restart_server" title="Restart Server">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+            <span>Restart</span>
+          </button>
         </div>
       </div>
     </div>
 
-    <div class="tabs" id="instTabs">
-      <button data-tab="mods" class="active">Mods</button>
-      <button data-tab="configs">Configs</button>
-      <button data-tab="troubleshoot">Troubleshoot</button>
-      <button data-tab="optimize">Optimize</button>
-      <button data-tab="pack">Modpack</button>
+    <div class="tab-navigation" id="instTabs">
+      <button data-tab="mods" class="tab-btn active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+        <span>Mods</span>
+      </button>
+      <button data-tab="configs" class="tab-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+        <span>Configs</span>
+      </button>
+      <button data-tab="troubleshoot" class="tab-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+        <span>Troubleshoot &amp; AI</span>
+      </button>
+      <button data-tab="optimize" class="tab-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+        <span>Optimizer</span>
+      </button>
+      <button data-tab="pack" class="tab-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+        <span>Modpack</span>
+      </button>
     </div>
 
     <!-- ---- Mods tab ---- -->
     <div class="tabpane active" id="tab-mods">
-      <div class="card row">
-        <input type="search" id="modFilter" placeholder="Filter mods…">
-        <select id="modState">
-          <option value="all">All</option>
-          <option value="enabled">Enabled</option>
-          <option value="disabled">Disabled</option>
-          <option value="unidentified">Unidentified</option>
-        </select>
-        <div class="spacer"></div>
-        <button class="btn sm" id="identifyMods"
-          title="Hash each jar and match it against CurseForge and Modrinth">Identify unknown</button>
-        <button class="btn sm" id="checkUpdates">Check updates</button>
-        <button class="btn sm primary" id="addModBtn">Add mod</button>
+      <div class="card mod-toolbar-card">
+        <div class="mod-toolbar">
+          <div class="search-input-wrap mod-search">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="search" id="modFilter" placeholder="Filter installed mods…">
+          </div>
+          <select id="modState" class="custom-select">
+            <option value="all">All Mods</option>
+            <option value="enabled">Enabled Only</option>
+            <option value="disabled">Disabled Only</option>
+            <option value="unidentified">Unidentified Only</option>
+          </select>
+          <div class="spacer"></div>
+          <div class="toolbar-btns">
+            <button class="btn btn-sm btn-secondary" id="identifyMods" title="Hash jars to match CurseForge and Modrinth projects">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"></path><line x1="16" y1="8" x2="2" y2="22"></line><line x1="17.5" y1="15" x2="9" y2="15"></line></svg>
+              <span>Identify Unknown</span>
+            </button>
+            <button class="btn btn-sm btn-secondary" id="checkUpdates">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+              <span>Check Updates</span>
+            </button>
+            <button class="btn btn-sm btn-primary" id="addModBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>Add Mod</span>
+            </button>
+          </div>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="row" style="margin-bottom:10px">
-          <label class="check"><input type="checkbox" id="selAll"> Select all</label>
-          <span id="modStats" class="faint"></span>
+      <div class="card mod-list-card">
+        <div class="mod-list-head">
+          <label class="custom-checkbox">
+            <input type="checkbox" id="selAll">
+            <span class="checkbox-mark"></span>
+            <span class="checkbox-label">Select All</span>
+          </label>
+          <span id="modStats" class="mod-count-pill"></span>
           <div class="spacer"></div>
-          <span id="bulkBar" class="row tight hidden">
-            <span class="faint" id="selCount"></span>
-            <button class="btn sm" data-bulk="enable">Enable</button>
-            <button class="btn sm" data-bulk="disable">Disable</button>
-            <button class="btn sm danger" data-bulk="delete">Delete</button>
-          </span>
+          <div id="bulkBar" class="bulk-bar hidden">
+            <span class="bulk-count" id="selCount"></span>
+            <div class="bulk-btns">
+              <button class="btn btn-sm btn-secondary" data-bulk="enable">Enable</button>
+              <button class="btn btn-sm btn-secondary" data-bulk="disable">Disable</button>
+              <button class="btn btn-sm btn-danger" data-bulk="delete">Delete</button>
+            </div>
+          </div>
         </div>
         <div id="modList" class="modlist"></div>
       </div>
@@ -138,42 +237,62 @@
 
     <!-- ---- Configs tab ---- -->
     <div class="tabpane" id="tab-configs">
-      <div class="split">
-        <div>
-          <input type="search" id="cfgFilter" placeholder="Filter files…"
-            style="width:100%;margin-bottom:8px">
+      <div class="config-split-layout">
+        <div class="config-sidebar card">
+          <div class="search-input-wrap" style="margin-bottom:10px">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="search" id="cfgFilter" placeholder="Filter config files…">
+          </div>
           <div class="list-side" id="cfgList"></div>
         </div>
-        <div class="card">
-          <div class="row" style="margin-bottom:10px">
-            <strong id="cfgPath" class="mono faint">No file selected</strong>
+        <div class="card config-editor-pane">
+          <div class="config-editor-head">
+            <div class="config-path-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <strong id="cfgPath" class="mono cfg-path-text">No file selected</strong>
+            </div>
             <div class="spacer"></div>
-            <span id="cfgStatus" class="faint"></span>
-            <button class="btn sm primary" id="cfgSave" disabled>Save</button>
+            <span id="cfgStatus" class="cfg-status-pill"></span>
+            <button class="btn btn-sm btn-primary" id="cfgSave" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+              <span>Save Changes</span>
+            </button>
           </div>
-          <textarea class="editor mono" id="cfgEditor" spellcheck="false"
-            placeholder="Select a config file on the left…"></textarea>
+          <textarea class="editor mono" id="cfgEditor" spellcheck="false" placeholder="Select a configuration file on the left to edit…"></textarea>
         </div>
       </div>
     </div>
 
     <!-- ---- Troubleshoot tab ---- -->
     <div class="tabpane" id="tab-troubleshoot">
-      <div class="card row">
-        <button class="btn primary" id="runDiag">Run checks</button>
-        <button class="btn" id="runDeep"
-          title="Download every jar and verify the dependency graph">Deep scan</button>
-        <button class="btn" id="runAI">Ask the AI assistant</button>
-        <div class="spacer"></div>
-        <span class="faint" id="aiHint"></span>
+      <div class="card troubleshoot-action-card">
+        <div class="troubleshoot-actions">
+          <button class="btn btn-primary" id="runDiag">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+            <span>Run Health Checks</span>
+          </button>
+          <button class="btn btn-secondary" id="runDeep" title="Download jars and build complete dependency graph to catch missing deps before launch">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <span>Deep Dependency Scan</span>
+          </button>
+          <button class="btn btn-accent" id="runAI">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path></svg>
+            <span>Ask AI Assistant</span>
+          </button>
+          <div class="spacer"></div>
+          <span class="faint" id="aiHint"></span>
+        </div>
       </div>
       <div id="aiOut"></div>
       <div id="diagOut"></div>
       <div class="card hidden" id="logCard">
-        <div class="row" style="margin-bottom:8px">
-          <h3 style="margin:0">Latest log</h3>
+        <div class="log-card-head">
+          <div class="log-title-row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+            <h3 class="log-title">Latest Server &amp; Crash Logs</h3>
+          </div>
           <div class="spacer"></div>
-          <span class="faint mono" id="logPath"></span>
+          <span class="mono faint" id="logPath"></span>
         </div>
         <div class="log" id="logTail"></div>
       </div>
@@ -181,7 +300,7 @@
 
     <!-- ---- Optimize tab ---- -->
     <div class="tabpane" id="tab-optimize">
-      <div id="optOut"><div class="card"><span class="spin"></span> loading…</div></div>
+      <div id="optOut"><div class="card"><span class="spin"></span> Loading machine metrics &amp; tuning profile…</div></div>
     </div>
 
     <!-- ---- Modpack tab ---- -->
@@ -192,9 +311,13 @@
 
   <!-- ============ JOBS ============ -->
   <section id="view-jobs" class="view">
-    <div class="page-head"><h2>Activity</h2>
-      <div class="faint">Installs, scans and AI runs.</div></div>
-    <div id="jobList"></div>
+    <div class="view-header">
+      <div class="view-titles">
+        <h1 class="view-title">Activity &amp; Tasks</h1>
+        <p class="view-subtitle">Live stream of modpack installations, dependency graph scans, and AI diagnostic tasks.</p>
+      </div>
+    </div>
+    <div id="jobList" class="job-list-container"></div>
   </section>
 </main>
 
