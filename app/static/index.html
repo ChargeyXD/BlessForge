@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlessForge</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9878;</text></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand" id="homeBtn" title="Back to instances">
+    <span class="logo">BF</span> BlessForge
+  </div>
+  <nav id="topNav">
+    <button data-view="instances" class="active">Instances</button>
+    <button data-view="browse">Browse packs</button>
+    <button data-view="jobs">Activity</button>
+  </nav>
+  <span id="aiPill" class="pill hidden" title="Local AI assistant"></span>
+  <span id="health" class="pill">checking…</span>
+</header>
+
+<main>
+  <div id="setup" class="banner hidden"></div>
+
+  <!-- ============ INSTANCES (list) ============ -->
+  <section id="view-instances" class="view active">
+    <div class="page-head row">
+      <div>
+        <h2>Instances</h2>
+        <div class="faint">Open an instance to manage its mods, configs,
+          performance and problems.</div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn" id="refreshInstances">Refresh</button>
+      <button class="btn primary" id="gotoBrowse">Install a modpack</button>
+    </div>
+    <div id="instances" class="grid-cards"></div>
+  </section>
+
+  <!-- ============ BROWSE ============ -->
+  <section id="view-browse" class="view">
+    <div class="page-head">
+      <h2>Browse modpacks</h2>
+      <div class="faint">Packs without a server build are assembled from their
+        manifest — you get to review what gets stripped before it happens.</div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <input type="search" id="q" placeholder="Search modpacks…">
+        <select id="mcv"><option value="">Any MC version</option></select>
+        <select id="loader">
+          <option value="">Any loader</option>
+          <option value="neoforge">NeoForge</option>
+          <option value="forge">Forge</option>
+          <option value="fabric">Fabric</option>
+        </select>
+        <select id="sort">
+          <option value="2">Popular</option>
+          <option value="6">Most downloaded</option>
+          <option value="3">Recently updated</option>
+        </select>
+        <button class="btn primary" id="searchBtn">Search</button>
+      </div>
+    </div>
+    <div id="packs" class="grid"></div>
+    <div class="row" style="justify-content:center;margin-top:16px">
+      <button class="btn" id="morePacks">Load more</button>
+    </div>
+  </section>
+
+  <!-- ============ INSTANCE DETAIL ============ -->
+  <section id="view-instance" class="view">
+    <div class="crumb row">
+      <button class="btn sm" id="backToList">← Instances</button>
+      <span class="faint" id="crumbName"></span>
+    </div>
+
+    <div class="card inst-head">
+      <div class="row">
+        <div style="flex:1;min-width:0">
+          <div class="row tight">
+            <h2 id="instName" style="margin:0"></h2>
+            <span id="instState" class="pill"></span>
+          </div>
+          <div class="faint" id="instMeta" style="margin-top:5px"></div>
+        </div>
+        <div class="row tight">
+          <button class="btn sm" data-power="start_server">Start</button>
+          <button class="btn sm" data-power="stop_server">Stop</button>
+          <button class="btn sm" data-power="restart_server">Restart</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs" id="instTabs">
+      <button data-tab="mods" class="active">Mods</button>
+      <button data-tab="configs">Configs</button>
+      <button data-tab="troubleshoot">Troubleshoot</button>
+      <button data-tab="optimize">Optimize</button>
+      <button data-tab="pack">Modpack</button>
+    </div>
+
+    <!-- ---- Mods tab ---- -->
+    <div class="tabpane active" id="tab-mods">
+      <div class="card row">
+        <input type="search" id="modFilter" placeholder="Filter mods…">
+        <select id="modState">
+          <option value="all">All</option>
+          <option value="enabled">Enabled</option>
+          <option value="disabled">Disabled</option>
+          <option value="unidentified">Unidentified</option>
+        </select>
+        <div class="spacer"></div>
+        <button class="btn sm" id="identifyMods"
+          title="Hash each jar and match it against CurseForge and Modrinth">Identify unknown</button>
+        <button class="btn sm" id="checkUpdates">Check updates</button>
+        <button class="btn sm primary" id="addModBtn">Add mod</button>
+      </div>
+
+      <div class="card">
+        <div class="row" style="margin-bottom:10px">
+          <label class="check"><input type="checkbox" id="selAll"> Select all</label>
+          <span id="modStats" class="faint"></span>
+          <div class="spacer"></div>
+          <span id="bulkBar" class="row tight hidden">
+            <span class="faint" id="selCount"></span>
+            <button class="btn sm" data-bulk="enable">Enable</button>
+            <button class="btn sm" data-bulk="disable">Disable</button>
+            <button class="btn sm danger" data-bulk="delete">Delete</button>
+          </span>
+        </div>
+        <div id="modList" class="modlist"></div>
+      </div>
+    </div>
+
+    <!-- ---- Configs tab ---- -->
+    <div class="tabpane" id="tab-configs">
+      <div class="split">
+        <div>
+          <input type="search" id="cfgFilter" placeholder="Filter files…"
+            style="width:100%;margin-bottom:8px">
+          <div class="list-side" id="cfgList"></div>
+        </div>
+        <div class="card">
+          <div class="row" style="margin-bottom:10px">
+            <strong id="cfgPath" class="mono faint">No file selected</strong>
+            <div class="spacer"></div>
+            <span id="cfgStatus" class="faint"></span>
+            <button class="btn sm primary" id="cfgSave" disabled>Save</button>
+          </div>
+          <textarea class="editor mono" id="cfgEditor" spellcheck="false"
+            placeholder="Select a config file on the left…"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---- Troubleshoot tab ---- -->
+    <div class="tabpane" id="tab-troubleshoot">
+      <div class="card row">
+        <button class="btn primary" id="runDiag">Run checks</button>
+        <button class="btn" id="runDeep"
+          title="Download every jar and verify the dependency graph">Deep scan</button>
+        <button class="btn" id="runAI">Ask the AI assistant</button>
+        <div class="spacer"></div>
+        <span class="faint" id="aiHint"></span>
+      </div>
+      <div id="aiOut"></div>
+      <div id="diagOut"></div>
+      <div class="card hidden" id="logCard">
+        <div class="row" style="margin-bottom:8px">
+          <h3 style="margin:0">Latest log</h3>
+          <div class="spacer"></div>
+          <span class="faint mono" id="logPath"></span>
+        </div>
+        <div class="log" id="logTail"></div>
+      </div>
+    </div>
+
+    <!-- ---- Optimize tab ---- -->
+    <div class="tabpane" id="tab-optimize">
+      <div id="optOut"><div class="card"><span class="spin"></span> loading…</div></div>
+    </div>
+
+    <!-- ---- Modpack tab ---- -->
+    <div class="tabpane" id="tab-pack">
+      <div id="packOut"></div>
+    </div>
+  </section>
+
+  <!-- ============ JOBS ============ -->
+  <section id="view-jobs" class="view">
+    <div class="page-head"><h2>Activity</h2>
+      <div class="faint">Installs, scans and AI runs.</div></div>
+    <div id="jobList"></div>
+  </section>
+</main>
+
+<div class="toast-wrap" id="toasts"></div>
+<div id="modalRoot"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
