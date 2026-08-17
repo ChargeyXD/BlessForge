@@ -786,24 +786,16 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 6px var(--rose-glow);
 }
 
-.btn-manage {
-  font-weight: 600;
-  position: relative;
-  overflow: hidden;
-  transition: all var(--transition-fast);
+/* The whole card is the affordance -- this just says so. */
+.inst-card-hint {
+  font-size: 12.5px;
+  opacity: 0.55;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
 }
-.btn-manage span {
-  display: inline-block;
-  transition: transform var(--transition-fast);
-}
-.btn-manage:hover span {
+.inst-card:hover .inst-card-hint {
+  opacity: 1;
+  color: var(--primary);
   transform: translateX(3px);
-}
-.btn-manage:hover {
-  background: rgba(245, 158, 11, 0.15) !important;
-  border-color: var(--primary) !important;
-  color: var(--primary) !important;
-  box-shadow: 0 0 14px var(--primary-glow) !important;
 }
 
 /* --- Instance Detail Hero & Navigation ----------------------------- */

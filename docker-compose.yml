@@ -18,10 +18,50 @@ services:
     ports:
       - "8710:8710"
 
-    # Environment variables are loaded directly from .env (copy .env.example).
+    # Settings live here so the app works the moment it is imported into
+    # CasaOS, which reads `environment:` and has no .env file of its own.
+    # A .env alongside this file still overrides any of these.
+    #
+    # The CurseForge key is set as base64 below -- see the comment there for
+    # why a raw key cannot survive Compose and CasaOS.
+    environment:
+      # --- Crafty -------------------------------------------------------
+      CRAFTY_URL: "https://192.168.68.120:8443"
+      CRAFTY_TOKEN: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJpYXQiOjE3ODE0MzEzNTgsInRva2VuX2lkIjoxfQ.erjtmcCAfm4Z5Q7OU5-hl6Ez7hpMzJaZ_q132A10iXA"
+      CRAFTY_VERIFY_SSL: "false"
+
+      # --- Mod sources --------------------------------------------------
+      # Base64 of the CurseForge key. Deliberately NOT the raw key: it
+      # contains '$', and every layer here wants to interpolate that --
+      # Compose expands '$name', and CasaOS un-doubles '$$' when it stores an
+      # imported compose before handing it back to Compose, which expands it
+      # again. No amount of escaping survives both. Base64 has no '$'.
+      #   echo -n '<your key>' | base64 -w0
+      CURSEFORGE_API_KEY_B64: "JDJhJDEwJEQzQm9OUjFQLkZYNGJ3OEVTeU1XUXVVVHFkZlJaU2ZiZ1p3UUFYOHhyYk5Vd3lZT0FYdnNx"
+      MODRINTH_ENABLED: "true"
+
+      # --- AI assistant (optional) --------------------------------------
+      OLLAMA_URL: "http://host.docker.internal:11434"
+      AI_MODEL: "qwen2.5:3b-instruct-q4_K_M"
+      AI_ENABLED: "true"
+      AI_TIMEOUT: "300"
+
+      # --- Behaviour ----------------------------------------------------
+      DOWNLOAD_CONCURRENCY: "8"
+      SERVER_READY_TIMEOUT: "900"
+      DEFAULT_MEM_MIN: "2"
+      DEFAULT_MEM_MAX: "6"
+      TZ: "Asia/Kolkata"
+
+      # Set these only if Crafty runs on a DIFFERENT machine, so the optimizer
+      # sizes heaps against that host rather than this container.
+      # HOST_RAM_GB: "16"
+      # HOST_CPU_COUNT: "8"
+
     env_file:
       - path: .env
         required: false
+        format: raw
 
     volumes:
       # Named volume for modpack & mod download cache with proper image ownership.
@@ -64,9 +104,9 @@ services:
         - container: CRAFTY_TOKEN
           description:
             en_us: "Crafty API token (Crafty > User Profile > API Keys)"
-        - container: CURSEFORGE_API_KEY
+        - container: CURSEFORGE_API_KEY_B64
           description:
-            en_us: "CurseForge Core API key from console.curseforge.com (double $$ if setting via UI)"
+            en_us: "CurseForge Core API key, base64 encoded: echo -n '<key>' | base64 -w0"
         - container: CRAFTY_VERIFY_SSL
           description:
             en_us: "Verify Crafty TLS cert (leave false for self-signed)"

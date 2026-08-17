@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import (
@@ -24,6 +25,7 @@ from app import (
     modrinth,
     mods as modmgr,
     optimizer,
+    properties,
     specs,
 )
 from app.jobs import registry
@@ -620,6 +622,45 @@ async def host_specs() -> dict:
     return specs.effective_host()
 
 
+@app.get("/api/instances/{server_id}/properties")
+async def get_properties(server_id: str) -> dict:
+    """Every server.properties key, typed and described."""
+    try:
+        return await properties.load(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/properties")
+async def set_properties(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        return await properties.save(server_id, body.get("updates") or {})
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/instances/{server_id}/port")
+async def get_port(server_id: str) -> dict:
+    try:
+        return await properties.port_status(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/port")
+async def set_port(server_id: str, body: dict = Body(...)) -> dict:
+    """Change the port in Crafty's record and server.properties together."""
+    try:
+        return await properties.set_port(
+            server_id,
+            body.get("port"),
+            update_query=bool(body.get("update_query", True)),
+            force=bool(body.get("force", False)),
+        )
+    except Exception as e:
+        raise _err(e)
+
+
 @app.get("/api/instances/{server_id}/optimize")
 async def optimize_plan(server_id: str) -> dict:
     try:
@@ -893,6 +934,41 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+def _asset_version() -> str:
+    """Fingerprint of the built frontend, used to bust browser caches.
+
+    Without this, a rebuilt container still serves the browser's cached
+    app.js: the fix is deployed but the user sees the old behaviour and
+    concludes it did not work. Derived from file mtimes so it changes on
+    every build without needing a manual version bump.
+    """
+    stamp = 0.0
+    for name in ("app.js", "style.css", "index.html"):
+        try:
+            stamp = max(stamp, (STATIC_DIR / name).stat().st_mtime)
+        except OSError:
+            continue
+    return hashlib.sha1(f"{app.version}:{stamp}".encode()).hexdigest()[:10]
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / "index.html"))
+async def index() -> Response:
+    """Serve the SPA shell with cache-busted asset URLs."""
+    try:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    except OSError:
+        raise HTTPException(500, "frontend is missing from this image")
+
+    version = _asset_version()
+    html = re.sub(
+        r'(/static/(?:app\.js|style\.css))(\?v=[^"\']*)?',
+        lambda m: f"{m.group(1)}?v={version}",
+        html,
+    )
+    return Response(
+        content=html,
+        media_type="text/html",
+        # The shell itself must never be cached, or it would keep pointing at
+        # the previous version string.
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )

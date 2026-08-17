@@ -5,9 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BlessForge — Modpack Studio for Crafty</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='%23f59e0b'/><stop offset='50%' stop-color='%23f97316'/><stop offset='100%' stop-color='%23ef4444'/></linearGradient></defs><rect width='100' height='100' rx='22' fill='url(%23g)'/><path d='M28 65 L48 25 L58 25 L38 65 Z M48 65 L68 25 L78 25 L58 65 Z' fill='%23ffffff'/><circle cx='68' cy='62' r='8' fill='%23ffffff'/></svg>">
+  <!-- Web fonts are loaded non-blocking on purpose. BlessForge usually runs
+       on a LAN box that may have no route to the internet, and a plain
+       stylesheet link there stalls first paint until DNS to fonts.googleapis
+       .com times out -- seconds of white screen. Swapping media to "all"
+       on load applies the fonts when they arrive; style.css already declares
+       system-font fallbacks, so the UI is fully usable either way. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" media="print" onload="this.media='all';this.onload=null"
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"></noscript>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>

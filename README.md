@@ -111,6 +111,20 @@ Reads the host's RAM and CPU and the pack's recommended RAM, then proposes:
 
 Nothing is applied until you pick it. Flags you untick stay untouched.
 
+The same tab also carries:
+
+- **The server port.** Written to `server.properties` *and* Crafty's own
+  record together — setting only one leaves the server running but permanently
+  displayed as offline. It refuses a port another instance already claims
+  (unless you override), and warns when the port falls outside the range
+  Crafty's container publishes, where the server works inside Docker but is
+  unreachable from your network.
+- **The whole of `server.properties`**, every key editable, grouped and typed:
+  toggles for booleans, dropdowns for enums, number fields for integers, with
+  a short note on what each one does. Keys your mods add are shown too rather
+  than hidden. `server-port` is deliberately read-only here and points at the
+  port control above, so the two can never drift apart.
+
 ---
 
 ## Setup
@@ -134,13 +148,33 @@ docker compose up -d --build
 
 Open `http://<host>:8710`.
 
-### On CasaOS
+### On CasaOS (including a second server)
 
-`docker-compose.yml` carries the `x-casaos` metadata, so it installs through
-**App Store → Custom Install → Import** and appears as a normal app.
+Use **`casaos-compose.yml`**, not `docker-compose.yml`:
 
-Set the three environment variables in the install dialog. Anything still
-missing is listed in a banner at the top of the app.
+**App Store → Custom Install → Import** → paste the contents of
+`casaos-compose.yml` → fill in the three environment variables → install.
+
+It pulls the published image, so nothing needs building on the target machine:
+
+```
+ghcr.io/chargeyxd/blessforge:latest    (amd64 + arm64)
+```
+
+> **Why a separate file.** `docker-compose.yml` is for local development: it
+> uses `build: .` with the local tag `blessforge:latest`. CasaOS has no source
+> checkout, so it ignores `build:` and tries to *pull* `blessforge:latest` from
+> Docker Hub — which does not exist. The pull fails, the container is never
+> created, and CasaOS reports the app as **unhealthy**. That is the usual cause
+> of a "legacy app" that refuses to rebuild.
+
+> **Doubling the `$` in your CurseForge key is required here.** CasaOS writes
+> settings into an `environment:` block, where Compose expands `$name`. An
+> unescaped key arrives truncated and every CurseForge call 403s.
+> `$2a$10$D3Bo...` becomes `$$2a$$10$$D3Bo...`. BlessForge un-doubles it on
+> startup and warns you in the UI if the key still looks truncated.
+
+Anything still missing is listed in a banner at the top of the app.
 
 ---
 

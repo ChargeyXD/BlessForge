@@ -3,6 +3,7 @@
 Every value has a sane default so the container starts even when half
 configured -- the UI then shows a setup banner instead of crashing.
 """
+import base64
 import os
 from pathlib import Path
 
@@ -39,6 +40,28 @@ if len(CURSEFORGE_API_KEY) >= 2 and (
 # Replace escaped double-dollar if user escaped for compose
 if "$$" in CURSEFORGE_API_KEY and not CURSEFORGE_API_KEY.startswith("$2a$"):
     CURSEFORGE_API_KEY = CURSEFORGE_API_KEY.replace("$$", "$")
+
+
+def _looks_truncated(key: str) -> bool:
+    """A bcrypt-shaped key always has three '$'. Fewer means it was eaten."""
+    return key.startswith("$2") and key.count("$") < 3
+
+
+# Escape-proof alternative. CurseForge keys contain '$', and every layer this
+# app passes through wants to interpolate it: Compose expands '$name' in
+# `environment:`, and CasaOS un-doubles '$$' when it stores an imported
+# compose and then hands the file back to Compose, which expands it AGAIN --
+# so no amount of doubling survives both. Base64 has no '$' at all, so it
+# survives every layer untouched. Used when the plain key is missing or
+# arrives damaged.
+_KEY_B64 = (os.environ.get("CURSEFORGE_API_KEY_B64", "") or "").strip().strip("'\"")
+if _KEY_B64 and (not CURSEFORGE_API_KEY or _looks_truncated(CURSEFORGE_API_KEY)):
+    try:
+        _decoded = base64.b64decode(_KEY_B64, validate=True).decode().strip()
+        if _decoded:
+            CURSEFORGE_API_KEY = _decoded
+    except (ValueError, UnicodeDecodeError):
+        pass
 
 CURSEFORGE_API_BASE = os.environ.get(
     "CURSEFORGE_API_BASE", "https://api.curseforge.com"
@@ -93,18 +116,20 @@ def curseforge_key_warning() -> str | None:
     key = CURSEFORGE_API_KEY
     if not key:
         return None
-    if key.startswith("$2") and key.count("$") < 3:
+    fix = (
+        "Set CURSEFORGE_API_KEY_B64 instead -- base64 contains no '$', so it "
+        "survives Compose and CasaOS untouched. Generate it with: "
+        "echo -n '<your key>' | base64 -w0"
+    )
+    if _looks_truncated(key):
         return (
-            "CURSEFORGE_API_KEY looks truncated by variable expansion -- it "
-            "starts like a bcrypt key but is missing '$' segments. Load it via "
-            "env_file, or double every '$' if you set it in an environment: "
-            "block (e.g. $$2a$$10$$...)."
+            "CURSEFORGE_API_KEY was truncated by variable expansion -- it "
+            f"starts like a bcrypt key but is missing '$' segments. {fix}"
         )
     if len(key) < 40:
         return (
-            "CURSEFORGE_API_KEY looks too short. If it contains '$' and was set "
-            "through docker-compose, part of it was probably eaten by variable "
-            "expansion -- use env_file, or double every '$'."
+            "CURSEFORGE_API_KEY looks too short; part of it was probably eaten "
+            f"by variable expansion. {fix}"
         )
     return None
 

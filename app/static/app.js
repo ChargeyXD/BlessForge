@@ -291,9 +291,7 @@ async function loadInstances() {
                 </button>
               ` : ""}
             </div>
-            <button class="btn btn-sm btn-secondary btn-manage" data-manage="${esc(i.server_id)}">
-              <span>Manage Server →</span>
-            </button>
+            <span class="faint inst-card-hint">Click to manage →</span>
           </div>
         </div>`;
     }).join("");
@@ -303,13 +301,6 @@ async function loadInstances() {
       card.addEventListener("click", (e) => {
         if (e.target.closest("button") || e.target.closest(".switch") || e.target.closest("input")) return;
         openInstance(card.dataset.open);
-      });
-    });
-
-    $$("#instances .btn-manage").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        openInstance(btn.dataset.manage);
       });
     });
 
@@ -1271,6 +1262,27 @@ async function findDependency(modId) {
 
 // --- AI Diagnostic Panel ------------------------------------------------
 
+// Where the wait actually went. On a CPU-only host most of it is prompt
+// evaluation, which happens before a single token appears -- showing that
+// is what turns "it hung" into "it read 1,855 tokens at 18/s".
+function aiStatsHTML(result) {
+  const s = result.stats || {};
+  if (!s.total_seconds) return "";
+  const bits = [];
+  if (s.load_seconds > 1) bits.push(`loaded model ${s.load_seconds}s`);
+  if (s.prompt_tokens) {
+    bits.push(`read ${s.prompt_tokens.toLocaleString()} tokens in ${s.prompt_seconds}s`
+      + (s.prompt_tokens_per_second ? ` (${s.prompt_tokens_per_second}/s)` : ""));
+  }
+  if (s.output_tokens) {
+    bits.push(`wrote ${s.output_tokens.toLocaleString()} in ${s.generate_seconds}s`
+      + (s.output_tokens_per_second ? ` (${s.output_tokens_per_second}/s)` : ""));
+  }
+  return `<div class="faint mono" style="font-size:11.5px;margin-bottom:12px">
+      ${esc(s.total_seconds)}s total — ${esc(bits.join(" · "))}
+    </div>`;
+}
+
 function renderAI(result) {
   const host = $("#aiOut");
   if (!result.available) {
@@ -1305,6 +1317,7 @@ function renderAI(result) {
       </div>
       
       <div style="font-size:14px;line-height:1.6;margin-bottom:12px">${esc(result.summary || "")}</div>
+      ${aiStatsHTML(result)}
       ${result.notes ? `<div class="faint" style="margin-bottom:12px;background:rgba(0,0,0,0.2);padding:10px;border-radius:var(--radius-sm)">${esc(result.notes)}</div>` : ""}
       
       ${result.actions.length ? `
@@ -1373,6 +1386,194 @@ async function loadOptimize() {
   } catch (e) {
     host.innerHTML = `<div class="banner err">${esc(e.message)}</div>`;
   }
+}
+
+// --- port -------------------------------------------------------------
+
+async function loadPortCard() {
+  const host = $("#portCard");
+  if (!host) return;
+  try {
+    const s = await api(`/api/instances/${state.inst.id}/port`);
+    const others = (s.in_use_by_others || []).filter((o) => o.port === s.crafty_port);
+    host.innerHTML = `
+      <h3>Server port</h3>
+      <div class="faint" style="margin-bottom:10px">
+        Written to both <code>server.properties</code> and Crafty's own record —
+        setting only one leaves the server running but permanently shown offline.
+      </div>
+      ${s.mismatch ? `<div class="banner" style="margin-bottom:10px">${esc(s.note)}</div>` : ""}
+      <div class="row">
+        <label>Port
+          <input type="number" id="portInput" min="1024" max="65535"
+                 value="${esc(String(s.crafty_port ?? ""))}" style="width:130px">
+        </label>
+        <label class="check" title="Keep the query protocol on the same port">
+          <input type="checkbox" id="portQuery" checked> also set query.port
+        </label>
+        <div class="spacer"></div>
+        <button class="btn btn-primary" id="portSave">Change port</button>
+      </div>
+      <div class="faint" style="margin-top:8px">
+        Crafty publishes ports ${s.published_range[0]}–${s.published_range[1]};
+        outside that range the server works inside Docker but is not reachable
+        from your network.
+        ${others.length ? `<br>Also assigned to: ${esc(others.map((o) => o.name).join(", "))}
+          (only one server can bind a port at a time).` : ""}
+      </div>`;
+
+    $("#portSave", host).onclick = async () => {
+      const btn = $("#portSave", host);
+      const port = Number($("#portInput", host).value);
+      btn.disabled = true;
+      const send = (force) => api(`/api/instances/${state.inst.id}/port`, {
+        method: "POST",
+        body: { port, update_query: $("#portQuery", host).checked, force },
+      });
+      try {
+        let res;
+        try {
+          res = await send(false);
+        } catch (e) {
+          // The backend refuses a port another instance already claims;
+          // let the user override deliberately rather than silently.
+          if (!/already used by/i.test(e.message)) throw e;
+          if (!confirm(e.message + "\n\nAssign it anyway?")) {
+            btn.disabled = false; return;
+          }
+          res = await send(true);
+        }
+        toast(`Port set to ${res.port} — restart to apply`, "ok");
+        (res.warnings || []).forEach((w) => toast(w, "err"));
+        loadPortCard();
+        const d = await api(`/api/instances/${state.inst.id}`);
+        state.inst.server = d.server; renderInstanceHead();
+      } catch (e) { toast(e.message, "err"); }
+      finally { btn.disabled = false; }
+    };
+  } catch (e) {
+    host.innerHTML = `<div class="banner err">Port info unavailable — ${esc(e.message)}</div>`;
+  }
+}
+
+// --- full server.properties editor ------------------------------------
+
+let propsState = { items: [], filter: "", changed: {} };
+
+async function loadPropertiesEditor() {
+  const host = $("#propsCard");
+  if (!host) return;
+  try {
+    const d = await api(`/api/instances/${state.inst.id}/properties`);
+    propsState = { items: d.items, filter: "", changed: {}, groups: d.groups,
+                   count: d.count };
+    renderPropertiesEditor();
+  } catch (e) {
+    host.innerHTML = `<div class="banner err">server.properties unavailable — ${esc(e.message)}</div>`;
+  }
+}
+
+function propControl(i) {
+  const id = "prop_" + i.key.replace(/[^\w]/g, "_");
+  if (i.type === "bool") {
+    return `<label class="switch">
+        <input type="checkbox" class="propEdit" id="${id}" data-key="${esc(i.key)}"
+               ${String(i.value).toLowerCase() === "true" ? "checked" : ""}>
+        <span class="track"></span></label>`;
+  }
+  if (i.type === "enum" && i.choices) {
+    return `<select class="propEdit" id="${id}" data-key="${esc(i.key)}">
+        ${i.choices.map((c) => `<option ${c === String(i.value) ? "selected" : ""}>${esc(c)}</option>`).join("")}
+      </select>`;
+  }
+  if (i.type === "int") {
+    return `<input type="number" class="propEdit" id="${id}" data-key="${esc(i.key)}"
+              value="${esc(String(i.value))}" style="width:150px">`;
+  }
+  return `<input type="text" class="propEdit" id="${id}" data-key="${esc(i.key)}"
+            value="${esc(String(i.value))}" style="width:100%;max-width:340px">`;
+}
+
+function renderPropertiesEditor() {
+  const host = $("#propsCard");
+  if (!host) return;
+  const f = propsState.filter.toLowerCase();
+  const items = propsState.items.filter(
+    (i) => !f || i.key.toLowerCase().includes(f) ||
+           (i.description || "").toLowerCase().includes(f));
+
+  const byGroup = {};
+  items.forEach((i) => (byGroup[i.group] = byGroup[i.group] || []).push(i));
+  const dirty = Object.keys(propsState.changed).length;
+
+  host.innerHTML = `
+    <div class="row" style="margin-bottom:6px">
+      <h3 style="margin:0">Server properties</h3>
+      <span class="pill">${propsState.count} keys</span>
+      <div class="spacer"></div>
+      <input type="search" id="propFilter" placeholder="Filter…"
+             value="${esc(propsState.filter)}" style="max-width:220px">
+      <button class="btn btn-sm btn-primary" id="propsSave" ${dirty ? "" : "disabled"}>
+        Save${dirty ? ` (${dirty})` : ""}</button>
+    </div>
+    <div class="faint" style="margin-bottom:10px">
+      The complete file, every key editable. Changes apply on the next restart.
+    </div>
+    ${Object.keys(byGroup).length ? Object.entries(byGroup).map(([group, list]) => `
+      <div class="group" style="margin-top:10px">${esc(group)}</div>
+      ${list.map((i) => `
+        <div class="optrow">
+          <div class="body">
+            <div class="row tight">
+              <strong class="mono" style="font-size:12.5px">${esc(i.key)}</strong>
+              ${i.absent ? '<span class="pill">not set</span>' : ""}
+              ${i.modified ? '<span class="pill accent">changed from default</span>' : ""}
+              ${propsState.changed[i.key] !== undefined ? '<span class="pill warn">unsaved</span>' : ""}
+            </div>
+            ${i.description ? `<div class="why">${esc(i.description)}</div>` : ""}
+            ${i.guarded ? `<div class="why" style="color:var(--yellow)">${esc(i.guarded)}</div>` : ""}
+          </div>
+          <div style="flex-shrink:0">${i.guarded
+            ? `<span class="faint mono">${esc(String(i.value))}</span>`
+            : propControl(i)}</div>
+        </div>`).join("")}`).join("")
+      : `<div class="empty">Nothing matches that filter.</div>`}`;
+
+  $("#propFilter", host).oninput = (e) => {
+    propsState.filter = e.target.value;
+    renderPropertiesEditor();
+    const el = $("#propFilter", host);
+    el.focus(); el.setSelectionRange(el.value.length, el.value.length);
+  };
+
+  $$(".propEdit", host).forEach((el) => {
+    el.onchange = () => {
+      const key = el.dataset.key;
+      const value = el.type === "checkbox" ? el.checked : el.value;
+      propsState.changed[key] = value;
+      const item = propsState.items.find((i) => i.key === key);
+      if (item) item.value = el.type === "checkbox"
+        ? (el.checked ? "true" : "false") : el.value;
+      const save = $("#propsSave", host);
+      save.disabled = false;
+      save.textContent = `Save (${Object.keys(propsState.changed).length})`;
+    };
+  });
+
+  $("#propsSave", host).onclick = async () => {
+    const btn = $("#propsSave", host);
+    btn.disabled = true;
+    try {
+      const res = await api(`/api/instances/${state.inst.id}/properties`, {
+        method: "POST", body: { updates: propsState.changed },
+      });
+      const n = Object.keys(res.saved || {}).length;
+      if (n) toast(`Saved ${n} propert${n === 1 ? "y" : "ies"} — restart to apply`, "ok");
+      (res.rejected || []).forEach((r) => toast(`${r.key}: ${r.why}`, "err"));
+      propsState.changed = {};
+      loadPropertiesEditor();
+    } catch (e) { toast(e.message, "err"); btn.disabled = false; }
+  };
 }
 
 function renderOptimize(p) {
@@ -1477,7 +1678,13 @@ function renderOptimize(p) {
       <div class="faint">Applied optimizations take effect on the next server start/restart.</div>
       <div class="spacer"></div>
       <button class="btn btn-primary" id="optApply">Apply Optimization Profile</button>
-    </div>`;
+    </div>
+
+    <div class="card" id="portCard"><span class="spin"></span> loading port…</div>
+    <div class="card" id="propsCard"><span class="spin"></span> loading server.properties…</div>`;
+
+  loadPortCard();
+  loadPropertiesEditor();
 
   $("#optAll").onclick = () => $$(".flagSel").forEach((c) => (c.checked = true));
   $("#optNone").onclick = () => $$(".flagSel").forEach((c) => (c.checked = false));
