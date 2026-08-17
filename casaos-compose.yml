@@ -27,6 +27,14 @@ name: blessforge
 
 services:
   blessforge:
+    # Pulls the image CI publishes, so a machine with no source checkout can
+    # install this file as-is.
+    #
+    # ON THE MACHINE YOU BUILD FROM, change this to the local tag instead:
+    #     image: blessforge:latest
+    # after a `docker compose build`. That is how ClassBell is installed here,
+    # and it means CasaOS runs your working tree rather than whatever CI last
+    # published. CasaOS is happy with a local tag as long as the image exists.
     image: ghcr.io/chargeyxd/blessforge:latest
     container_name: blessforge
     restart: unless-stopped
