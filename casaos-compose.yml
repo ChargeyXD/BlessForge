@@ -56,17 +56,22 @@ services:
         protocol: tcp
 
     environment:
-      # ---- Crafty ------------------------------------------------------
-      # Use the LAN IP, not 127.0.0.1: inside the container loopback is the
-      # container itself and can never reach Crafty. Change this to the new
-      # machine's Crafty address when moving to another server.
-      CRAFTY_URL: "https://192.168.68.120:8443"
+      # ---- Crafty: SET THESE FOR THIS MACHINE ---------------------------
+      # These are the only two values you must change per install. Both are
+      # editable in the CasaOS install dialog.
+      #
+      # Address of Crafty on THIS network. Use the LAN IP, not 127.0.0.1 --
+      # inside the container loopback is the container itself and can never
+      # reach Crafty.
+      CRAFTY_URL: "https://CHANGE-ME:8443"
       # Crafty -> your user -> API keys. Needs Server Creation, Files,
-      # Commands and Config permissions. A token is bound to the Crafty
-      # instance that issued it, so a different Crafty needs its own.
-      CRAFTY_TOKEN: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJpYXQiOjE3ODE0MzEzNTgsInRva2VuX2lkIjoxfQ.erjtmcCAfm4Z5Q7OU5-hl6Ez7hpMzJaZ_q132A10iXA"
+      # Commands and Config permissions. A token is issued by, and only valid
+      # for, the Crafty instance that created it -- so each install needs its
+      # own. Leave blank and BlessForge starts with a setup banner telling you
+      # exactly what is missing.
+      CRAFTY_TOKEN: ""
 
-      # ---- Mod sources -------------------------------------------------
+      # ---- Mod sources: shared, no need to change -----------------------
       # Base64 of the CurseForge key. Deliberately NOT the raw key: it
       # contains '$', and every layer here wants to interpolate that --
       # Compose expands '$name', and CasaOS un-doubles '$$' when it stores an
@@ -142,10 +147,10 @@ services:
       tips:
         before_install:
           en_us: >-
-            Set CRAFTY_URL and CRAFTY_TOKEN for your Crafty instance. The
-            CurseForge key is supplied as CURSEFORGE_API_KEY_B64 (base64),
-            because a raw key contains '$' which Compose and CasaOS both
-            mangle. To use your own: echo -n '<key>' | base64 -w0
+            Set CRAFTY_URL to this machine's Crafty address (LAN IP, not
+            localhost) and CRAFTY_TOKEN to a token from that Crafty's user
+            profile -- a token only works on the Crafty that issued it. The
+            CurseForge key is already filled in.
       envs:
         - container: CRAFTY_URL
           description:
