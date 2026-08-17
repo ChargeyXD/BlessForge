@@ -672,6 +672,40 @@ async function openVersionPicker(mod) {
 
 $("#addModBtn").onclick = () => openAddMod();
 
+// Reduce a mod name or jar filename to something comparable, so a search
+// result can be matched against what is already installed even when the mod
+// was never identified (pack-installed jars carry no project id).
+function modKey(text) {
+  return String(text || "")
+    .replace(/\.jar(\.disabled)?$/i, "")
+    .replace(/[-_+]v?\d[\w.+]*$/i, "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+}
+
+// Is this catalogue entry already in the open instance? Exact project-id
+// match first; fall back to the name, which is what catches mods that came
+// in with a modpack and have never been identified.
+function findInstalled(p) {
+  const mods = state.mods || [];
+  const byId = mods.find(
+    (m) => m.project_id != null && String(m.project_id) === String(p.id) &&
+           (!m.source || !p.source || m.source === p.source));
+  if (byId) return byId;
+  const key = modKey(p.name);
+  if (!key) return null;
+  return mods.find((m) => modKey(m.name) === key || modKey(m.file) === key);
+}
+
+// "Latest" the way a person means it: the newest stable build, falling back
+// to newest of anything when a mod has no stable release for this version.
+function pickLatestVersion(items) {
+  if (!items || !items.length) return null;
+  const byDate = (a, b) => String(b.date || "").localeCompare(String(a.date || ""));
+  const stable = items.filter((f) => String(f.release_type).toLowerCase() === "release");
+  return (stable.length ? stable : items).slice().sort(byDate)[0];
+}
+
 function openAddMod(prefill = "") {
   const i = state.inst;
   const m = modal({
@@ -709,28 +743,49 @@ function openAddMod(prefill = "") {
       const r = await api("/api/browse/mods?" + params);
       host.innerHTML = r.items.length ? `
         <div class="pack-grid">
-          ${r.items.map((p) => `
-            <div class="pack" style="cursor:default">
+          ${r.items.map((p) => {
+            const have = findInstalled(p);
+            return `
+            <div class="pack ${have ? "already-installed" : ""}" style="cursor:default">
               ${iconHTML(p.logo, p.name, "mod-icon")}
               <div class="body">
-                <div class="title">${esc(p.name)}</div>
+                <div class="title">${esc(p.name)}
+                  ${have ? '<span class="pill ok">Installed</span>' : ""}</div>
                 <div class="summary">${esc(p.summary || "")}</div>
                 <div class="meta">
                   <span class="pill">${num(p.downloads)} ↓</span>
                   ${p.server_side ? `<span class="pill ${p.server_side === "unsupported" ? "err" : "ok"}">Server: ${esc(p.server_side)}</span>` : ""}
+                  ${have ? `<span class="pill accent" title="Currently installed in this instance">${esc(have.version || have.file)}</span>` : ""}
                 </div>
               </div>
-              <div style="display:flex;align-items:center">
-                <button class="btn btn-sm btn-primary" data-pick="${esc(String(p.id))}"
-                        data-src="${esc(p.source)}" data-name="${esc(p.name)}">
-                  Select
+              <div style="display:flex;align-items:center;gap:6px">
+                <button class="btn btn-sm ${have ? "btn-secondary" : "btn-primary"}"
+                        data-add="${esc(String(p.id))}" data-src="${esc(p.source)}"
+                        data-name="${esc(p.name)}"
+                        data-have="${have ? esc(have.file) : ""}"
+                        title="${have ? "Replace the installed copy with the latest build" : "Install the latest compatible build"}">
+                  ${have ? "Update" : "Add latest"}
+                </button>
+                <button class="btn btn-sm btn-ghost" data-pick="${esc(String(p.id))}"
+                        data-src="${esc(p.source)}" data-name="${esc(p.name)}"
+                        data-have="${have ? esc(have.file) : ""}"
+                        title="Pick a specific version instead">
+                  Versions
                 </button>
               </div>
-            </div>`).join("")}
+            </div>`;
+          }).join("")}
         </div>` : `<div class="empty">No matching mods found.</div>`;
 
       $$("[data-pick]", m.el).forEach((b) => {
-        b.onclick = () => pickModVersion(b.dataset.src, b.dataset.pick, b.dataset.name, m);
+        b.onclick = () => pickModVersion(b.dataset.src, b.dataset.pick, b.dataset.name,
+                                         m, b.dataset.have || null);
+      });
+      // Default path: skip the version list entirely and take the newest
+      // stable build. Choosing a version is still one click away.
+      $$("[data-add]", m.el).forEach((b) => {
+        b.onclick = () => addLatestVersion(b.dataset.src, b.dataset.add,
+                                           b.dataset.name, m, b.dataset.have || null);
       });
     } catch (e) {
       host.innerHTML = `<div class="banner err">${esc(e.message)}</div>`;
@@ -743,7 +798,36 @@ function openAddMod(prefill = "") {
   return m;
 }
 
-async function pickModVersion(source, projectId, name, parent) {
+// One-click install: resolve the newest compatible build and go straight to
+// the dependency preview. `replaceFile` is set when the mod is already in the
+// instance, so an update overwrites the old jar instead of leaving two copies
+// for the loader to trip over.
+async function addLatestVersion(source, projectId, name, parent, replaceFile) {
+  const i = state.inst;
+  const host = $("#amResults", parent.el);
+  host.innerHTML = `<div style="text-align:center;padding:24px"><span class="spin"></span>
+      Finding the latest build of ${esc(name)}…</div>`;
+  const params = new URLSearchParams();
+  if (i.minecraft) params.set("game_version", i.minecraft);
+  if (i.loader) params.set("loader", i.loader);
+  try {
+    const r = await api(`/api/mods/${source}/${projectId}/versions?` + params);
+    const latest = pickLatestVersion(r.items);
+    if (!latest) {
+      host.innerHTML = `<div class="empty">No compatible releases for
+        ${esc(i.loader || "")} ${esc(i.minecraft || "")}.
+        <div style="margin-top:10px"><button class="btn btn-sm" id="amBack">Back to results</button></div></div>`;
+      const back = $("#amBack", parent.el);
+      if (back) back.onclick = () => $("#amGo", parent.el).click();
+      return;
+    }
+    previewDependencies(source, projectId, latest.file_id, name, parent, replaceFile);
+  } catch (e) {
+    host.innerHTML = `<div class="banner err">${esc(e.message)}</div>`;
+  }
+}
+
+async function pickModVersion(source, projectId, name, parent, replaceFile) {
   const i = state.inst;
   const host = $("#amResults", parent.el);
   host.innerHTML = `<div style="text-align:center;padding:24px"><span class="spin"></span> Loading releases for ${esc(name)}…</div>`;
@@ -785,14 +869,15 @@ async function pickModVersion(source, projectId, name, parent) {
       </div>`;
 
     $$("[data-add]", parent.el).forEach((b) => {
-      b.onclick = () => previewDependencies(source, projectId, b.dataset.add, name, parent);
+      b.onclick = () => previewDependencies(source, projectId, b.dataset.add, name,
+                                            parent, replaceFile);
     });
   } catch (e) {
     host.innerHTML = `<div class="banner err">${esc(e.message)}</div>`;
   }
 }
 
-async function previewDependencies(source, projectId, fileId, name, parent) {
+async function previewDependencies(source, projectId, fileId, name, parent, replaceFile) {
   const host = $("#amResults", parent.el);
   host.innerHTML = `<div style="text-align:center;padding:24px"><span class="spin"></span> Resolving recursive dependency graph…</div>`;
   try {
@@ -815,7 +900,11 @@ async function previewDependencies(source, projectId, fileId, name, parent) {
       </div>`).join("");
 
     host.innerHTML = `
-      <h3 style="margin-bottom:12px">Ready to Install ${esc(name)}</h3>
+      <h3 style="margin-bottom:12px">Ready to ${replaceFile ? "Update" : "Install"} ${esc(name)}</h3>
+      ${replaceFile ? `<div class="banner" style="margin-bottom:12px">
+          Already installed as <span class="mono">${esc(replaceFile)}</span> —
+          it will be replaced, not added alongside, so the loader never sees
+          two copies.</div>` : ""}
       ${plan.root ? `
         <div class="reviewrow" style="background:rgba(245,158,11,0.06);border-radius:var(--radius-sm)">
           ${iconHTML(plan.root.logo, plan.root.name)}
@@ -838,7 +927,7 @@ async function previewDependencies(source, projectId, fileId, name, parent) {
 
       <div class="row" style="margin-top:18px;justify-content:flex-end">
         <button class="btn btn-primary" id="depGo">
-          Install ${dep.length ? dep.length + 1 : 1} Mod(s)
+          ${replaceFile ? "Update" : "Install"} ${dep.length ? dep.length + 1 : 1} Mod(s)
         </button>
       </div>`;
 
@@ -853,11 +942,13 @@ async function previewDependencies(source, projectId, fileId, name, parent) {
             file_id: fileId,
             with_dependencies: true,
             skip_dependencies: skip,
+            replace_file: replaceFile || undefined,
             name,
           },
         });
         parent.close();
-        followJob(res.job_id, `Installing ${name}`, () => loadMods());
+        followJob(res.job_id, `${replaceFile ? "Updating" : "Installing"} ${name}`,
+                  () => loadMods());
       } catch (e) {
         toast(e.message, "err");
       }
