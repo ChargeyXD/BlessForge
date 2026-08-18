@@ -192,6 +192,7 @@ x-casaos:
   store_app_id: blessforge
   tagline:
     en_us: CurseForge modpacks for Crafty, made manageable
+  thumbnail: ""
   title:
     en_us: BlessForge
   tips:
