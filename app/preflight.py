@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import posixpath
 import zipfile
 
 import httpx
@@ -78,9 +79,18 @@ def _soft_client_signals(info: dict) -> list[str]:
 
 
 async def analyse_manifest_pack(
-    job: Job, plan: PackPlan, *, inspect_jars: bool = True
+    job: Job,
+    plan: PackPlan,
+    *,
+    inspect_jars: bool = True,
+    zf: zipfile.ZipFile | None = None,
 ) -> dict:
-    """Classify every mod in a manifest pack as server-side or client-only."""
+    """Classify every mod in a manifest pack as server-side or client-only.
+
+    Pass `zf` for an imported export: those routinely carry hand-added jars
+    in `overrides/mods/` that appear nowhere in the manifest, and a jar the
+    review never saw is a jar nobody gets to veto.
+    """
     entries = plan.manifest_files
     file_ids = [e["fileID"] for e in entries if e.get("fileID")]
     job.set_step(f"Inspecting {len(file_ids)} mods", 20)
@@ -128,6 +138,18 @@ async def analyse_manifest_pack(
     if inspect_jars:
         job.set_step(f"Reading {len(all_mods)} mod jars", 30)
         await _augment_with_jar_metadata(job, all_mods)
+
+    # Jars shipped inside the archive itself. Added after the download pass
+    # on purpose: there is nothing to fetch for these, the bytes are already
+    # here, but they are classified by exactly the same rules.
+    if zf is not None:
+        bundled = _scan_bundled_jars(zf, plan)
+        if bundled:
+            job.log_line(
+                f"{len(bundled)} jar(s) are bundled in the export's "
+                "overrides/mods and are not listed on CurseForge"
+            )
+            all_mods.extend(bundled)
 
     flagged = [m for m in all_mods if m["reasons"]]
     keep = [m for m in all_mods if not m["reasons"]]
@@ -263,32 +285,7 @@ async def _augment_with_jar_metadata(job: Job, items: list[dict]) -> None:
                         client,
                     )
                     info = jarmeta.parse(blob, item["file_name"])
-                    item["mod_id"] = info.get("mod_id")
-                    item["declares"] = info.get("side")
-                    item["dependencies"] = [
-                        d.get("id") for d in info.get("dependencies", [])
-                        if d.get("mandatory", True)
-                    ]
-                    if info.get("side") == "client":
-                        item["reasons"].append(
-                            "the jar declares environment=client")
-                        item["confidence"] = "jar"
-                    elif info.get("side_inferred") == "client":
-                        item["reasons"].append(info.get("side_reason") or
-                                               "only client entrypoints")
-                        item["confidence"] = "jar"
-                    else:
-                        soft = _soft_client_signals(info)
-                        if soft:
-                            item["reasons"].extend(soft)
-                            # Never strong enough to auto-remove: surface it.
-                            if item["confidence"] in ("none", "name"):
-                                item["confidence"] = "suspect"
-                        if info.get("side") in ("both", "server") and item["reasons"]:
-                            item["reasons"].append(
-                                f"though the jar claims environment={info['side']}")
-                            if item["confidence"] == "name":
-                                item["confidence"] = "contradicted"
+                    _apply_jar_info(item, info)
                 except Exception:
                     pass
                 finally:
@@ -301,6 +298,70 @@ async def _augment_with_jar_metadata(job: Job, items: list[dict]) -> None:
                             )
 
         await asyncio.gather(*(one(i) for i in items))
+
+
+def _apply_jar_info(item: dict, info: dict) -> None:
+    """Fold a jar's own metadata into a candidate's evidence."""
+    item["mod_id"] = info.get("mod_id")
+    item["declares"] = info.get("side")
+    item["dependencies"] = [
+        d.get("id") for d in info.get("dependencies", []) if d.get("mandatory", True)
+    ]
+    if info.get("side") == "client":
+        item["reasons"].append("the jar declares environment=client")
+        item["confidence"] = "jar"
+    elif info.get("side_inferred") == "client":
+        item["reasons"].append(
+            info.get("side_reason") or "only client entrypoints")
+        item["confidence"] = "jar"
+    else:
+        soft = _soft_client_signals(info)
+        if soft:
+            item["reasons"].extend(soft)
+            # Never strong enough to auto-remove: surface it.
+            if item["confidence"] in ("none", "name"):
+                item["confidence"] = "suspect"
+        if info.get("side") in ("both", "server") and item["reasons"]:
+            item["reasons"].append(
+                f"though the jar claims environment={info['side']}")
+            if item["confidence"] == "name":
+                item["confidence"] = "contradicted"
+
+
+def _scan_bundled_jars(zf: zipfile.ZipFile, plan: PackPlan) -> list[dict]:
+    """Classify the jars an export carries in `overrides/mods/`.
+
+    These have no project id, so nothing downstream can look them up, check
+    them for updates, or ask Modrinth about them by anything but a guessed
+    name. The jar's own manifest is all the evidence there is -- which is
+    still the strongest signal we use anywhere.
+    """
+    items: list[dict] = []
+    for entry in packs.overlay_jars(plan):
+        name = posixpath.basename(entry["target"])
+        item = {
+            "project_id": None,
+            "file_id": None,
+            "file_name": name,
+            "name": name,
+            "bundled": True,
+            "size": None,
+            "reasons": [],
+            "confidence": "none",
+        }
+        if _reason_from_name(name):
+            item["reasons"].append("name matches a known client-only mod")
+            item["confidence"] = "name"
+        try:
+            blob = zf.read(entry["member"])
+            item["size"] = len(blob)
+            info = jarmeta.parse(blob, name)
+            item["name"] = info.get("name") or name
+            _apply_jar_info(item, info)
+        except Exception:
+            pass
+        items.append(item)
+    return items
 
 
 async def _dependency_targets(file_meta: dict) -> dict[int, set[str]]:

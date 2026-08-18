@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -27,6 +27,7 @@ from app import (
     optimizer,
     properties,
     specs,
+    uploads,
 )
 from app.jobs import registry
 
@@ -36,6 +37,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _err(e: Exception) -> HTTPException:
+    if isinstance(e, uploads.UploadError):
+        return HTTPException(status_code=400, detail=str(e))
     if isinstance(e, crafty.CraftyError):
         return HTTPException(status_code=e.status or 502, detail=str(e))
     if isinstance(e, curseforge.CurseForgeError):
@@ -592,22 +595,83 @@ async def instance_logs(server_id: str, lines: int = 300) -> dict:
         raise _err(e)
 
 
+# --- imported archives -------------------------------------------------
+
+
+@app.post("/api/uploads/modpack")
+async def upload_modpack(file: UploadFile = File(...)) -> dict:
+    """Accept a modpack archive exported from the CurseForge app.
+
+    Streamed straight to disk and analysed offline, so the response can
+    describe the pack -- loader, Minecraft version, mod count -- before the
+    user commits to an install. No CurseForge calls happen here.
+    """
+    async def chunks():
+        while True:
+            chunk = await file.read(4 * 1024 * 1024)
+            if not chunk:
+                return
+            yield chunk
+
+    try:
+        record = await uploads.store(file.filename or "modpack.zip", chunks())
+    except Exception as e:
+        raise _err(e)
+    finally:
+        await file.close()
+    return record
+
+
+@app.get("/api/uploads")
+async def list_uploads() -> dict:
+    """Previously imported archives, so a re-install needs no second upload."""
+    return {"items": uploads.list_uploads(), "limit": config.MAX_UPLOADS}
+
+
+@app.delete("/api/uploads/{upload_id}")
+async def delete_upload(upload_id: str) -> dict:
+    try:
+        return {"deleted": uploads.delete(upload_id)}
+    except Exception as e:
+        raise _err(e)
+
+
 # --- installs ----------------------------------------------------------
+
+
+def _pack_ref(body: dict) -> dict:
+    """Read a pack reference: CurseForge ids, or an imported archive id.
+
+    Every install entry point takes both, and neither is meaningful without
+    the other half, so the shape is validated in one place.
+    """
+    upload_id = (body.get("upload_id") or "").strip()
+    if upload_id:
+        try:
+            # Checked here rather than inside the job: an archive that was
+            # pruned or never existed is a bad request, and answering it with
+            # a job that fails ten seconds later just hides that.
+            uploads.get(upload_id)
+        except Exception as e:
+            raise _err(e)
+        return {"upload_id": upload_id}
+    try:
+        return {"mod_id": int(body["mod_id"]), "file_id": int(body["file_id"])}
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            400, "either upload_id, or both mod_id and file_id, are required"
+        )
 
 
 @app.post("/api/install/preflight")
 async def install_preflight(body: dict = Body(...)) -> dict:
     """Analyse a pack and list the mods that look client-only, for review."""
-    try:
-        mod_id = int(body["mod_id"])
-        file_id = int(body["file_id"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "mod_id and file_id are required")
+    ref = _pack_ref(body)
     job = registry.create("preflight", "Analysing pack")
     registry.start(
         job,
         lambda j: installer.preflight(
-            j, mod_id=mod_id, file_id=file_id,
+            j, **ref,
             prefer_server_pack=bool(body.get("prefer_server_pack", True)),
         ),
     )
@@ -822,20 +886,17 @@ async def fix_versions(server_id: str, body: dict = Body(...)) -> dict:
 
 @app.post("/api/install/modpack")
 async def install_modpack(body: dict = Body(...)) -> dict:
-    try:
-        mod_id = int(body["mod_id"])
-        file_id = int(body["file_id"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "mod_id and file_id are required")
-
-    name = body.get("server_name") or f"Modpack {mod_id}"
+    ref = _pack_ref(body)
+    default_name = (
+        "Imported modpack" if "upload_id" in ref else f"Modpack {ref.get('mod_id')}"
+    )
+    name = body.get("server_name") or default_name
     job = registry.create("install", f"Install {name}")
     registry.start(
         job,
         lambda j: installer.install_modpack(
             j,
-            mod_id=mod_id,
-            file_id=file_id,
+            **ref,
             server_name=name,
             port=int(body.get("port", 25565)),
             mem_min=body.get("mem_min"),
@@ -853,23 +914,18 @@ async def install_modpack(body: dict = Body(...)) -> dict:
 
 @app.post("/api/instances/{server_id}/switch-pack-version")
 async def switch_pack_version(server_id: str, body: dict = Body(...)) -> dict:
-    try:
-        mod_id = int(body["mod_id"])
-        file_id = int(body["file_id"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "mod_id and file_id are required")
-
+    ref = _pack_ref(body)
     job = registry.create("switch", f"Switch pack version for {server_id[:8]}")
     registry.start(
         job,
         lambda j: installer.switch_pack_version(
             j,
             server_id=server_id,
-            mod_id=mod_id,
-            file_id=file_id,
+            **ref,
             prefer_server_pack=bool(body.get("prefer_server_pack", True)),
             skip_client_only=bool(body.get("skip_client_only", True)),
             keep_world=bool(body.get("keep_world", True)),
+            exclude_files=body.get("exclude_files"),
         ),
     )
     return {"job_id": job.id}

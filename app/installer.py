@@ -1,4 +1,12 @@
-"""The install engine: CurseForge/Modrinth modpack -> live Crafty instance.
+"""The install engine: modpack -> live Crafty instance.
+
+A pack reaches this module from one of two places, and everything after step
+1 is identical for both:
+
+  * the **CurseForge catalogue**, addressed by (mod_id, file_id); or
+  * an **imported archive** the user uploaded, addressed by upload_id --
+    a profile export from the CurseForge app, which has no catalogue ids
+    because it was never published.
 
 Flow, whichever archive shape we get:
 
@@ -29,7 +37,7 @@ from typing import Any
 
 import httpx
 
-from app import config, crafty, curseforge, jarmeta, modrinth, packs
+from app import config, crafty, curseforge, jarmeta, modrinth, packs, uploads
 from app import preflight as preflight_mod
 from app import specs
 from app.jobs import Job
@@ -72,7 +80,12 @@ async def fetch_pack_archive(job: Job, mod_id: int, file_id: int) -> tuple[bytes
 
 
 async def preflight(
-    job: Job, *, mod_id: int, file_id: int, prefer_server_pack: bool = True
+    job: Job,
+    *,
+    mod_id: int | None = None,
+    file_id: int | None = None,
+    upload_id: str | None = None,
+    prefer_server_pack: bool = True,
 ) -> dict:
     """Analyse a pack without installing it.
 
@@ -80,10 +93,16 @@ async def preflight(
     client-only, each with the evidence behind that call, so the user can
     approve the removals rather than have them happen silently.
     """
-    plan, zf, file_meta = await _load_plan(job, mod_id, file_id, prefer_server_pack)
+    plan, zf, file_meta = await _load_plan(
+        job, mod_id=mod_id, file_id=file_id, upload_id=upload_id,
+        prefer_server_pack=prefer_server_pack,
+    )
 
     if plan.source == "manifest":
-        review = await preflight_mod.analyse_manifest_pack(job, plan)
+        # The archive is passed in so hand-added jars sitting in
+        # overrides/mods -- normal in a private export, absent from the
+        # manifest -- get reviewed alongside the catalogue mods.
+        review = await preflight_mod.analyse_manifest_pack(job, plan, zf=zf)
     else:
         review = await preflight_mod.analyse_server_pack_jars(job, zf, plan)
 
@@ -100,16 +119,25 @@ async def preflight(
     return {
         "mod_id": mod_id,
         "file_id": file_id,
+        "upload_id": upload_id,
         "pack": {
             "name": plan.name,
-            "version": plan.version or file_meta.get("display_name"),
+            # Matches what the install will record: an export rarely names a
+            # version, and the archive is reported separately rather than
+            # standing in for one.
+            "version": plan.version or (
+                "" if upload_id else file_meta.get("display_name")
+            ),
             "install_source": plan.source,
+            "source": "upload" if upload_id else "curseforge",
+            "archive": file_meta.get("file_name") if upload_id else None,
         },
         "minecraft": plan.mc_version,
         "loader": plan.loader,
         "loader_version": plan.loader_version,
         "crafty_loader": plan.crafty_loader,
         "recommended_ram_mb": plan.recommended_ram,
+        "java_version": plan.java_version,
         "memory": memory,
         "host": host,
         "warnings": plan.warnings,
@@ -132,8 +160,20 @@ async def resolve_pack_plan(mod_id: int, file_id: int, prefer_server_pack: bool 
     }
 
 
-async def _load_plan(job: Job, mod_id: int, file_id: int, prefer_server_pack: bool
-                     ) -> tuple[PackPlan, zipfile.ZipFile, dict]:
+async def _load_plan(
+    job: Job,
+    *,
+    mod_id: int | None = None,
+    file_id: int | None = None,
+    upload_id: str | None = None,
+    prefer_server_pack: bool = True,
+) -> tuple[PackPlan, zipfile.ZipFile, dict]:
+    """Get the pack archive and work out what is in it, from either source."""
+    if upload_id:
+        return _load_upload_plan(job, upload_id)
+    if not (mod_id and file_id):
+        raise ValueError("either mod_id + file_id or upload_id is required")
+
     file_meta = await curseforge.get_file(mod_id, file_id)
     server_pack_id = file_meta.get("server_pack_file_id")
 
@@ -173,14 +213,64 @@ async def _load_plan(job: Job, mod_id: int, file_id: int, prefer_server_pack: bo
     return plan, zf, file_meta
 
 
+def _load_upload_plan(job: Job, upload_id: str
+                      ) -> tuple[PackPlan, zipfile.ZipFile, dict]:
+    """Same thing for an imported archive: it is already on disk.
+
+    Opened from the path rather than read into memory -- an export carrying a
+    world folder can be gigabytes, and only a few members are ever needed at
+    once.
+    """
+    record = uploads.get(upload_id)
+    path = uploads.archive_path(upload_id)
+    job.set_step("Reading the imported archive", 5)
+
+    try:
+        zf = zipfile.ZipFile(path)
+    except zipfile.BadZipFile as e:
+        raise RuntimeError(f"the imported archive is not a readable zip: {e}")
+
+    plan = packs.analyse_archive(zf)
+    plan.name = plan.name or Path(record.get("file_name", "")).stem or "Imported pack"
+    file_meta = {
+        "display_name": record.get("file_name"),
+        "file_name": record.get("file_name"),
+        "size": record.get("size"),
+    }
+
+    if plan.source == "manifest":
+        job.log_line(
+            f"Imported export '{plan.name}': {len(plan.manifest_files)} mods "
+            f"from CurseForge + {len(packs.overlay_jars(plan))} bundled jars + "
+            f"{len(plan.overlay_members)} override files, "
+            f"loader={plan.loader or '?'} {plan.loader_version}"
+        )
+        if plan.manifest_files and not config.CURSEFORGE_API_KEY:
+            # Nothing later in the flow can recover from this: the export
+            # names its mods by CurseForge id and nothing else.
+            raise RuntimeError(
+                "This export lists its mods as CurseForge project ids, so a "
+                "CurseForge API key is required to fetch them. Set "
+                "CURSEFORGE_API_KEY_B64 and restart BlessForge."
+            )
+    else:
+        job.log_line(
+            f"Imported server pack '{plan.name}': "
+            f"{len(plan.overlay_members)} files, "
+            f"loader={plan.loader or '?'} {plan.loader_version}"
+        )
+    return plan, zf, file_meta
+
+
 async def _download_manifest_mods(
     job: Job, plan: PackPlan, skip_client_only: bool,
     exclude_files: set[str] | None = None,
-) -> tuple[list[tuple[str, bytes]], list[dict], list[dict]]:
+) -> tuple[list[tuple[str, bytes]], list[dict], list[dict], list[str]]:
     """Resolve and fetch every mod the manifest lists.
 
-    Returns (files, records, problems) where files are (name, bytes) pairs
-    ready to be zipped into the overlay.
+    Returns (files, records, problems, skipped) where files are (name, bytes)
+    pairs ready to be zipped into the overlay, and skipped names the jars an
+    exclusion actually matched.
     """
     entries = plan.manifest_files
     file_ids = [e["fileID"] for e in entries if e.get("fileID")]
@@ -279,7 +369,7 @@ async def _download_manifest_mods(
         job.log_line(f"{len(problems)} mods could not be downloaded", "warn")
         for p in problems[:10]:
             job.log_line(f"  - {p['name']}: {p['reason']}", "warn")
-    return results, records, problems
+    return results, records, problems, skipped_client
 
 
 def _batch(items: list[tuple[str, bytes]]) -> list[list[tuple[str, bytes]]]:
@@ -429,8 +519,9 @@ async def _apply_server_settings(
 async def install_modpack(
     job: Job,
     *,
-    mod_id: int,
-    file_id: int,
+    mod_id: int | None = None,
+    file_id: int | None = None,
+    upload_id: str | None = None,
     server_name: str,
     port: int,
     mem_min: int | None = None,
@@ -442,8 +533,15 @@ async def install_modpack(
     exclude_files: list[str] | None = None,
     optimize: bool = True,
 ) -> dict:
-    """Install a CurseForge modpack into a new (or existing) Crafty instance."""
-    plan, zf, file_meta = await _load_plan(job, mod_id, file_id, prefer_server_pack)
+    """Install a modpack into a new (or existing) Crafty instance.
+
+    Takes either CurseForge ids or the id of an imported archive; the two
+    differ only in where the zip comes from.
+    """
+    plan, zf, file_meta = await _load_plan(
+        job, mod_id=mod_id, file_id=file_id, upload_id=upload_id,
+        prefer_server_pack=prefer_server_pack,
+    )
     excluded = set(exclude_files) if exclude_files is not None else None
     if excluded is not None:
         job.log_line(
@@ -505,10 +603,12 @@ async def install_modpack(
     problems: list[dict] = []
     payload: list[tuple[str, bytes]] = []
 
+    matched_exclusions: set[str] = set()
     if plan.source == "manifest":
-        mods, records, problems = await _download_manifest_mods(
+        mods, records, problems, skipped = await _download_manifest_mods(
             job, plan, skip_client_only, excluded
         )
+        matched_exclusions.update(skipped)
         payload.extend((f"mods/{name}", blob) for name, blob in mods)
 
     job.set_step("Preparing pack files", 58)
@@ -520,6 +620,7 @@ async def install_modpack(
         if excluded is not None:
             if is_mod_jar and base in excluded:
                 overlay_skipped += 1
+                matched_exclusions.add(base)
                 continue
         elif (
             skip_client_only
@@ -542,14 +643,33 @@ async def install_modpack(
             overlay_skipped += 1
             continue
         payload.append((target, blob))
-        if target.startswith("mods/") and target.endswith(".jar"):
+        if is_mod_jar:
             records.append({
+                # A jar in a client export's overrides/ was added by hand and
+                # is in no catalogue, so it can never be version-checked --
+                # saying where it came from is what stops the Mods tab
+                # claiming it is simply "unidentified".
                 "file": target,
-                "source": "server_pack",
+                "source": "bundled" if plan.source == "manifest" else "server_pack",
                 "name": posixpath.basename(target),
             })
     if overlay_skipped:
         job.log_line(f"Skipped {overlay_skipped} client-only jars from the pack", "warn")
+
+    # An exclusion that matches nothing means the caller and the pack disagree
+    # about what is in it -- a review answered against a different version, or
+    # a hand-made API call. Silently installing the mod anyway is the one
+    # outcome nobody wants, so say it plainly.
+    if excluded:
+        unmatched = excluded - matched_exclusions
+        if unmatched:
+            job.log_line(
+                f"{len(unmatched)} exclusion(s) matched no file in this pack and "
+                "had no effect: "
+                + ", ".join(sorted(unmatched)[:5])
+                + ("..." if len(unmatched) > 5 else ""),
+                "warn",
+            )
 
     total_mb = sum(len(b) for _, b in payload) / 1048576
     job.log_line(f"Uploading {len(payload)} files ({total_mb:.0f} MB) to the instance")
@@ -594,6 +714,14 @@ async def install_modpack(
     # kills the server at startup with no log at all. Pin it explicitly.
     try:
         java = await crafty.set_java_version(server_id, plan.mc_version)
+        if plan.java_version and java.get("java_major") and (
+            java["java_major"] != plan.java_version
+        ):
+            job.log_line(
+                f"Note: the export was built against Java {plan.java_version}; "
+                f"this instance runs Java {java['java_major']}, which is what "
+                f"Minecraft {plan.mc_version} requires.",
+            )
         if java.get("changed"):
             job.log_line(
                 f"Set Java {java['java_major']} for this instance "
@@ -609,11 +737,21 @@ async def install_modpack(
         "schema": 1,
         "installed_at": time.time(),
         "pack": {
-            "source": "curseforge",
+            "source": "upload" if upload_id else "curseforge",
             "project_id": mod_id,
             "file_id": file_id,
+            # Kept so the Modpack tab can offer "re-import an updated export"
+            # against the same archive, and so a later import can tell it is
+            # updating this pack rather than replacing it with another.
+            "upload_id": upload_id,
+            "archive": file_meta.get("file_name") if upload_id else None,
             "name": plan.name,
-            "version": plan.version or file_meta.get("display_name"),
+            # An export usually carries no version of its own, and putting the
+            # zip filename in this field would push it into every pack pill in
+            # the UI. The archive name is recorded above instead.
+            "version": plan.version or (
+                "" if upload_id else file_meta.get("display_name")
+            ),
             "install_source": plan.source,
         },
         "minecraft": plan.mc_version,
@@ -623,6 +761,7 @@ async def install_modpack(
         # Kept so the Optimize tab can size the heap against what the pack
         # actually asked for, rather than guessing from the mod count.
         "recommended_ram_mb": plan.recommended_ram,
+        "java_version": plan.java_version,
         "excluded_mods": sorted(excluded) if excluded else [],
         "mods": records,
         "problems": problems,
@@ -656,16 +795,23 @@ async def switch_pack_version(
     job: Job,
     *,
     server_id: str,
-    mod_id: int,
-    file_id: int,
+    mod_id: int | None = None,
+    file_id: int | None = None,
+    upload_id: str | None = None,
     prefer_server_pack: bool = True,
     skip_client_only: bool = True,
     keep_world: bool = True,
+    exclude_files: list[str] | None = None,
 ) -> dict:
     """Move an existing instance to a different version of its modpack.
 
     Mods and config are replaced wholesale; the world is left alone by
     default because that is almost always what people want.
+
+    A private pack has no release list to move between, so for those this is
+    the re-import path instead: export the profile again from the CurseForge
+    app, upload it, and the instance is rebuilt from the new archive with the
+    world intact.
     """
     job.set_step("Reading current install", 2)
     current = await crafty.read_studio_manifest(server_id)
@@ -698,11 +844,13 @@ async def switch_pack_version(
         job,
         mod_id=mod_id,
         file_id=file_id,
+        upload_id=upload_id,
         server_name=server.get("server_name", "server"),
         port=server.get("server_port", 25565),
         prefer_server_pack=prefer_server_pack,
         skip_client_only=skip_client_only,
         existing_server_id=server_id,
+        exclude_files=exclude_files,
     )
     result["previous"] = current.get("pack")
     return result

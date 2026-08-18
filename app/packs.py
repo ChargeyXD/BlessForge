@@ -11,6 +11,14 @@ Two shapes of archive show up on CurseForge:
 
 Both end up as "a set of files to lay over a freshly created Crafty
 instance", which is what this module produces.
+
+The same two shapes arrive from `POST /api/uploads/modpack` when a user
+imports a *private* export -- the zip the CurseForge app writes for a
+profile they assembled themselves, which is never published and therefore
+has no project id to install from. Such an export is a client pack with two
+quirks worth knowing: its `version` is usually empty (nothing ever released
+it), and its `overrides/mods/` may hold hand-added jars that are in no
+catalogue at all. Both are handled here rather than at the call site.
 """
 from __future__ import annotations
 
@@ -97,10 +105,22 @@ class PackPlan:
     crafty_loader: str = ""     # catalog key we will actually install
     source: str = ""            # "server_pack" | "manifest"
     recommended_ram: int = 0    # MB, when the pack declares it
+    java_version: int = 0       # Java major the pack was authored against
     manifest_files: list = field(default_factory=list)  # [{projectID, fileID, required}]
     overlay_members: list = field(default_factory=list)  # zip members to copy
     strip_prefix: str = ""      # nested root inside the archive
     warnings: list = field(default_factory=list)
+
+
+# Archive members whose path escapes the directory they are extracted into.
+# CurseForge's own zips are well behaved, but an imported archive comes from
+# whoever built it, and every member here is eventually handed to Crafty to
+# extract inside a server directory -- so the path is checked, not trusted.
+def is_safe_target(rel: str) -> bool:
+    if not rel or rel.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", rel):
+        return False
+    parts = rel.replace("\\", "/").split("/")
+    return not any(part in ("", ".", "..") for part in parts)
 
 
 def parse_loader_id(loader_id: str) -> tuple[str, str]:
@@ -167,6 +187,10 @@ def analyse_client_pack(zf: zipfile.ZipFile) -> PackPlan:
         crafty_loader=LOADER_TO_CRAFTY.get(family, ""),
         source="manifest",
         recommended_ram=int(mc.get("recommendedRam") or 0),
+        # Only exports written by newer CurseForge app builds carry this; it
+        # is the Java the pack was actually tested on, which beats inferring
+        # one from the Minecraft version.
+        java_version=int(mc.get("javaVersion") or 0),
         manifest_files=manifest.get("files", []) or [],
     )
 
@@ -174,11 +198,15 @@ def analyse_client_pack(zf: zipfile.ZipFile) -> PackPlan:
     over_prefix = posixpath.join(prefix, overrides_dir) if prefix else overrides_dir
     over_prefix = over_prefix.rstrip("/") + "/"
 
+    unsafe = 0
     for n in names:
         if not n.startswith(over_prefix) or n.endswith("/"):
             continue
         rel = n[len(over_prefix) :]
         if not rel:
+            continue
+        if not is_safe_target(rel):
+            unsafe += 1
             continue
         top = rel.split("/")[0].lower()
         if top in CLIENT_ONLY_DIRS:
@@ -188,6 +216,16 @@ def analyse_client_pack(zf: zipfile.ZipFile) -> PackPlan:
         plan.overlay_members.append({"member": n, "target": rel})
 
     plan.strip_prefix = over_prefix
+    if unsafe:
+        plan.warnings.append(
+            f"{unsafe} file(s) in overrides/ had paths pointing outside the "
+            "server directory and were dropped."
+        )
+    if not plan.manifest_files and not plan.overlay_members:
+        plan.warnings.append(
+            "This export lists no mods and carries no override files -- it "
+            "may have been exported with everything deselected."
+        )
     if not plan.crafty_loader:
         plan.warnings.append(
             f"Loader '{family or 'unknown'}' is not in Crafty's jar catalog; "
@@ -268,6 +306,7 @@ def _read_meta_sources(zf: zipfile.ZipFile, names: list[str], plan: PackPlan) ->
             plan.recommended_ram = plan.recommended_ram or int(
                 mc.get("recommendedRam") or 0
             )
+            plan.java_version = plan.java_version or int(mc.get("javaVersion") or 0)
         elif data.get("minecraftVersion"):
             plan.mc_version = plan.mc_version or data.get("minecraftVersion", "")
             plan.loader = plan.loader or (data.get("modloader") or "").strip().lower()
@@ -321,9 +360,13 @@ def analyse_server_pack(zf: zipfile.ZipFile) -> PackPlan:
 
     plan.crafty_loader = LOADER_TO_CRAFTY.get(plan.loader, "")
 
+    unsafe = 0
     for n in names:
         rel = n[len(prefix) :] if prefix and n.startswith(prefix) else n
         if not rel or rel.startswith("."):
+            continue
+        if not is_safe_target(rel):
+            unsafe += 1
             continue
         top = rel.split("/")[0].lower()
         if top in CLIENT_ONLY_DIRS:
@@ -336,6 +379,11 @@ def analyse_server_pack(zf: zipfile.ZipFile) -> PackPlan:
             continue
         plan.overlay_members.append({"member": n, "target": rel})
 
+    if unsafe:
+        plan.warnings.append(
+            f"{unsafe} file(s) had paths pointing outside the server "
+            "directory and were dropped."
+        )
     if not plan.overlay_members:
         plan.warnings.append("The server pack appears to be empty.")
     if not any(m["target"].startswith("mods/") for m in plan.overlay_members):
@@ -344,6 +392,62 @@ def analyse_server_pack(zf: zipfile.ZipFile) -> PackPlan:
             "downloader script instead."
         )
     return plan
+
+
+def find_manifest_member(names: list[str]) -> str:
+    """The CurseForge manifest, at the archive root or one folder deep."""
+    for n in names:
+        if posixpath.basename(n) == "manifest.json" and n.count("/") <= 1:
+            return n
+    return ""
+
+
+def detect_kind(zf: zipfile.ZipFile) -> str:
+    """'manifest' (client export) or 'server_pack', from the archive alone.
+
+    Order matters here. A client export whose author hand-added jars has
+    `overrides/mods/*.jar`, which looks exactly like a server pack's mods
+    directory to a filename scan -- so the manifest is checked first, and a
+    manifest only counts when the archive really is built around it (it has
+    an overrides/ folder, or a files list, or says so outright). Server packs
+    that happen to bundle a stray client manifest fail all three and fall
+    through correctly.
+    """
+    names = [n for n in zf.namelist() if not n.endswith("/")]
+    member = find_manifest_member(names)
+    if member:
+        try:
+            data = json.loads(zf.read(member).decode("utf-8", "replace"))
+        except Exception:
+            data = {}
+        if isinstance(data, dict) and isinstance(data.get("minecraft"), dict):
+            prefix = posixpath.dirname(member)
+            overrides = data.get("overrides", "overrides")
+            over_prefix = (
+                posixpath.join(prefix, overrides) if prefix else overrides
+            ).rstrip("/") + "/"
+            if (
+                data.get("files")
+                or data.get("manifestType") == "minecraftModpack"
+                or any(n.startswith(over_prefix) for n in names)
+            ):
+                return "manifest"
+    return "server_pack"
+
+
+def analyse_archive(zf: zipfile.ZipFile) -> PackPlan:
+    """Analyse an archive of unknown shape. Used for every imported zip."""
+    if detect_kind(zf) == "manifest":
+        return analyse_client_pack(zf)
+    return analyse_server_pack(zf)
+
+
+def overlay_jars(plan: PackPlan) -> list[dict]:
+    """Overlay members that are mod jars -- hand-added mods, in an export."""
+    return [
+        m for m in plan.overlay_members
+        if m["target"].startswith("mods/") and m["target"].lower().endswith(".jar")
+    ]
 
 
 def is_client_only_jar(filename: str) -> bool:

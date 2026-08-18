@@ -90,6 +90,17 @@ CACHE_DIR = Path(os.environ.get("CACHE_DIR", str(DATA_DIR / "cache")))
 # Keep downloaded modpack archives after install (useful for re-installs).
 KEEP_CACHE = _bool("KEEP_CACHE", True)
 
+# --- Imported modpack archives ----------------------------------------
+# Where "Import a CurseForge export" parks uploaded .zip files. Kept apart
+# from CACHE_DIR because these are the only files here the user cannot get
+# back by re-downloading -- a private export exists nowhere else.
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", str(DATA_DIR / "uploads")))
+# Ceiling for a single import. Exports carrying a world folder get big; the
+# limit exists so a mis-drop cannot fill the volume, not to be restrictive.
+MAX_UPLOAD_MB = _int("MAX_UPLOAD_MB", 4096)
+# How many imports to keep on disk. The oldest are pruned past this.
+MAX_UPLOADS = _int("MAX_UPLOADS", 12)
+
 PORT = _int("PORT", 8710)
 
 GAME_ID_MINECRAFT = 432
