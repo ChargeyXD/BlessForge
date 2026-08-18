@@ -3235,6 +3235,7 @@ const logLineHTML = (l) => `
 function openJobModal(entry) {
   if (entry.view) return entry.view.modal;
 
+  let tick = null;
   const m = modal({
     title: entry.title,
     body: `
@@ -3266,7 +3267,9 @@ function openJobModal(entry) {
         <span class="pill warn hidden" id="jWarnPill"></span>
       </div>
       <div class="log-console" id="jLog"></div>`,
-    onClose: () => { entry.view = null; },   // the stream keeps running
+    // Dismissing the view -- by button, X, Escape or backdrop -- detaches it.
+    // The stream keeps running; only the view goes away.
+    onClose: () => { entry.view = null; if (tick) clearInterval(tick); },
     actions: [
       // The backend has always supported cancelling a running job; nothing in
       // the UI ever called it, so a wrong 8-minute install had to be waited out.
@@ -3301,7 +3304,7 @@ function openJobModal(entry) {
   const phaseEls = $$(".job-phase", el);
   const cancelBtn = m.buttons[0];
 
-  const ticker = setInterval(() => {
+  tick = setInterval(() => {
     const secs = Math.round((Date.now() - entry.started) / 1000);
     clockEl.textContent = secs >= 60
       ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} elapsed`
@@ -3346,15 +3349,12 @@ function openJobModal(entry) {
     modal: m,
     update: () => { paintProgress(); paintLog(); paintStream(); },
     settle: () => {
-      clearInterval(ticker);
+      if (tick) clearInterval(tick);
       if (cancelBtn) cancelBtn.disabled = true;
       renderJobSummary(entry, m);
     },
   };
   entry.view = view;
-  const originalClose = m.close;
-  m.close = () => { clearInterval(ticker); entry.view = null; originalClose(); };
-
   view.update();
   if (entry.finished) view.settle();
   return m;
