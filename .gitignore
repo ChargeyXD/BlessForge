@@ -5,3 +5,6 @@ data/
 .dev.pid
 __pycache__/
 *.pyc
+
+# Local test fixtures and design exports (large binaries; the brief is tracked, the zip is not)
+*.zip

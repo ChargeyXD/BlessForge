@@ -26,6 +26,40 @@ shared volumes required.
 - Picks the Java version the loader actually supports, and re-checks it on
   every start.
 
+### Install a pack you built yourself
+
+Most self-hosters run a pack they assembled, not one they downloaded — and a
+private pack is in no catalogue, so no search will ever find it. Export it
+instead:
+
+1. In the CurseForge app: **My Modpacks** → the **…** menu on your profile →
+   **Create Profile Export**. Tick Mods, Config, and any script folders
+   (KubeJS, Open Loader).
+2. In BlessForge: **Import Export** — on the Instances view, on Browse, or via
+   the card on the Browse page — then drop the `.zip` in.
+
+From there it is the same path as a catalogue pack: the archive is analysed
+offline (loader, Minecraft version, mod count, the RAM the pack asks for), the
+mods it lists are fetched from CurseForge, jars you added by hand in
+`overrides/mods/` come straight out of the archive, and you get the same
+client-only review before anything is written.
+
+Notes:
+
+- Client-only folders — `shaderpacks`, `resourcepacks`, `saves`, `options.txt`
+  and friends — are dropped automatically, so it does no harm to leave them
+  ticked when exporting.
+- Hand-added jars are reviewed too. They have no CurseForge project behind
+  them, so the jar's own metadata is the only evidence available — and it is
+  the strongest signal BlessForge uses anyway.
+- Archives are kept on the server (`/data/uploads`, most recent 12) so
+  re-installing does not mean uploading a 900 MB zip a second time.
+- To update an imported pack, export it again and use **Re-import an Updated
+  Export** on the instance's Modpack tab. The world, name and port are kept;
+  mods and pack configs are replaced.
+- A client export names its mods by CurseForge id, so a CurseForge API key is
+  required for this — the same one the rest of the app uses.
+
 ### Review what gets stripped, before it happens
 
 Client-only mods have to come out of a server install, but doing that silently
@@ -40,7 +74,8 @@ shows you the list first, with the evidence behind each call:
 
 Every jar in the pack is inspected, not just ones with suspicious names — the
 mods that break servers are usually the ones nobody thought to put on a list.
-Mods Modrinth marks `server_side: required` are cleared outright.
+Mods Modrinth marks `server_side: required` are cleared outright. This runs for
+imported packs as well, including jars that only exist inside the archive.
 
 ### Manage mods
 
@@ -138,41 +173,58 @@ user needs **Server Creation**, **Files**, **Commands** and **Config**.
 
 ### 2. Deploy
 
-```bash
-git clone <this repo> blessforge
-cd blessforge
-cp .env.example .env
-$EDITOR .env          # CRAFTY_URL, CRAFTY_TOKEN, CURSEFORGE_API_KEY
-docker compose up -d --build
-```
-
-Open `http://<host>:8710`.
-
-### On CasaOS (including a second server)
-
-Use **`casaos-compose.yml`**, not `docker-compose.yml`:
-
-**App Store → Custom Install → Import** → paste the contents of
-`casaos-compose.yml` → fill in the three environment variables → install.
-
-It pulls the published image, so nothing needs building on the target machine:
+One compose file installs BlessForge everywhere — CasaOS or plain Docker. It
+pulls the published multi-arch image, so nothing needs building on the target
+machine:
 
 ```
 ghcr.io/chargeyxd/blessforge:latest    (amd64 + arm64)
 ```
 
-> **Why a separate file.** `docker-compose.yml` is for local development: it
-> uses `build: .` with the local tag `blessforge:latest`. CasaOS has no source
-> checkout, so it ignores `build:` and tries to *pull* `blessforge:latest` from
-> Docker Hub — which does not exist. The pull fails, the container is never
-> created, and CasaOS reports the app as **unhealthy**. That is the usual cause
-> of a "legacy app" that refuses to rebuild.
+**On CasaOS** — App Store → **Custom Install** → **Import** → paste the
+contents of `docker-compose.yml` → set `CRAFTY_URL` and `CRAFTY_TOKEN` in the
+dialog → install. The CurseForge key is already filled in.
 
-> **Doubling the `$` in your CurseForge key is required here.** CasaOS writes
-> settings into an `environment:` block, where Compose expands `$name`. An
-> unescaped key arrives truncated and every CurseForge call 403s.
-> `$2a$10$D3Bo...` becomes `$$2a$$10$$D3Bo...`. BlessForge un-doubles it on
-> startup and warns you in the UI if the key still looks truncated.
+**On plain Docker:**
+
+```bash
+curl -O https://raw.githubusercontent.com/ChargeyXD/BlessForge/main/docker-compose.yml
+$EDITOR docker-compose.yml     # CRAFTY_URL and CRAFTY_TOKEN
+docker compose up -d
+```
+
+Open `http://<host>:8710`.
+
+**From a checkout** (runs your working tree instead of the published image):
+
+```bash
+git clone https://github.com/ChargeyXD/BlessForge blessforge
+cd blessforge
+cp .env.example .env
+$EDITOR .env                   # CRAFTY_URL, CRAFTY_TOKEN
+docker compose up -d --build
+```
+
+`docker-compose.override.yml` is what makes that work: Compose picks it up
+automatically from a checkout, swaps in `build: .` against the same image tag,
+and reads `.env` in `raw` format so a CurseForge key containing `$` survives.
+CasaOS never sees the override file — it imports `docker-compose.yml` alone.
+
+> **The CurseForge key is passed as base64, and that is not optional.**
+> CurseForge keys are bcrypt-style and contain `$`. Compose expands `$name`
+> inside an `environment:` block, and CasaOS un-doubles `$$` when it stores an
+> imported compose before handing it back to Compose, which expands it *again*
+> — no amount of doubling survives both, and the key arrives truncated with
+> every call 403ing and no error that says so. `CURSEFORGE_API_KEY_B64` has no
+> `$` in it and passes through untouched. To use a different key:
+> `echo -n '<your key>' | base64 -w0`. A plain `CURSEFORGE_API_KEY` still works
+> if you would rather fight the escaping.
+
+> **Why the cache is a named volume, not `/DATA/AppData`.** CasaOS creates
+> bind-mount directories as root, but the container runs unprivileged as uid
+> 1000 and could not write there — every download would fail to cache with a
+> permission error. Docker seeds a fresh named volume with the image's own
+> ownership, so `blessforge-cache` just works.
 
 Anything still missing is listed in a banner at the top of the app.
 
@@ -195,6 +247,9 @@ Anything still missing is listed in a banner at the top of the app.
 | `DOWNLOAD_CONCURRENCY` | `8` | Parallel mod downloads |
 | `SERVER_READY_TIMEOUT` | `900` | Seconds to wait for a loader install |
 | `DEFAULT_MEM_MIN` / `DEFAULT_MEM_MAX` | `2` / `6` | Fallback RAM in GB |
+| `MAX_UPLOAD_MB` | `4096` | Size ceiling for a single imported pack archive |
+| `MAX_UPLOADS` | `12` | Imported archives kept on disk; the oldest are pruned |
+| `UPLOAD_DIR` | `/data/uploads` | Where imported archives are stored |
 
 > **`CRAFTY_URL` must be reachable from inside the container.** Use the LAN IP.
 > `127.0.0.1` points at the container itself.
@@ -203,13 +258,17 @@ Anything still missing is listed in a banner at the top of the app.
 > The optimizer measures from inside its own container, and sizing a heap
 > against the wrong machine is worse than not tuning at all.
 
-The `/data` volume is a download cache. Deleting it costs nothing but bandwidth.
+`/data` is mostly a download cache — deleting `/data/cache` costs nothing but
+bandwidth. `/data/uploads` is the exception: an imported pack export exists
+nowhere else unless you still have the zip, so keep that if you keep anything.
 
 ---
 
 ## How an install works
 
 1. Fetch the pack archive — server pack if one exists, otherwise the client zip.
+   An imported pack skips this step: the archive is already on disk, and is
+   opened from there rather than read into memory.
 2. Read loader and Minecraft version from whichever manifest the archive ships
    (CurseForge, ServerPackCreator, Modrinth index, or `variables.txt`).
 3. *(Optional)* Inspect every mod jar and present the client-only review.
@@ -242,6 +301,12 @@ previous version are still read via their old `.modpack-studio.json`.
   `environment=*` while calling client-only code at runtime cannot be caught
   with certainty — that is why the review step exists, and why such mods land
   in **review** rather than being removed silently.
+- **An imported pack has no version history.** A private export was never
+  released, so there is no list of releases to move between and no update
+  check for jars you added by hand. Re-import a fresh export to update it.
+- **Archive paths are checked, not trusted.** Members of an imported zip whose
+  path points outside the server directory are dropped, and the count is
+  reported as a warning on the archive and in the install log.
 
 ### Two traps worth knowing about
 
@@ -274,9 +339,17 @@ GET  /api/host/specs
 GET  /api/browse/modpacks?q=&game_version=&loader=
 GET  /api/browse/mods?q=&source=curseforge|modrinth
 GET  /api/modpacks/{id}/files
-POST /api/install/preflight          {mod_id, file_id}      -> client-only review
-POST /api/install/modpack            {mod_id, file_id, server_name, port,
-                                      exclude_files[], optimize}
+
+POST /api/uploads/modpack            multipart "file"       -> imported archive
+GET  /api/uploads                                           -> archives on disk
+DEL  /api/uploads/{upload_id}
+
+POST /api/install/preflight          {mod_id, file_id} | {upload_id}
+                                                            -> client-only review
+POST /api/install/modpack            {mod_id, file_id} | {upload_id},
+                                      server_name, port, exclude_files[], optimize
+POST /api/instances/{id}/switch-pack-version
+                                     {mod_id, file_id} | {upload_id}
 GET  /api/jobs/{id}/events           server-sent progress
 
 GET  /api/instances
@@ -307,6 +380,9 @@ POST /api/instances/{id}/optimize       {heap_gb, flags[], properties{}}
 
 Long operations return `{"job_id": ...}`; follow `/api/jobs/{id}/events`.
 
+The three install endpoints take **either** CurseForge ids **or** an
+`upload_id` from a previous import — never a mix.
+
 ## Development
 
 ```bash
@@ -315,6 +391,35 @@ cp .env.example .env.test && $EDITOR .env.test
 ./dev.sh start        # http://127.0.0.1:8710
 ./dev.sh restart|stop|status
 ```
+
+### Front end
+
+Three files, served verbatim from `app/static/`: `index.html`, `style.css`,
+`app.js`. No build step, no framework, no runtime network dependency — plain
+ES2020 in one IIFE, every icon inline SVG, and the web font loaded
+non-blocking so a LAN box with no route to the internet still paints
+immediately. `app.js` renders by assigning `innerHTML` from template literals
+and binds by `id` and `[data-*]`, so those names are a contract:
+`design-brief.md` §4.3 lists every hook that must survive a redesign.
+
+Do not add a fourth file. The server's cache-busting fingerprint only hashes
+and rewrites those three names, so anything else would be served stale
+forever.
+
+Three things in there are less obvious than they look:
+
+* **The mod list is windowed above 120 rows.** Selection lives in a `Set` of
+  filenames rather than in the DOM, because a row that scrolls out of the
+  window is unmounted and would otherwise lose its checkbox. Toggling patches
+  the data array first and the row only if it happens to be mounted.
+* **A job owns its stream, the modal is only a view onto it.** *Run in
+  Background* closes the view, not the `EventSource`; Activity's **Watch**
+  button re-attaches and replays the buffered log. A job that finishes
+  resolves into a summary the user dismisses, so the warnings that predict a
+  failed first boot outlive the install.
+* **The config editor's gutter is a plain `<pre>`** sharing the textarea's
+  font metrics, with `scrollTop` mirrored. No highlighting overlay: it drifts
+  on wrap and is a maintenance trap.
 
 ## Licence
 

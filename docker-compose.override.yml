@@ -1,0 +1,20 @@
+# Local development only. Compose picks this up automatically when you run
+# `docker compose` from a checkout, and CasaOS never sees it -- it imports
+# docker-compose.yml alone.
+#
+# What it changes:
+#   * builds the image from source and tags it with the same GHCR name, so the
+#     installed app runs your working tree instead of whatever CI last
+#     published (`docker compose up -d --build`);
+#   * reads .env for the per-machine Crafty settings, in `raw` format so a
+#     CurseForge key containing '$' is not mangled by Compose interpolation
+#     (needs Compose v2.24+).
+
+services:
+  blessforge:
+    build: .
+    pull_policy: never
+    env_file:
+      - path: .env
+        required: false
+        format: raw

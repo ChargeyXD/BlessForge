@@ -1,8 +1,10 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="BlessForge" \
-      org.opencontainers.image.description="Install CurseForge modpacks into Crafty Controller, then manage mods, configs, performance and startup problems." \
-      org.opencontainers.image.source="https://github.com/" \
+      org.opencontainers.image.description="Install CurseForge modpacks into Crafty Controller, or import your own export, then manage mods, configs, performance and startup problems." \
+      org.opencontainers.image.source="https://github.com/ChargeyXD/BlessForge" \
+      org.opencontainers.image.url="https://github.com/ChargeyXD/BlessForge" \
+      org.opencontainers.image.documentation="https://github.com/ChargeyXD/BlessForge#readme" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONUNBUFFERED=1 \
@@ -25,7 +27,7 @@ COPY app/ ./app/
 
 # Run unprivileged. /data holds download & unpack cache.
 RUN useradd -u 1000 -m studio \
- && mkdir -p /data/cache /data/downloads /app \
+ && mkdir -p /data/cache /data/downloads /data/uploads /app \
  && chown -R studio:studio /data /app
 USER studio
 
