@@ -25,11 +25,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
-# Run unprivileged. /data holds download & unpack cache.
+# The app runs unprivileged as uid 1000. The container still STARTS as root so
+# the entrypoint can hand it a writable /data -- CasaOS creates bind-mount
+# directories as root, and an image that drops privileges in the Dockerfile can
+# never fix that from the inside. entrypoint.sh chowns only the three
+# directories this app owns and then drops to studio via setpriv.
 RUN useradd -u 1000 -m studio \
  && mkdir -p /data/cache /data/downloads /data/uploads /app \
  && chown -R studio:studio /data /app
-USER studio
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 VOLUME ["/data"]
 EXPOSE 8710
@@ -37,4 +43,5 @@ EXPOSE 8710
 HEALTHCHECK --interval=20s --timeout=4s --start-period=10s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${PORT:-8710}/api/healthz" > /dev/null || exit 1
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8710} --proxy-headers --forwarded-allow-ips='*'"]

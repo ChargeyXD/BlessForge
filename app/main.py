@@ -97,8 +97,38 @@ async def health() -> dict:
     else:
         checks["modrinth"] = {"ok": False, "error": "disabled"}
 
+    # A /data that the app cannot write is invisible until the first install
+    # dies half-way through: the cache silently fails, imports have nowhere to
+    # land, and nothing in the UI ever says why. It happens whenever the mount
+    # is pointed at a root-owned folder -- most often the wrong folder picked
+    # in the CasaOS install dialog -- so it gets checked and reported.
+    checks["storage"] = _storage_check()
+
     ready = bool(checks["crafty"] and checks["crafty"].get("ok"))
     return {"ready": ready, "config": state, "checks": checks}
+
+
+def _storage_check() -> dict:
+    probe = config.CACHE_DIR / ".write-probe"
+    try:
+        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok")
+        probe.unlink()
+    except Exception as e:
+        looks_like_crafty = any(
+            (config.DATA_DIR / name).exists()
+            for name in ("crafty.sqlite", "servers", "data/servers")
+        )
+        hint = (
+            f"{config.DATA_DIR} looks like Crafty's own data directory. "
+            "BlessForge needs a folder of its own -- point the mount at "
+            "/DATA/AppData/blessforge/data."
+            if looks_like_crafty
+            else f"{config.DATA_DIR} is not writable by the app (uid 1000)."
+        )
+        return {"ok": False, "error": f"{hint} ({e.__class__.__name__})",
+                "path": str(config.DATA_DIR)}
+    return {"ok": True, "path": str(config.DATA_DIR)}
 
 
 # --- browsing ----------------------------------------------------------

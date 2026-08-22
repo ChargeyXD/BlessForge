@@ -315,6 +315,11 @@ async function checkHealth() {
           ? "Key accepted" : c.curseforge.error,
         vars: c.curseforge.ok ? [] : ["CURSEFORGE_API_KEY"] },
     ];
+    // Storage only earns a row when it is broken: a read-only /data breaks
+    // every install, and used to do it without saying anything at all.
+    if (c.storage && !c.storage.ok) {
+      rows.push({ name: "Storage", ok: false, why: c.storage.error, vars: [] });
+    }
     const broken = rows.filter((x) => !x.ok);
     const banner = $("#setup");
     if (broken.length) {
@@ -324,7 +329,7 @@ async function checkHealth() {
         <span class="setup-glyph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 16H3z" fill="none" stroke="currentColor" stroke-width="2"></path><rect x="11" y="9" width="2" height="5" fill="currentColor"></rect><rect x="11" y="15.5" width="2" height="2" fill="currentColor"></rect></svg></span>
         <div class="setup-body">
           <div class="setup-title">${broken.length === 1
-            ? "One integration left to connect" : "Two integrations left to connect"}</div>
+            ? "One thing left to sort out" : `${broken.length} things left to sort out`}</div>
           <div class="setup-sub">BlessForge talks to Crafty Controller and CurseForge. Set the
             variables below in the environment, then restart the container.</div>
           <div class="setup-list">

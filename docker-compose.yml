@@ -54,6 +54,11 @@ services:
       #
       # Use the LAN IP, not 127.0.0.1 -- inside the container loopback is the
       # container itself and can never reach Crafty.
+      #
+      # The port is whatever YOUR Crafty is published on, and the two CasaOS
+      # Crafty apps do not agree: the "Crafty Controller" app publishes 8111,
+      # big-bear-crafty publishes 8443. Check the port on the Crafty tile in
+      # CasaOS. Keep the https:// -- Crafty speaks TLS on both.
       CRAFTY_URL: "https://CHANGE-ME:8443"
       # Crafty -> your user -> API keys. Needs Server Creation, Files, Commands
       # and Config permissions. A token is issued by, and only valid for, the
@@ -89,16 +94,18 @@ services:
       # HOST_CPU_COUNT: "8"
 
     volumes:
-      # Modpack and mod download cache. Safe to delete; it only re-downloads.
+      # BlessForge's own folder: the modpack/mod download cache, plus any pack
+      # exports you imported. The cache is disposable; the imports are not.
       #
-      # A named volume rather than the usual /DATA/AppData bind mount, on
-      # purpose: CasaOS creates bind-mount directories as root, but this
-      # container runs unprivileged as uid 1000, so it could not write there
-      # and every download would fail to cache with a permission error. Docker
-      # seeds a fresh named volume with the image's ownership, so this works
-      # with no manual chown, and nothing in it needs to be browsable from the
-      # CasaOS file manager.
-      - blessforge-cache:/data
+      # This MUST be a folder of its own, and the path has to be spelled out
+      # here. A named volume looks tidier but leaves the host path blank in
+      # CasaOS's install dialog, and an unassigned row there is filled in by
+      # hand -- which is how this once ended up bind-mounted onto Crafty's
+      # AppData, where the app could not write a single byte and every install
+      # failed with no visible error. The container starts as root purely to
+      # chown this folder and then drops to uid 1000 (see entrypoint.sh), so a
+      # root-created bind mount works with no manual chown.
+      - /DATA/AppData/blessforge/data:/data
 
     healthcheck:
       # /api/healthz is a static liveness probe -- it never touches Crafty or
@@ -134,14 +141,17 @@ services:
       tips:
         before_install:
           en_us: >-
-            Set CRAFTY_URL to this machine's Crafty address (LAN IP, not
-            localhost) and CRAFTY_TOKEN to a token from that Crafty's user
-            profile -- a token only works on the Crafty that issued it. The
-            CurseForge key is already filled in.
+            Set CRAFTY_URL to this machine's Crafty address -- LAN IP, not
+            localhost, and the port your Crafty tile actually shows (8111 for
+            the CasaOS Crafty app, 8443 for big-bear-crafty). Set CRAFTY_TOKEN
+            to a token from that Crafty's user profile; a token only works on
+            the Crafty that issued it. The CurseForge key is already filled in.
+            Leave the /data folder pointing at /DATA/AppData/blessforge/data --
+            it is BlessForge's own cache, not Crafty's directory.
       envs:
         - container: CRAFTY_URL
           description:
-            en_us: "Crafty base URL, e.g. https://192.168.1.10:8443 (LAN IP, not localhost)"
+            en_us: "Crafty base URL with its published port -- https://<LAN-IP>:8111 for the CasaOS Crafty app, https://<LAN-IP>:8443 for big-bear-crafty. Not localhost."
         - container: CRAFTY_TOKEN
           description:
             en_us: "Crafty API token from your Crafty user profile"
@@ -166,11 +176,10 @@ services:
             en_us: "BlessForge web interface"
       volumes:
         - container: /data
+          host: /DATA/AppData/blessforge/data
+          mode: rw
           description:
-            en_us: "Modpack and mod download cache"
-
-volumes:
-  blessforge-cache:
+            en_us: "BlessForge's own folder: modpack download cache and imported pack exports. Give it an empty folder of its own -- not Crafty's."
 
 x-casaos:
   architectures:
