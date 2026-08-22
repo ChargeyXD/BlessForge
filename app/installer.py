@@ -437,6 +437,17 @@ MODDED_LOADERS = ("forge-installer", "neoforge-installer")
 # with a 2/4/8s backoff -- about 17s to fail. Past this the jar is not coming.
 LOADER_DOWNLOAD_GRACE = 75
 
+# Crafty streams the jar straight to its final path, so a download in flight
+# shows up as a file whose mtime keeps advancing. If nothing in the directory
+# has moved for this long and the loader still is not installed, whatever was
+# happening has stopped -- including the case where the connection died
+# mid-stream and left a truncated jar behind, which "is there a .jar" cannot
+# see on its own.
+#
+# Three minutes, not one: Crafty reports mtimes at minute resolution, so a
+# perfectly healthy install can look motionless for a while.
+LOADER_STALL = 180
+
 
 def _loader_installed(loader_type: str, command: str, names: set[str],
                       executable: str) -> bool:
@@ -465,6 +476,8 @@ async def _wait_for_loader(job: Job, server_id: str, plan: PackPlan) -> None:
     job.set_step("Waiting for Crafty to install the loader", 60)
     deadline = time.time() + config.SERVER_READY_TIMEOUT
     grace_until = time.time() + LOADER_DOWNLOAD_GRACE
+    last_sig: dict[str, str] = {}
+    last_change = time.time()
     repaired = False
     announced = False
 
@@ -485,9 +498,17 @@ async def _wait_for_loader(job: Job, server_id: str, plan: PackPlan) -> None:
                 announced = True
                 job.set_step("Crafty is installing the loader", 62)
 
-            # No jar, and past the point where Crafty's downloader has either
-            # succeeded or given up: it gave up.
-            if not jar_here and time.time() > grace_until:
+            # Names plus mtimes: a jar still being written moves, an abandoned
+            # one does not.
+            sig = {n: str((entries.get(n) or {}).get("modified", "")) for n in names}
+            if sig != last_sig:
+                last_sig = sig
+                last_change = time.time()
+
+            stalled = time.time() - last_change > LOADER_STALL
+            # Either the download never started, or it started and stopped
+            # without finishing. Both mean the loader is not coming.
+            if (not jar_here and time.time() > grace_until) or stalled:
                 if repaired:
                     raise RuntimeError(
                         "Crafty could not download the "
@@ -499,6 +520,8 @@ async def _wait_for_loader(job: Job, server_id: str, plan: PackPlan) -> None:
                 repaired = True
                 await _repair_loader_jar(job, server_id, plan, executable)
                 grace_until = time.time() + LOADER_DOWNLOAD_GRACE
+                last_change = time.time()
+                last_sig = {}
                 continue
         except crafty.CraftyError:
             pass
