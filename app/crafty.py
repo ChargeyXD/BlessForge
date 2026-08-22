@@ -179,6 +179,39 @@ async def create_server(
     return sid
 
 
+async def jar_catalog() -> dict:
+    """Crafty's own jar index -- the "Big Bucket" cache it downloads from.
+
+    Every entry carries the download URL and a sha256. Crafty fetches the
+    loader jar itself after creating a server, on a daemon thread, and when
+    that download fails it logs one line and gives up: the API still returns
+    201, the server record still names an executable, and the file is simply
+    never there. Having the same index lets us fetch the jar ourselves and
+    repair the instance instead of waiting for a loader that is not coming.
+    """
+    async with _client(timeout=60) as c:
+        return _unwrap(
+            await c.get("/api/v2/crafty/JarCache", headers=_headers()),
+            "jar catalog",
+        )
+
+
+def jar_source(catalog: dict, category: str, loader_type: str, version: str) -> dict:
+    """Pick {url, sha256, loader_version} out of the catalog, or {} if absent."""
+    try:
+        entry = catalog[category]["types"][loader_type]["versions"][version]
+    except (KeyError, TypeError):
+        return {}
+    urls = entry.get("url") or []
+    if not urls:
+        return {}
+    return {
+        "url": urls[0],
+        "sha256": entry.get("sha256") or "",
+        "loader_version": entry.get("loader_version") or "",
+    }
+
+
 async def delete_server(server_id: str, delete_files: bool = True) -> None:
     async with _client(timeout=120) as c:
         _unwrap(
