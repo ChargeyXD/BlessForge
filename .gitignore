@@ -8,3 +8,6 @@ __pycache__/
 
 # Local test fixtures and design exports (large binaries; the brief is tracked, the zip is not)
 *.zip
+dev/ui-tests/node_modules/
+dev/ui-tests/package*.json
+dev/ui-tests/*.png
