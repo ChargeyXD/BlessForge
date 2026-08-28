@@ -15,10 +15,12 @@ you want done."**
 Claude Design, is replacing the old one. The shell and one screen are
 finished; nine screens are placeholders that say so on screen.
 
-**Nothing is committed.** Three sessions of work sits in the working tree —
-`git diff` and `git status` are the change set. It is all deployed and running
-(the container is built from the local tree, not from GHCR), and every test
-passes, but no commit has been made. Committing is the user's call; ask.
+**Committed on branch `rebuild/ui-and-mod-roulette`**, one commit
+(`7f43f10`) covering all three sessions — the four bodies of change overlap
+too heavily in `main.py`, `installer.py` and `app.js` to split by hunk without
+producing commits that fail their own tests. **Not merged and not pushed**;
+`main` is untouched. The container runs the local tree, not GHCR, so merging
+is a separate decision from deploying.
 
 **The next job is §5D: finish the remaining screens.** Read §4 for how a
 screen is built, §5D for what each one needs, and `design/README.md` for the
