@@ -16,7 +16,7 @@ Claude Design, is replacing the old one. The shell and **two** screens are
 finished; eight screens are placeholders that say so on screen.
 
 **Committed on branch `rebuild/ui-and-mod-roulette`**, two commits: `7f43f10`
-covering the first three sessions, and `9ba08ef` for Situation (§5E). The first
+covering the first three sessions, and `71f4828` for Situation (§5E). The first
 one is one commit because the four bodies of change in it overlap too heavily in
 `main.py`, `installer.py` and `app.js` to split by hunk without producing
 commits that fail their own tests. **Not merged and not pushed**;
