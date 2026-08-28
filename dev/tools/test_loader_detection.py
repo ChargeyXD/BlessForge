@@ -1,6 +1,7 @@
 import os, pathlib, sys
 sys.path.insert(0, os.environ.get("BF_REPO", str(pathlib.Path(__file__).resolve().parents[2])))
 from app.installer import _loader_installed, _RUN_SCRIPT
+from app.crafty import java_in_command, required_java_major, uptime_seconds
 
 ok = []
 def check(name, cond, extra=""):
@@ -54,6 +55,61 @@ if m:
           f"{path}{ver}/neoforge-{ver}-server.jar"
           == "libraries/net/neoforged/neoforge/21.11.45/neoforge-21.11.45-server.jar",
           f"{path}{ver}/neoforge-{ver}-server.jar")
+
+# --- which Java a launch command actually invokes ---------------------------
+# Crafty stores no java_version: the runtime is baked into execution_command,
+# and Crafty rewrites that command whenever a loader install finishes. Every
+# path here is one java_candidates() can actually produce, because a shape the
+# parser misses is reported to the user as "unknown" rather than as the wrong
+# version it really is.
+for cmd, major, pinned, why in [
+    ("/usr/lib/jvm/java-21-openjdk-amd64/bin/java -Xms2G -jar s.jar nogui",
+     21, True, "the standard Debian path"),
+    ('"/usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java" -jar s.jar',
+     8, True, "quoted, and Java 8 keeps its jre/ level"),
+    ("/usr/lib/jvm/java-1.8.0-openjdk-amd64/jre/bin/java -jar s.jar",
+     8, True, "the 1.x spelling of the same runtime"),
+    ("/usr/lib/jvm/java-17-openjdk/bin/java -jar s.jar",
+     17, True, "no -amd64 suffix"),
+    ("/opt/java/openjdk-21/bin/java -jar s.jar",
+     21, True, "the official image's own layout"),
+    ("java -Xmx4G -jar forge.jar nogui",
+     None, False, "the container default -- unknown, and must not be guessed"),
+    ("/usr/bin/java -jar s.jar",
+     None, False, "a path with no version in it"),
+    ("", None, False, "a server Crafty has not built a command for yet"),
+]:
+    got = java_in_command(cmd)
+    check(f"java in command: {why}",
+          got["major"] == major and got["pinned"] is pinned, got)
+
+check("an unpinned java reports the executable it found, not nothing",
+      java_in_command("java -jar s.jar")["path"] == "java")
+check("a pack on 1.21.1 needs Java 21", required_java_major("1.21.1") == 21)
+check("a pack on 1.20.1 needs Java 17", required_java_major("1.20.1") == 17)
+check("1.20.5 is where the line moves", required_java_major("1.20.5") == 21
+      and required_java_major("1.20.4") == 17)
+
+# --- uptime, across a timezone boundary -------------------------------------
+# The Crafty container runs UTC and this host runs IST. Crafty writes `started`
+# in UTC but with no offset in the string, so anything that parses it against
+# the local clock reports a server that started an hour ago as starting four
+# and a half hours from now.
+import datetime as _dt  # noqa: E402
+
+_utc_ago = lambda s: (_dt.datetime.now(_dt.timezone.utc)
+                      - _dt.timedelta(seconds=s)).strftime("%Y-%m-%d %H:%M:%S")
+
+up = uptime_seconds({"started": _utc_ago(15120)})
+check("uptime reads a UTC `started` as UTC", up is not None and abs(up - 15120) <= 2, up)
+check("a stopped server has no uptime", uptime_seconds({"started": False}) is None)
+check("a server Crafty has never run has no uptime", uptime_seconds({}) is None)
+check("an unparseable timestamp is unknown, not zero",
+      uptime_seconds({"started": "yesterday"}) is None)
+check("a `started` in the future reads as unknown, not negative",
+      uptime_seconds({"started": (_dt.datetime.now(_dt.timezone.utc)
+                                  + _dt.timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")}) is None,
+      "a clock skew must not render as a negative uptime")
 
 print(f"\n{sum(ok)}/{len(ok)} checks passed")
 sys.exit(0 if all(ok) else 1)

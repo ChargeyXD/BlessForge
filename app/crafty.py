@@ -34,6 +34,7 @@ non-obvious parts are called out because getting them wrong fails silently:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import hashlib
 import json
 import pathlib
@@ -283,6 +284,61 @@ def java_candidates(major: int) -> list[str]:
         f"/usr/lib/jvm/java-{major}-openjdk/bin/java",
         f"/opt/java/openjdk-{major}/bin/java",
     ]
+
+
+# Crafty keeps no java_version field: the runtime is baked into
+# execution_command, and its own loader-installer thread rewrites that command
+# whenever it finishes. So the only truthful answer to "which Java will this
+# server actually use" is the one parsed back out of the command that runs.
+# The path is matched first and the major read out of it second, because
+# java_candidates() offers two shapes -- java-21-openjdk-amd64 and
+# openjdk-21 -- and one regex trying to cover both stops covering either.
+_JAVA_PATH = re.compile(r"(/\S*?/(?:jre/)?bin/java)(?=[\s\"']|$)")
+_JAVA_MAJOR = re.compile(r"(?:java|openjdk)-(?:1\.)?(\d+)")
+
+
+def uptime_seconds(stats: dict) -> int | None:
+    """How long a server has been up, from the stats payload, in seconds.
+
+    Crafty writes `started` in UTC with an explicit tzinfo and no offset in
+    the string, which is the only reason this is safe to compute at all: the
+    browser cannot parse it against its own clock without being wrong, because
+    this host runs IST while the Crafty container runs UTC -- a server started
+    an hour ago would read as starting four and a half hours from now. Crafty
+    sets the field to `False`, not "", while the server is stopped.
+    """
+    started = stats.get("started")
+    if not started or not isinstance(started, str):
+        return None
+    try:
+        t = datetime.datetime.strptime(started, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc
+        )
+    except ValueError:
+        return None
+    secs = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
+    # A clock skew between here and the Crafty host should read as "unknown",
+    # never as a server that starts in the future.
+    return round(secs) if secs >= 0 else None
+
+
+def java_in_command(command: str) -> dict:
+    """Which Java a server's launch command actually invokes.
+
+    `major` is None when the command just says `java`: that is the Crafty
+    container's default runtime, and nothing in the command says which version
+    that is. Reporting it as unknown is honest; guessing is not.
+    """
+    command = command or ""
+    m = _JAVA_PATH.search(command)
+    if m:
+        path = m.group(1)
+        v = _JAVA_MAJOR.search(path)
+        return {"path": path, "major": int(v.group(1)) if v else None,
+                "pinned": bool(v)}
+    if re.search(r"(?:^|[\s\"'])java(?:[\s\"']|$)", command):
+        return {"path": "java", "major": None, "pinned": False}
+    return {"path": None, "major": None, "pinned": False}
 
 
 async def set_java_version(server_id: str, mc_version: str) -> dict:

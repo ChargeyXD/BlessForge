@@ -60,6 +60,29 @@ window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape
 await sleep(200);
 check("escape closes it", !$(".sheet.pal"));
 
+// confirmSheet is the app's only "are you sure". It resolved false from BOTH
+// buttons -- close() runs onClose, which is the dismissed answer, and it ran
+// before resolve(true) -- so cancelling a job, pulling a model and deleting a
+// server all silently did nothing. Both answers are asserted, because a
+// confirm that always says no looks exactly like a working one.
+{
+  const p = window.__bf.confirmSheet({ title: "Regression", message: "Say yes.",
+                                       confirmLabel: "Yes" });
+  await sleep(300);
+  check("confirmSheet opens", !!$(".sheet.sm"));
+  $$(".sheet.sm footer .btn").pop().click();
+  check("confirming resolves true", (await p) === true,
+        "it resolved false from both buttons until 2026-08-29");
+  const q = window.__bf.confirmSheet({ title: "Regression", message: "Say no." });
+  await sleep(300);
+  $$(".sheet.sm footer .btn")[0].click();
+  check("cancelling resolves false", (await q) === false);
+  const r = window.__bf.confirmSheet({ title: "Regression", message: "Dismiss me." });
+  await sleep(300);
+  window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  check("dismissing resolves false", (await r) === false);
+}
+
 window.__bf.toast("hello", "ok");
 await sleep(100);
 check("toasts render", !!$(".toast.ok"));

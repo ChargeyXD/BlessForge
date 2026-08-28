@@ -353,7 +353,10 @@ async def instances() -> dict:
             info["players"] = stats.get("online")
             info["max_players"] = stats.get("max")
             info["cpu"] = stats.get("cpu")
-            info["mem"] = stats.get("mem")
+            # Crafty reports `mem` as a human string ("1.2GB") and the share
+            # of host RAM separately. The gauges want the number.
+            info["mem"] = stats.get("mem_percent")
+            info["mem_text"] = stats.get("mem")
             info["world_size"] = stats.get("world_size")
             # Crafty tracks this itself; no need to go looking for crash
             # reports on every card of a fleet list to find out.
@@ -403,7 +406,60 @@ async def instance_detail(server_id: str) -> dict:
             stats = await crafty.get_stats(server_id)
         except Exception:
             stats = {}
-        return {"server": server, "manifest": manifest, "stats": stats}
+        info = {
+            "reachable": True,          # Crafty answered, or we would not be here
+            "running": bool(stats.get("running")),
+            "crashed": bool(stats.get("crashed")),
+            "incomplete": bool(manifest) and not manifest.get("complete", True),
+        }
+        return {
+            "server": server,
+            "manifest": manifest,
+            "stats": stats,
+            # Same field, same rule as the fleet list: one word for what is
+            # going on, decided in one place.
+            "state": _instance_state(info),
+            "java": _java_facts(server, manifest),
+            "uptime_s": crafty.uptime_seconds(stats),
+        }
+    except Exception as e:
+        raise _err(e)
+
+
+def _java_facts(server: dict, manifest: dict) -> dict:
+    """Which Java runs this server, and whether it is the right one.
+
+    Computed here rather than in the browser for the same reason `state` is:
+    Crafty stores no java_version, the answer has to be parsed back out of
+    execution_command, and one implementation of that parse is enough.
+    """
+    facts = crafty.java_in_command(server.get("execution_command") or "")
+    mc = manifest.get("minecraft")
+    if not mc:
+        m = re.search(r"(\d+\.\d+(?:\.\d+)?)", server.get("executable") or "")
+        mc = m.group(1) if m else ""
+    facts["minecraft"] = mc or None
+    facts["required"] = crafty.required_java_major(mc) if mc else None
+    # None, not False, when the command names no version: "we cannot tell"
+    # and "it is wrong" are different answers and must not share a colour.
+    facts["ok"] = (
+        facts["major"] == facts["required"]
+        if facts["major"] and facts["required"] else None
+    )
+    return facts
+
+
+@app.get("/api/instances/{server_id}/stats")
+async def instance_stats(server_id: str) -> dict:
+    """Just the live numbers, for surfaces that tick while you watch them.
+
+    The Situation screen refreshes this every few seconds; going through
+    /api/instances/{id} for it would re-read the manifest off Crafty's disk
+    each time to redraw a CPU bar.
+    """
+    try:
+        stats = await crafty.get_stats(server_id)
+        return {**stats, "uptime_s": crafty.uptime_seconds(stats)}
     except Exception as e:
         raise _err(e)
 

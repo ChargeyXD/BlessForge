@@ -12,26 +12,28 @@ you want done."**
 ## 0. Where this is right now
 
 **The front end is mid-rebuild.** A new interface, designed from scratch in
-Claude Design, is replacing the old one. The shell and one screen are
-finished; nine screens are placeholders that say so on screen.
+Claude Design, is replacing the old one. The shell and **two** screens are
+finished; eight screens are placeholders that say so on screen.
 
-**Committed on branch `rebuild/ui-and-mod-roulette`**, one commit
-(`7f43f10`) covering all three sessions — the four bodies of change overlap
-too heavily in `main.py`, `installer.py` and `app.js` to split by hunk without
-producing commits that fail their own tests. **Not merged and not pushed**;
+**Committed on branch `rebuild/ui-and-mod-roulette`**, two commits: `7f43f10`
+covering the first three sessions, and `9ba08ef` for Situation (§5E). The first
+one is one commit because the four bodies of change in it overlap too heavily in
+`main.py`, `installer.py` and `app.js` to split by hunk without producing
+commits that fail their own tests. **Not merged and not pushed**;
 `main` is untouched. The container runs the local tree, not GHCR, so merging
 is a separate decision from deploying.
 
-**The next job is §5D: finish the remaining screens.** Read §4 for how a
-screen is built, §5D for what each one needs, and `design/README.md` for the
-places the design guessed wrong about this app — those corrections are not
-optional, they are the difference between the UI telling the truth and
-inventing numbers.
+**The next job is §5D: finish the remaining screens.** Situation landed on
+2026-08-29 (§5E); **Mods is next**. Read §4 for how a screen is built, §5D for
+what each one needs, §5E for the shape Situation settled on, and
+`design/README.md` for the places the design guessed wrong about this app —
+those corrections are not optional, they are the difference between the UI
+telling the truth and inventing numbers.
 
 | | |
 |---|---|
 | Deployed | `http://<host>:8710`, healthy, ~70 MB under a 1 GB cap |
-| Tests | **121 checks**, all passing (see §9) |
+| Tests | **200 checks**, all passing (see §9) |
 | Servers in Crafty | **none** — the fleet is empty, so instance screens have nothing to render against. Roll one from Discover → Mod Roulette. |
 
 ---
@@ -120,10 +122,11 @@ override.
 
 ```
 app/
-  main.py         1758  FastAPI: every route, static serving, cache-busting fingerprint
+  main.py         1815  FastAPI: every route, static serving, cache-busting fingerprint
   installer.py    1281  the install pipeline; loader wait + repair (§6.3)
   diagnostics.py  1165  health checks, crash-log parsing, findings
-  crafty.py        794  Crafty API client — the only thing that talks to Crafty
+  crafty.py        850  Crafty API client — the only thing that talks to Crafty, and
+                        the only place that interprets what it says back
   mods.py          641  mod listing, toggle, delete, identify
   ai.py           1114  Ollama client, action vocabulary, re-validation
   packs.py         468  pack plans, archive shape detection, loader mapping
@@ -140,7 +143,7 @@ app/
   jobs.py          266  job model + SSE
   configs.py       168  config file tree
   config.py        164  env parsing, paths
-  static/         index.html (86) · app.js (1367) · style.css (696)
+  static/         index.html (86) · app.js (1796) · style.css (804)
   static/img/     the design's assets, downscaled — see design/README.md
 dev/              test tooling — see dev/README.md
 design/           the Claude Design canvas the new UI is built from, and its
@@ -354,7 +357,7 @@ chip that opens the instance.
 `dev/tools/test_job_stream.py` (10) and `dev/tools/test_install_decisions.py`
 (20, grown since). `dev/ui-tests/04-terminal-and-review.mjs` was written here
 and retired with the front end on 2026-08-29 — see §5C. The suite today is
-**121 checks**; §9 runs it.
+**200 checks**; §9 runs it.
 
 `app.js` exposes `window.__bf` — a deliberately small test seam for entry
 points with no clickable path that does not also depend on a live CurseForge
@@ -469,11 +472,12 @@ If it needs to look itself up by id it sets `el.__mount`, which `go()` calls
 **after** attaching — doing that work in a microtask finds nothing, which cost
 an hour to spot.
 
-**Done:** the shell, systems panel, palette, job drawer, toasts, sheets, and
-**Mod Roulette** end to end (27 jsdom checks against the live backend).
+**Done:** the shell, systems panel, palette, job drawer, toasts, sheets,
+**Mod Roulette** end to end (27 jsdom checks against the live backend), and
+**Situation** (§5E, 58 checks).
 
-**Not done:** Situation, Diagnose, Mods, Tune, Console, Configs, Activity,
-Catalogue, Import. Each is a `soon()` placeholder that says so on screen.
+**Not done:** Mods, Diagnose, Console, Tune, Configs, Activity, Catalogue,
+Import. Each is a `soon()` placeholder that says so on screen.
 
 Corrections made to the design's guesswork are listed in `design/README.md`.
 The two that needed backend work: `/api/health` now measures Crafty's
@@ -490,9 +494,10 @@ hang. It streams `Pinning builds (40/85)` instead.
 
 ---
 
-## 5D. What is left: nine screens
+## 5D. What is left: eight screens
 
-Each is a `soon()` placeholder in `app.js` today. Build them one at a time,
+Situation (item 1 below) was built on 2026-08-29; see §5E. The rest are each a
+`soon()` placeholder in `app.js` today. Build them one at a time,
 deploy, and drive each with a jsdom harness before moving on — that loop is
 what caught every bug worth catching in the last three sessions.
 
@@ -502,14 +507,8 @@ what the design invented, and those inventions are copy-paste-ready mistakes.
 
 ### The order I would take them in
 
-**1. Situation** (`data-screen-label="Situation"`) — the landing screen for a
-server, and the one that makes the fleet worth clicking into. Needs
-`GET /api/instances/{id}`, `/diagnose` for the "needs you" list, `/port`, and
-`DELETE /api/instances/{id}?files=`. Its distinctive idea is that removing a
-server is **two different buttons, deliberately not one**: forget the record,
-or delete the world. The second demands the name be typed — `confirmSheet`
-already supports `typeToConfirm`. This is also the only place the UI can offer
-to clear an `orphan`, which is the state the user's own machine has hit twice.
+**1. Situation** — ~~built 2026-08-29~~. See §5E for what it does and the two
+things §5D got wrong about it.
 
 **2. Mods** (`"Mods"`) — the densest screen and the most used. `GET
 /mods`, `/mods/toggle`, `/bulk-toggle`, `/delete`, `/add`, `/identify`,
@@ -571,6 +570,83 @@ progress), `/uploads`, and re-import into an existing server through
   `:root`, so it is a `[data-theme="light"]` block, but it is real work.
 - 360 px has never been looked at either. The breakpoints exist in §8 of
   `style.css`; nobody has opened them.
+
+---
+
+## 5E. Situation (2026-08-29) — the first instance screen
+
+`RENDER["instance:situation"]` in `app.js`, §12 of `style.css`,
+`dev/ui-tests/06-situation.mjs` (58 checks). The screen is the design's:
+a power card with a state rail and four tiles, "needs you" beside it, then
+pack / facts / removal across the bottom.
+
+**Two things §5D got wrong about it, found while building it:**
+
+- **It cannot clear an `orphan`.** `/api/instances/{id}` calls
+  `crafty.get_server`, and Crafty answers 500 forever for a server whose files
+  are gone — so `openInstance` never reaches this screen for an orphan, it
+  renders the "Crafty cannot open this server" card instead. If the UI is to
+  offer removing an orphaned record, the button belongs on **that** card.
+  Nothing was moved there; the state's copy is written and the code path is
+  reachable if the detail call ever starts succeeding, but the practical route
+  is still Crafty's own panel.
+- **`confirmSheet` never returned true.** `close()` runs `onClose`, which is
+  the dismissed answer, and it ran *before* `resolve(true)` — so the promise
+  settled `false` from **both** buttons. Cancelling a job, pulling the AI model
+  and (once this screen existed) deleting a server all silently did nothing.
+  Fixed by settling before closing, once, behind a guard. `smoke.mjs` asserts
+  all three answers, because a confirm that always says no looks exactly like
+  one that works. The roulette screen was unaffected: it builds its own
+  `sheet()` rather than using `confirmSheet`, which is why 27 passing checks
+  never caught it.
+
+**Corrections to the design, on top of `design/README.md`'s list:**
+
+| The design says | What is rendered |
+|---|---|
+| A `TPS` tile | Nothing in Crafty measures TPS. The fourth tile is the world size — which is also the number the delete button below is really asking about. |
+| `Heap 6.1 / 8.0 GB` | Crafty measures the JVM **process**, not the heap inside it. The tile is "Memory" and says `process, not heap`. |
+| `Crashed on boot · 3 attempts` | Nothing counts attempts. The crashed copy says Crafty flagged it and points at Diagnose. |
+| `files stay in /srv/minecraft/<id>` | `path` off the server record — `/crafty/servers/<id>` here. |
+| `TPS has sat at 18.4…` as the running blurb | Built from what Crafty actually returned: players, the version it reports, and its MOTD. |
+
+**Three backend gaps it exposed, all now closed:**
+
+- **The fleet's memory gauge was always empty.** Crafty returns `mem` as a
+  human string (`"1.2GB"`) and the percentage separately as `mem_percent`;
+  `/api/instances` was handing the string to a gauge that did
+  `width:${v}%`, so every card rendered `width:NaN%` and every tooltip read
+  `NaN%`. `mem` is now the number and `mem_text` the string.
+- **Nothing said which Java a server actually uses.** Crafty stores no
+  `java_version` — the runtime is baked into `execution_command`, which Crafty
+  *rewrites* whenever a loader install finishes (§8). `crafty.java_in_command`
+  parses it back out and `/api/instances/{id}` returns `java` with the major,
+  what the Minecraft version requires, and `ok`. `ok` is `null`, not `false`,
+  when the command just says `java`: "we cannot tell" and "it is wrong" are
+  different answers and must not share a colour.
+- **Uptime could not be computed in the browser.** Crafty writes `started` in
+  UTC with no offset in the string, and this host runs IST — parsing it against
+  the local clock reports a server started an hour ago as starting four and a
+  half hours from now. `crafty.uptime_seconds` does it server-side and returns
+  `None` rather than a negative on clock skew.
+
+Also added: `GET /api/instances/{id}/stats`, one Crafty call, because the
+screen refreshes its numbers every 6 s while the server is running and going
+through `/api/instances/{id}` for that would re-read the manifest off Crafty's
+disk each tick. The poll is registered with `onLeave` and the harness asserts
+it stops — an interval left behind polls Crafty for the life of the page.
+
+**Seen in a browser, finally.** `dev/ui-tests/screenshot.mjs` was rewritten
+(the old one still drove the front end replaced on 2026-08-29) and now shoots
+the shell and this screen at 1440, 1000, 560 and 360 px. No horizontal
+overflow at any width, nothing collapsed to zero height, console clean. That
+closes §7.1 for these two screens and §7.3 for the first time — 360 px works.
+
+**Not verified:** every number on this screen came from a fixture. The shapes
+are Crafty's own (`ServerStats` columns, read out of the running container),
+but no real server has been rendered, and no power button has been pressed
+against one. Set `BF_SERVER_ID` and re-run `06-situation.mjs` when there is a
+server; the read half will pass through to it.
 
 ---
 
@@ -672,18 +748,23 @@ missing from disk.
 
 ### Not verified (do this before trusting it)
 
-1. **The new front end has only been seen through jsdom.** Nothing has been
-   looked at in a browser. The layout, the spacing, the colours in practice,
-   the animations, whether the spine holds fourteen servers gracefully — all
-   unverified. jsdom asserts structure and behaviour, not that it looks right.
-   `dev/ui-tests/screenshot.mjs` drives headless Chrome and is the fastest way
-   to find out.
+1. **Two screens have been seen in a browser; the rest have not.** The shell,
+   Mod Roulette and Situation were shot in headless Chrome on 2026-08-29 at
+   1440/1000/560/360 px — no sideways overflow, nothing collapsed, console
+   clean (§5E). Everything built from here still needs the same pass:
+   `dev/ui-tests/screenshot.mjs` is the fastest way, and jsdom will not tell
+   you. Still unseen at any width: whether the spine holds fourteen servers
+   gracefully, since the fleet has never had more than three.
 2. **Light theme does not exist yet.** Every colour is a token on `:root`, so
    it is a `[data-theme="light"]` block and nothing more — but nobody has
    written it, and the design only ever showed dark. There is also no toggle in
    the new shell.
-3. **360 px has never been opened.** The breakpoints are in §8 of `style.css`
-   and are guesses.
+3. **360 px works on the two screens that exist.** Verified 2026-08-29: the
+   spine stacks above the canvas, the power buttons go horizontal, the tiles go
+   2-up, and nothing overflows. The tab strip does wrap to a second row and
+   leaves the systems glyph alone on it, which is ugly but not broken. The
+   breakpoints are in §8 of `style.css`; every screen after this needs the same
+   look.
 4. **The terminal has only been driven against a stopped server** — and its
    screen has not been rebuilt yet in any case. The console *read* path is
    verified live (70 buffered lines came back from a real instance), and the
@@ -730,12 +811,13 @@ missing from disk.
 
 ### The rebuilt front end — known gaps
 
-24. **Nine screens are placeholders** (§5D). They render a card saying so
+24. **Eight screens are placeholders** (§5D). They render a card saying so
     rather than pretending to work.
-25. **`app.js` is one 1,367-line file and growing.** It cannot be split — the
+25. **`app.js` is one 1,796-line file and growing.** It cannot be split — the
     cache-busting fingerprint hashes exactly three names (§4) — so the only
-    lever is keeping sections marked and screens small.
-26. **No screenshot has ever been taken of it.** See §7.1.
+    lever is keeping sections marked and screens small. Situation added 430
+    lines; seven screens are left, and Mods is the densest of them.
+26. ~~**No screenshot has ever been taken of it.**~~ Taken 2026-08-29 (§5E).
 
 ### Known rough edges
 
@@ -822,6 +904,14 @@ breaks on them (`openInstance` failing leaves an explanation instead of an
 unhandled `TypeError` in a tab loader), but they can only be tidied up in
 Crafty itself.
 
+27. **The Situation screen polls `/stats` every 6 s while a server runs.** One
+    Crafty call per tick, torn down on leave and never started for a stopped
+    server, but it is a poll and two browser tabs on the same instance double
+    it — the same shape as the terminal's (§7.9).
+28. **`dev/ui-tests/screenshot-install-flow.mjs` is stale.** It drives the
+    front end replaced on 2026-08-29 and its selectors match nothing. Rewrite
+    it when the Catalogue screen lands.
+
 ### Environment hazards
 
 15. **Editing the app in the CasaOS UI rewrites
@@ -901,18 +991,27 @@ docker ps --filter name=blessforge --format '{{.Names}} | {{.Image}} | {{.Status
 curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 121 checks
+# the whole suite: 200 checks
 cd ~/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions test_roulette; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
-cd dev/ui-tests && for t in smoke 05-roulette; do
+cd dev/ui-tests && for t in smoke 05-roulette 06-situation; do
   docker run --rm --network host -v "$PWD":/w \
     -v "$HOME/blessforge/app/static":/static:ro -w /w \
     -e BF_URL=http://127.0.0.1:8710 node:20-alpine node "$t.mjs" | tail -1
 done
 # The jsdom harnesses drive the REAL backend. Writes are intercepted, but they
 # do read live CurseForge and Modrinth, so they need the network.
+# 06-situation uses fixtures for the instance payloads while the fleet is
+# empty; BF_SERVER_ID=<id> points its reads at a real server instead.
+
+# what it actually looks like — headless Chrome, four widths (§5E)
+mkdir -p /tmp/shots && chmod 777 /tmp/shots
+cd ~/blessforge/dev/ui-tests
+docker run --rm --network host -v "$PWD":/w:ro -v /tmp/shots:/out -w /home/pptruser \
+  ghcr.io/puppeteer/puppeteer:latest \
+  sh -c "cp /w/screenshot.mjs . && node screenshot.mjs && cp *.png /out/"
 
 # JS syntax check (there is no node on the host)
 docker run --rm -v "$PWD/app/static":/w:ro node:20-alpine node --check /w/app.js

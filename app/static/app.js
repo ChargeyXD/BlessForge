@@ -156,6 +156,12 @@ function sheet({ title, sub, body, size = "md", actions = [], onClose, top = fal
 function confirmSheet({ title, message, detail, confirmLabel = "Confirm",
                         cancelLabel = "Keep it", danger = false, typeToConfirm }) {
   return new Promise((resolve) => {
+    // Settle before closing, and only once. close() runs onClose, which is
+    // the "dismissed" answer -- so a confirm button that closed first and
+    // resolved second was answering `false` for both buttons, and every
+    // dialog in the app quietly did nothing.
+    let answered = false;
+    const settle = (v) => { if (!answered) { answered = true; resolve(v); } };
     const s = sheet({
       title, size: "sm",
       body: `
@@ -166,11 +172,11 @@ function confirmSheet({ title, message, detail, confirmLabel = "Confirm",
           <input class="field mono" id="typeGate" autocomplete="off" spellcheck="false"
                  style="margin-top:6px" aria-label="Type the name to confirm">` : ""}`,
       actions: [
-        { label: cancelLabel, onClick: (m) => { m.close(); resolve(false); } },
+        { label: cancelLabel, onClick: (m) => { settle(false); m.close(); } },
         { label: confirmLabel, cls: danger ? "danger" : "primary",
-          onClick: (m) => { m.close(); resolve(true); } },
+          onClick: (m) => { settle(true); m.close(); } },
       ],
-      onClose: () => resolve(false),
+      onClose: () => settle(false),
     });
     if (typeToConfirm) {
       const go = s.buttons[1];
@@ -311,8 +317,11 @@ function srvCard(s) {
   const meta = STATE_META[s.state] || STATE_META.stopped;
   const pack = s.pack ? [s.pack.name, s.pack.version].filter(Boolean).join(" · ")
                       : (s.managed ? "managed" : "unmanaged");
-  const gauge = (v, label) => `
-    <span class="gauge ${v > 85 ? "crit" : v > 60 ? "hot" : ""}" title="${label} ${pct(v)}">
+  // `v` is the percentage; Crafty's own human-readable string comes alongside
+  // it, and the tooltip is the one place there is room for both.
+  const gauge = (v, label, text) => `
+    <span class="gauge ${v > 85 ? "crit" : v > 60 ? "hot" : ""}"
+          title="${label} ${pct(v)}${text ? ` · ${esc(text)}` : ""}">
       <i style="width:${Math.max(0, Math.min(100, v || 0))}%"></i></span>`;
 
   return `
@@ -331,7 +340,7 @@ function srvCard(s) {
           : ""}
       </div>
       ${s.state === "running"
-        ? `<div class="srv-meta">${gauge(s.cpu, "CPU")}${gauge(s.mem, "Memory")}</div>`
+        ? `<div class="srv-meta">${gauge(s.cpu, "CPU")}${gauge(s.mem, "Memory", s.mem_text)}</div>`
         : s.state !== "stopped"
           ? `<div class="srv-note" style="color:var(--${meta.tone === "crit" ? "red-soft" : "amber"})">
                <span>${meta.tone === "crit" ? "✕" : "▲"}</span>
@@ -378,7 +387,8 @@ async function loadFleet() {
 async function openInstance(id) {
   try {
     const d = await api(`/api/instances/${id}`);
-    state.inst = { id, server: d.server, manifest: d.manifest || {}, stats: d.stats || {} };
+    state.inst = { id, server: d.server, manifest: d.manifest || {}, stats: d.stats || {},
+                   java: d.java || {}, st: d.state, uptime_s: d.uptime_s };
     state.mods = [];
     go("instance", "situation");
     loadFleet();
@@ -823,7 +833,6 @@ const soon = (name) => () => screen(`
   </div>`);
 
 RENDER["activity"]            = soon("Activity");
-RENDER["instance:situation"]  = soon("Situation");
 RENDER["instance:diagnose"]   = soon("Diagnose");
 RENDER["instance:mods"]       = soon("Mods");
 RENDER["instance:tune"]       = soon("Tune");
@@ -1347,6 +1356,429 @@ async function acceptRoll() {
     ],
   });
   return dlg;
+}
+
+/* --- screen: Situation ----------------------------------------------------
+   The landing screen for a server: what it is doing, what wants attention,
+   what it is made of, and how to get rid of it.
+
+   Two things here are deliberate rather than incidental.
+
+   Removal is *two* buttons. Forgetting Crafty's record and deleting the world
+   are different acts with different consequences, and the version of this
+   with one button and a checkbox gets clicked through. The destructive half
+   demands the name be typed.
+
+   Nothing waits on /diagnose. That call reads the whole log, and on an
+   instance with a crash report it also runs the attribution pass, so it can
+   take seconds. The facts come from one call and paint at once; the "needs
+   you" list arrives into a skeleton. */
+
+const POWER = {
+  running:    { tone: "ok",   head: "Running." },
+  stopped:    { tone: "",     head: "Stopped and idle.",
+                blurb: "Nothing is wrong with it. It is simply not running." },
+  crashed:    { tone: "crit", head: "It stopped on its own.",
+                blurb: "Crafty flagged this server as crashed. Diagnose reads the "
+                     + "report and names the jars the log actually implicates, "
+                     + "with the line that implicates each." },
+  incomplete: { tone: "warn", head: "The install never finished.",
+                blurb: "The instance was kept on purpose rather than rolled back, so "
+                     + "the work already done is not lost. Nothing here resumes it: "
+                     + "install the pack again from Discover, or remove it below." },
+  orphan:     { tone: "warn", head: "Crafty has a record. The disk does not.",
+                blurb: "The server directory is gone, so Crafty errors on this record "
+                     + "and will keep doing so. Removing the record is the way out." },
+};
+
+/** "4h 12m" — a duration, not a clock time. */
+function dur(s) {
+  if (s == null) return "";
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60) % 60, h = Math.floor(s / 3600) % 24, d = Math.floor(s / 86400);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+const SEV = {
+  critical: { tone: "crit", g: "✕" },
+  error:    { tone: "crit", g: "✕" },
+  warning:  { tone: "warn", g: "▲" },
+  info:     { tone: "info", g: "ⓘ" },
+};
+
+// Which screen actually fixes a finding. A finding that opens the wrong tab
+// is worse than one that opens none, so anything unrecognised goes to
+// Diagnose -- which is where every fix lives anyway.
+const FIX_TAB = {
+  disable_mods: "mods", find_client_only: "mods", retry_mod: "mods",
+  fix_versions: "mods", identify_mods: "mods", install_dependency: "mods",
+  find_duplicates: "mods",
+  raise_ram: "tune", set_java: "tune", change_java: "tune",
+};
+
+function needTab(f) {
+  const byFix = FIX_TAB[f.fix && f.fix.action];
+  if (byFix) return byFix;
+  if (f.category === "mods") return "mods";
+  if (f.category === "resources" || f.category === "runtime") return "tune";
+  return "diagnose";
+}
+
+RENDER["instance:situation"] = async () => {
+  const id = state.inst.id;
+  // Refreshed rather than reused: this is the screen people come back to in
+  // order to read the numbers, and a cached CPU figure is worse than none.
+  // The port is its own call because only /port compares Crafty's record
+  // against what server.properties actually says.
+  const [d, port] = await Promise.all([
+    api(`/api/instances/${id}`),
+    api(`/api/instances/${id}/port`).catch(() => null),
+  ]);
+  Object.assign(state.inst, {
+    server: d.server, manifest: d.manifest || {}, stats: d.stats || {},
+    java: d.java || {}, st: d.state, uptime_s: d.uptime_s,
+  });
+  paintContext();
+
+  const el = screen(situationHTML(port));
+  el.__mount = () => mountSituation(el, port);
+  return el;
+};
+
+function powStats() {
+  const s = state.inst.stats || {};
+  const live = state.inst.st === "running";
+  const players = live && s.max ? `${s.online || 0}/${s.max}` : "—";
+  return [
+    { k: "Players", v: players, c: "var(--text)",
+      pct: live && s.max ? ((s.online || 0) / s.max) * 100 : null },
+    { k: "CPU", v: live && s.cpu != null ? pct(s.cpu) : "—", c: "var(--ember)",
+      pct: live ? s.cpu : null },
+    // Crafty measures the JVM process, not the heap inside it. Calling this
+    // "Heap" (as the design did) would put a number next to a word it is not.
+    { k: "Memory", v: live ? (s.mem || "—") : "—", c: "var(--blue)",
+      pct: live ? s.mem_percent : null,
+      sub: live && s.mem_percent != null ? `${Math.round(s.mem_percent)}% of host RAM` : "process, not heap" },
+    // No fourth percentage exists. The design put TPS here; nothing in
+    // Crafty measures TPS, so this is the world on disk instead -- which is
+    // also the number the delete button below is really asking about.
+    { k: "World", v: s.world_size || "—", c: "var(--text-1)", pct: null,
+      sub: s.world_name && s.world_name !== "world" ? esc(s.world_name) : "on disk" },
+  ];
+}
+
+function statTile(m) {
+  return `
+    <div class="stat">
+      <div class="k">${esc(m.k)}</div>
+      <div class="v" style="color:${m.c}">${esc(m.v)}</div>
+      ${m.pct != null
+        ? `<div class="bar" style="margin-top:6px"><i style="width:${Math.max(0, Math.min(100, m.pct))}%;background:${m.c}"></i></div>`
+        : m.sub ? `<div class="sub">${m.sub}</div>` : ""}
+    </div>`;
+}
+
+function powBlurb() {
+  const i = state.inst, s = i.stats || {};
+  const meta = POWER[i.st] || POWER.stopped;
+  if (i.st !== "running") return meta.blurb || "";
+  const bits = [];
+  if (s.max) bits.push(`${s.online || 0} of ${s.max} player${s.max === 1 ? "" : "s"} connected`);
+  if (s.version) bits.push(`reporting ${s.version}`);
+  // Crafty's MOTD placeholder when its own ping fails. Saying so is the
+  // point: a running server Crafty cannot reach is usually the port.
+  if (s.desc && s.desc !== "Unable to Connect") bits.push(`“${s.desc}”`);
+  return bits.join(" · ") || "Crafty is watching the process, but has not managed to ping it.";
+}
+
+function situationHTML(port) {
+  const i = state.inst, s = i.stats || {}, m = i.manifest || {};
+  const meta = POWER[i.st] || POWER.stopped;
+  const smeta = STATE_META[i.st] || STATE_META.stopped;
+  const live = i.st === "running";
+  const up = live && i.uptime_s != null ? ` · UP ${dur(i.uptime_s)}` : "";
+
+  const btn = (id, glyph, label, { primary = false, off = false } = {}) => `
+    <button class="btn ${primary ? "primary" : ""}" data-act="${id}" ${off ? "disabled" : ""}>
+      <span class="mono">${glyph}</span>${esc(label)}</button>`;
+
+  const pack = m.pack || null;
+  const packName = pack ? (pack.name || "Unnamed pack") : "Not installed by BlessForge";
+  const packInitials = pack ? (pack.name || "??").replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "??" : "⌀";
+  const packLines = pack
+    ? [[pack.install_source || pack.source || "curseforge", m.minecraft, m.loader].filter(Boolean).join(" · "),
+       [(m.mods || []).length ? `${(m.mods || []).length} mods` : null,
+        pack.version || null,
+        m.installed_at ? `installed ${ago(m.installed_at)}` : null].filter(Boolean).join(" · ")]
+      .filter(Boolean)
+    : ["unmanaged · BlessForge has no manifest for this server",
+       "Its mods and config were put there by something else."];
+
+  const j = i.java || {};
+  const javaText = j.major
+    ? `${j.major}${j.required && j.major !== j.required ? `  ← needs ${j.required}` : ""}`
+    : j.path ? "container default (unpinned)" : "—";
+  const javaColour = j.ok === true ? "var(--green)" : j.ok === false ? "var(--red-soft)" : "var(--text-3)";
+
+  const facts = [
+    { k: "minecraft", v: m.minecraft || j.minecraft || "—" },
+    { k: "loader", v: [m.loader, m.loader_version].filter(Boolean).join(" ") || "—" },
+    { k: "port", v: ":" + (i.server.server_port ?? "—"),
+      c: port && port.mismatch ? "var(--amber)" : undefined },
+    { k: "jar", v: (i.server.executable || "—").split("/").pop() },
+    { k: "java", v: javaText, c: javaColour },
+    { k: "auto-start", v: i.server.auto_start ? "on" : "off" },
+    { k: "created", v: i.server.created ? String(i.server.created).slice(0, 10) : "—" },
+    { k: "data dir", v: i.server.path || "—", wide: true },
+  ];
+
+  return `
+    <div class="sit-top">
+      <section class="card pow ${smeta.tone}">
+        <div class="pow-head">
+          <div style="min-width:0;flex:1">
+            <div class="pow-state">
+              <span class="dot ${smeta.live ? "live" : ""}"></span>${esc(smeta.label)}${esc(up)}
+            </div>
+            <h2>${esc(meta.head)}</h2>
+            <p>${esc(powBlurb())}</p>
+          </div>
+          <div class="pow-acts">
+            ${btn("start_server", "▶", "Start", { primary: !live, off: live })}
+            ${btn("restart_server", "↻", "Restart", { primary: live, off: !live })}
+            ${btn("stop_server", "■", "Stop", { off: !live })}
+            ${live ? `<button class="btn sm ghost" data-act="kill_server"
+                        title="SIGKILL. The world is not saved first.">force kill</button>` : ""}
+          </div>
+        </div>
+        <div class="stats" style="margin-top:14px">${powStats().map(statTile).join("")}</div>
+      </section>
+
+      <section class="card needs">
+        <div class="sec-head">
+          <h2>Needs you</h2><span class="label">ranked by severity</span>
+        </div>
+        <div id="needsBody">
+          <div class="skel-row"></div><div class="skel-row"></div><div class="skel-row"></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="sit-trio">
+      <section class="card">
+        <div class="sec-head"><h2>Installed pack</h2></div>
+        <div class="packrow">
+          <span class="packmark">${esc(packInitials)}</span>
+          <div style="min-width:0">
+            <div class="packname">${esc(packName)}</div>
+            ${packLines.map((l) => `<div class="packmeta">${esc(l)}</div>`).join("")}
+          </div>
+        </div>
+        ${pack ? `
+          <div class="packacts">
+            <button class="btn sm" data-go="catalogue">Switch release</button>
+            <button class="btn sm" data-go="import">Re-import export</button>
+          </div>
+          <div class="note warn" style="margin-top:8px">
+            <span class="glyph">▲</span>
+            <span>Either one keeps the world and replaces every mod and config file.</span>
+          </div>`
+        : `<div class="hint" style="margin-top:10px">
+             Installing a pack into this server from Discover will record one.
+           </div>`}
+      </section>
+
+      <section class="card">
+        <div class="sec-head"><h2>Facts</h2></div>
+        <dl class="facts">
+          ${facts.map((f) => `
+            <dt${f.wide ? ' class="wide"' : ""}>${esc(f.k)}</dt>
+            <dd${f.wide ? ' class="wide"' : ""}${f.c ? ` style="color:${f.c}"` : ""}>${esc(f.v)}</dd>`).join("")}
+        </dl>
+      </section>
+
+      <section class="card danger">
+        <div class="sec-head"><h2>Remove this server</h2></div>
+        <p class="prose">Two different things, deliberately not one button.
+          Removing the panel record alone leaves the world on disk.</p>
+        <button class="wipe" data-act="forget">
+          Remove from the panel only
+          <span>files stay in ${esc(i.server.path || "the server directory")}</span>
+        </button>
+        <button class="wipe crit" data-act="destroy">
+          Delete the server and its world
+          <span>irreversible${s.world_size ? ` · ${esc(s.world_size)}` : ""} · requires typing the name</span>
+        </button>
+      </section>
+    </div>`;
+}
+
+function mountSituation(el, port) {
+  const id = state.inst.id;
+
+  $$("[data-act]", el).forEach((b) => { b.onclick = () => situationAction(b.dataset.act); });
+  $$("[data-go]", el).forEach((b) => { b.onclick = () => go("discover", b.dataset.go); });
+
+  loadNeeds(el, port);
+
+  // Live numbers, but only while there are live numbers to have: a stopped
+  // server's stats do not move, and this is one Crafty call per tick.
+  if (state.inst.st === "running") {
+    const t = setInterval(async () => {
+      try {
+        const s = await api(`/api/instances/${id}/stats`);
+        if (!el.isConnected) return;
+        state.inst.stats = s;
+        state.inst.uptime_s = s.uptime_s;
+        const box = $(".pow .stats", el);
+        if (box) box.innerHTML = powStats().map(statTile).join("");
+        const label = $(".pow-state", el);
+        if (label && s.uptime_s != null) {
+          label.innerHTML = `<span class="dot live"></span>${esc(STATE_META.running.label)} · UP ${esc(dur(s.uptime_s))}`;
+        }
+      } catch { /* one missed tick is not worth a toast */ }
+    }, 6000);
+    onLeave(() => clearInterval(t));
+  }
+}
+
+/** The "needs you" list: /diagnose, plus the two things only this screen can
+    see -- a port Crafty and server.properties disagree about, and a running
+    server Crafty cannot ping. */
+async function loadNeeds(el, port) {
+  const id = state.inst.id;
+  const host = $("#needsBody", el);
+  const extra = [];
+
+  if (port && port.mismatch) extra.push({
+    severity: "warning", category: "config",
+    title: `Crafty says port ${port.crafty_port}, server.properties says ${port.properties_port}`,
+    detail: port.note, fix: { action: "set_port" }, __tab: "tune",
+  });
+  if (state.inst.st === "running" && (state.inst.stats || {}).desc === "Unable to Connect") extra.push({
+    severity: "warning", category: "config",
+    title: "The server is up, but Crafty cannot ping it",
+    detail: "Crafty queries the port in its own record. When the process is "
+          + "running and the query fails, that record and the port Minecraft "
+          + "actually bound usually disagree.",
+    fix: { action: "set_port" }, __tab: "tune",
+  });
+
+  let diag;
+  try {
+    diag = await api(`/api/instances/${id}/diagnose`);
+  } catch (e) {
+    if (!el.isConnected) return;
+    host.innerHTML = `<div class="note crit"><span class="glyph">✕</span>
+      <span>Health checks could not run: ${esc(e.message)}</span></div>`;
+    return;
+  }
+  if (!el.isConnected) return;
+
+  const findings = [...extra, ...(diag.findings || [])]
+    .sort((a, b) => (["critical", "error", "warning", "info"].indexOf(a.severity)
+                   - ["critical", "error", "warning", "info"].indexOf(b.severity)));
+
+  // A managed instance records its own mod count; an unmanaged one does not,
+  // and the honest source for it is the directory listing /diagnose did.
+  if (diag.mod_count != null && !(state.inst.manifest || {}).pack) {
+    const line = $(".packmeta", el);
+    if (line) line.textContent = `unmanaged · ${diag.mod_count} jars found on disk`;
+  }
+
+  if (!findings.length) {
+    host.innerHTML = `<div class="note ok"><span class="glyph">✓</span>
+      <span>Nothing needs you. Every check BlessForge runs came back clean.</span></div>`;
+    return;
+  }
+
+  host.innerHTML = findings.map((f, n) => {
+    const sv = SEV[f.severity] || SEV.info;
+    return `
+      <button class="need ${sv.tone}" data-n="${n}" style="animation-delay:${n * 55}ms">
+        <span class="g">${sv.g}</span>
+        <span class="need-body">
+          <span class="t">${esc(f.title)}</span>
+          <span class="sub">${esc(f.severity)} · ${esc(f.category || "general")}</span>
+        </span>
+        <span class="caret">→</span>
+      </button>`;
+  }).join("");
+
+  $$(".need", host).forEach((b) => {
+    const f = findings[Number(b.dataset.n)];
+    b.onclick = () => go("instance", f.__tab || needTab(f));
+  });
+}
+
+/** Power and removal. Every one of these changes something on the host, so
+    each says what it did rather than leaving the screen to look unchanged. */
+async function situationAction(act) {
+  const i = state.inst, id = i.id, name = i.server.server_name;
+
+  if (act === "forget" || act === "destroy") {
+    const files = act === "destroy";
+    const ok = await confirmSheet({
+      title: files ? "Delete the server and its world" : "Remove the panel record",
+      message: files
+        ? `Everything under ${i.server.path || "the server directory"} is deleted, `
+        + `including the world. There is no undo and BlessForge keeps no backup.`
+        : `Crafty stops listing ${name}. The files are left exactly where they are, `
+        + `so it can be imported again later.`,
+      detail: files && (i.stats || {}).world_size ? `world size: ${i.stats.world_size}` : undefined,
+      confirmLabel: files ? "Delete it all" : "Remove the record",
+      danger: files,
+      typeToConfirm: files ? name : undefined,
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/instances/${id}?files=${files}`, { method: "DELETE" });
+      toast(files ? `${name} and its world were deleted.` : `${name} was removed from Crafty.`, "ok");
+      state.inst = null;
+      await loadFleet();
+      go("discover", "roulette");
+    } catch (e) { toast(e.message, "err"); }
+    return;
+  }
+
+  if (act === "kill_server") {
+    const ok = await confirmSheet({
+      title: "Force kill",
+      message: "The process is killed outright. Minecraft does not get to save, "
+             + "so anything since the last autosave is lost and the world can be "
+             + "left needing repair. Stop is the safe one.",
+      confirmLabel: "Kill it", danger: true,
+    });
+    if (!ok) return;
+  }
+
+  const verb = { start_server: "Starting", stop_server: "Stopping",
+                 restart_server: "Restarting", kill_server: "Killing" }[act];
+  const t = toast(`${verb} ${name}…`, "info", 0);
+  try {
+    const r = await api(`/api/instances/${id}/action/${act}`, { method: "POST" });
+    t.remove();
+    // _prepare_for_start re-asserts Java and normalises eula.txt before a
+    // start, because Crafty silently undoes both. Saying so is the only way
+    // anyone finds out it happened.
+    const p = r.prepared || {};
+    const fixed = [p.java ? `Java re-pinned to ${p.java}` : null,
+                   p.eula ? "eula.txt rewritten to the form Crafty accepts" : null]
+      .filter(Boolean);
+    toast(fixed.length ? `${verb} ${name} — ${fixed.join("; ")}.` : `${verb} ${name}.`, "ok");
+    // Crafty acknowledges the command before the process has moved, so give
+    // it a moment before asking what happened.
+    setTimeout(async () => {
+      await loadFleet();
+      if (state.view === "instance" && state.inst && state.inst.id === id
+          && state.tab === "situation") go("instance", "situation");
+    }, 2500);
+  } catch (e) {
+    t.remove();
+    toast(e.message, "err");
+  }
 }
 
 /* --- boot -----------------------------------------------------------------

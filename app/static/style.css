@@ -694,3 +694,111 @@ img { max-width: 100%; display: block; }
 .hold:hover { border-color: var(--line-strong); color: var(--text-2); }
 .hold.on { background: var(--amber-bg); border-color: var(--amber-line); color: var(--amber); font-weight: 700; }
 .hand-foot { padding: var(--s4) var(--s5); border-top: 1px solid var(--line); }
+
+/* --- 12. Situation ------------------------------------------------------- */
+
+/* Two columns above, three cards below. Both collapse rather than squeeze:
+   the "needs you" list is unreadable at half a column, and the removal card
+   is the one place where a cramped layout could get a world deleted. */
+.sit-top  { display: grid; grid-template-columns: minmax(300px,1.15fr) minmax(280px,1fr);
+            gap: var(--s4); }
+.sit-trio { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px,1fr));
+            gap: var(--s4); margin-top: var(--s4); }
+
+.sec-head { display: flex; align-items: baseline; justify-content: space-between;
+            gap: var(--s3); margin-bottom: var(--s4); }
+.sec-head h2 { font-size: var(--fs-13); font-weight: 600; letter-spacing: .01em; }
+
+/* The state rail. Same colour vocabulary as the fleet card's left edge, so a
+   server that reads amber in the spine reads amber here too. */
+.pow { position: relative; overflow: hidden; }
+.pow::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
+               background: var(--text-6); }
+.pow.ok::before   { background: var(--green); }
+.pow.warn::before { background: var(--amber); }
+.pow.crit::before { background: var(--red); }
+
+.pow-head { display: flex; align-items: flex-start; gap: var(--s4); }
+.pow-head h2 { margin-top: var(--s2); font-size: 22px; font-weight: 700;
+               letter-spacing: -.03em; line-height: 1.1; }
+.pow-head p  { margin-top: 5px; font-size: 12.5px; color: var(--text-3);
+               max-width: 46ch; line-height: 1.55; text-wrap: pretty; }
+.pow-state { display: flex; align-items: center; gap: 7px;
+             font-family: var(--mono); font-size: var(--fs-10); letter-spacing: .14em;
+             color: var(--text-5); }
+.pow.ok   .pow-state { color: var(--green); }
+.pow.warn .pow-state { color: var(--amber); }
+.pow.crit .pow-state { color: var(--red-soft); }
+.pow-state .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pow-state .dot.live { animation: bfBreathe 2.6s ease-in-out infinite; }
+.pow-acts { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; }
+.pow-acts .btn { min-width: 118px; justify-content: flex-start; gap: 7px; }
+.pow-acts .btn .mono { font-size: var(--fs-11); }
+
+/* A finding, as a row you can act on. The left edge carries the severity so
+   the list is scannable without reading it. */
+.need { display: flex; align-items: flex-start; gap: 9px; width: 100%;
+        text-align: left; padding: 9px 10px; margin-bottom: 4px;
+        border: 0; border-left: 2px solid var(--text-6); border-radius: 0 3px 3px 0;
+        background: var(--surface-3); animation: bfRow var(--animdur) both;
+        transition: background var(--t-fast); }
+.need:hover { background: var(--surface-4); }
+.need.warn { border-left-color: var(--amber); background: var(--amber-bg); }
+.need.crit { border-left-color: var(--red);   background: var(--red-bg); }
+.need.info { border-left-color: var(--blue);  background: var(--blue-bg); }
+.need .g { font-family: var(--mono); font-size: var(--fs-11); line-height: 1.4; color: var(--text-4); }
+.need.warn .g { color: var(--amber); }
+.need.crit .g { color: var(--red-soft); }
+.need.info .g { color: var(--blue); }
+.need-body { min-width: 0; flex: 1; }
+.need-body .t   { display: block; font-size: 12.5px; font-weight: 500; color: var(--text); }
+.need-body .sub { display: block; margin-top: 3px; font-family: var(--mono);
+                  font-size: var(--fs-9); color: var(--text-4); text-transform: uppercase;
+                  letter-spacing: .06em; }
+.need .caret { font-family: var(--mono); font-size: var(--fs-10); color: var(--text-5); flex: 0 0 auto; }
+
+.packrow { display: flex; gap: 10px; }
+.packmark { position: relative; width: 52px; height: 52px; flex: 0 0 52px;
+            display: grid; place-items: center; background: var(--surface-3);
+            border: 1px solid var(--line-strong); border-radius: var(--r-xs);
+            font-family: var(--mono); font-size: 17px; font-weight: 700; color: #41454C; }
+.packmark::after { content: ""; position: absolute; inset: auto 0 0 0; height: 2px;
+                   background: var(--ember); opacity: .5; }
+.packname { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+.packmeta { margin-top: 4px; font-family: var(--mono); font-size: var(--fs-10);
+            color: var(--text-4); line-height: 1.6; word-break: break-word; }
+.packacts { display: flex; gap: 5px; margin-top: var(--s4); }
+.packacts .btn { flex: 1; justify-content: center; }
+
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; margin: 0;
+         font-family: var(--mono); font-size: 10.5px; }
+.facts dt { color: var(--text-5); letter-spacing: .04em; }
+.facts dd { margin: 0; color: var(--text-1); text-align: right; word-break: break-all; }
+/* A value too long to sit opposite its label -- a server path is fifty
+   characters -- takes the full width instead of wrapping mid-UUID against a
+   right edge, where it reads as two unrelated fragments. */
+.facts dt.wide { grid-column: 1 / -1; margin-top: var(--s1); }
+.facts dd.wide { grid-column: 1 / -1; text-align: left; color: var(--text-3); }
+
+.card.danger { border-color: var(--red-line); }
+.card.danger .sec-head h2 { color: var(--red-soft); }
+.wipe { display: block; width: 100%; margin-top: 5px; padding: 8px;
+        text-align: left; border-radius: var(--r-xs);
+        border: 1px solid var(--line-strong); background: var(--surface-3);
+        font-family: var(--ui); font-size: var(--fs-12); font-weight: 500;
+        color: var(--text-1); transition: all var(--t-fast); }
+.wipe:hover { border-color: rgba(255,255,255,.28); }
+.wipe span { display: block; margin-top: 2px; font-family: var(--mono);
+             font-size: 9.5px; font-weight: 400; color: var(--text-5);
+             word-break: break-all; }
+.wipe.crit { border-color: var(--red-line); background: var(--red-bg);
+             color: var(--red-soft); font-weight: 600; }
+.wipe.crit:hover { background: rgba(255,59,92,.16); border-color: var(--red); }
+.wipe.crit span { color: #C4707E; }
+
+@media (max-width: 1080px) { .sit-top { grid-template-columns: 1fr; } }
+@media (max-width: 560px) {
+  .pow-head { flex-direction: column; }
+  .pow-acts { flex-direction: row; flex-wrap: wrap; width: 100%; }
+  .pow-acts .btn { min-width: 0; flex: 1; justify-content: center; }
+}
