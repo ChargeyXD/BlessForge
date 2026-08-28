@@ -1772,18 +1772,34 @@ async def job_events(job_id: str) -> StreamingResponse:
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    # The design canvas addresses its images as `assets/NAME`, and index.html
+    # is that canvas with its markup untouched. Serving img/ at /assets is what
+    # lets the template keep its own paths rather than being rewritten.
+    if (STATIC_DIR / "img").is_dir():
+        app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "img")),
+                  name="assets")
+
+
+# Everything the browser caches and that changes when the app is rebuilt.
+# support.js and the vendored React are content-addressed by their own
+# immutability -- they are pinned versions and never change -- but they are
+# fingerprinted anyway so one stale copy cannot outlive a redeploy.
+_VERSIONED = ("index.html", "support.js",
+              "vendor/react.production.min.js",
+              "vendor/react-dom.production.min.js",
+              "vendor/fonts.css")
 
 
 def _asset_version() -> str:
     """Fingerprint of the built frontend, used to bust browser caches.
 
     Without this, a rebuilt container still serves the browser's cached
-    app.js: the fix is deployed but the user sees the old behaviour and
+    scripts: the fix is deployed but the user sees the old behaviour and
     concludes it did not work. Derived from file mtimes so it changes on
     every build without needing a manual version bump.
     """
     stamp = 0.0
-    for name in ("app.js", "style.css", "index.html"):
+    for name in _VERSIONED:
         try:
             stamp = max(stamp, (STATIC_DIR / name).stat().st_mtime)
         except OSError:
@@ -1801,7 +1817,8 @@ async def index() -> Response:
 
     version = _asset_version()
     html = re.sub(
-        r'(/static/(?:app\.js|style\.css))(\?v=[^"\']*)?',
+        r'(/static/(?:support\.js|vendor/[A-Za-z0-9._/-]+?\.(?:js|css)))'
+        r'(\?v=[^"\']*)?',
         lambda m: f"{m.group(1)}?v={version}",
         html,
     )
