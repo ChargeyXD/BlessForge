@@ -2,6 +2,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import fs from "fs";
 
 const BASE = process.env.BF_URL || "http://127.0.0.1:8710";
+const SID = process.env.BF_SERVER_ID || "";   // prefer this instance if listed
 const STATIC = process.env.BF_STATIC || "/static";   // app/static, mounted read-only
 
 const html = fs.readFileSync(STATIC + "/index.html", "utf8");
@@ -77,10 +78,21 @@ check("jobs view active", $("#view-jobs").classList.contains("active"));
 check("jobs list rendered", $("#jobList").children.length > 0);
 
 // ---------- instance detail ----------
-const sid = $$("#instances .inst-card")[0].dataset.open;
-await window.openInstance ? null : null;
-$$("#instances .inst-card")[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+// Prefer the instance we were given. Clicking whichever card happens to be
+// first assumes every listed server is healthy, and that is not a safe
+// assumption: Crafty answers 500 for a server whose directory has gone
+// missing while still listing it, so the first card can be one that cannot
+// be opened at all.
+const cards = $$("#instances .inst-card");
+const wanted = SID ? cards.find((c) => c.dataset.open === SID) : null;
+const card = wanted || cards[0];
+const sid = card.dataset.open;
+check("test instance is present in the list", !!card, sid);
+card.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
 await sleep(3500);
+check("instance opened (Crafty answered for it)",
+      $("#instName").textContent !== "Could not open this instance",
+      $("#instName").textContent);
 check("instance view active", $("#view-instance").classList.contains("active"));
 check("instance name set", $("#instName").textContent.length > 0, $("#instName").textContent);
 check("instance meta tags rendered", $("#instMeta").children.length > 0);
@@ -168,7 +180,18 @@ window.document.querySelector("#addModBtn").click();
 await sleep(400);
 check("add-mod modal opens", !!$(".modal-back"));
 check("modal shell uses header h3 + .close", !!$(".modal header h3") && !!$(".modal header .close"));
-check("add-mod fields present", !!$("#amQ") && !!$("#amSrc") && !!$("#amGo") && !!$("#amResults"));
+// The Search button is gone on purpose: results are live as you type, so
+// #amQ drives the search itself and there is nothing left to press.
+check("add-mod fields present", !!$("#amQ") && !!$("#amSrc") && !!$("#amResults"));
+check("add-mod search is live, not button-driven", !$("#amGo"));
+{
+  const q = $("#amQ");
+  q.value = "jei";
+  q.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await sleep(900);
+  check("typing alone produces results",
+        !$("#amResults").textContent.includes("Start typing"));
+}
 $(".modal .close").click();
 await sleep(200);
 check("modal closes", !$(".modal-back"));

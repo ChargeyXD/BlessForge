@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from app import (
     mods as modmgr,
     optimizer,
     properties,
+    roulette,
     specs,
     uploads,
 )
@@ -50,6 +52,39 @@ def _err(e: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(e))
 
 
+# Activity lists every job the browser has seen, and "Dependency scan for
+# 12908773" tells nobody which of a dozen servers is being scanned. Resolving
+# the name costs one Crafty call, so it is cached briefly rather than made on
+# every job start.
+_NAME_CACHE: dict[str, tuple[float, str]] = {}
+_NAME_TTL = 60.0
+
+
+async def _instance_name(server_id: str | None) -> str | None:
+    if not server_id:
+        return None
+    cached = _NAME_CACHE.get(server_id)
+    if cached and time.time() - cached[0] < _NAME_TTL:
+        return cached[1]
+    try:
+        server = await asyncio.wait_for(crafty.get_server(server_id), timeout=5.0)
+        name = server.get("server_name") or server_id[:8]
+    except Exception:
+        # A job that cannot name its instance is still a job worth starting.
+        return None
+    _NAME_CACHE[server_id] = (time.time(), name)
+    return name
+
+
+async def _job_for(kind: str, title: str, server_id: str):
+    """Create a job already labelled with the instance it acts on."""
+    name = await _instance_name(server_id)
+    return registry.create(
+        kind, f"{title} — {name}" if name else title,
+        server_id=server_id, server_name=name,
+    )
+
+
 # --- health & config ---------------------------------------------------
 
 
@@ -67,8 +102,16 @@ async def health() -> dict:
 
     if state["crafty"]:
         try:
+            started = time.perf_counter()
             servers = await asyncio.wait_for(crafty.list_servers(), timeout=5.0)
-            checks["crafty"] = {"ok": True, "servers": len(servers)}
+            # Round-trip to Crafty. Worth showing: it is the difference
+            # between "the controller is on this box" and "the controller is
+            # across a link", which changes what every other number means.
+            checks["crafty"] = {
+                "ok": True,
+                "servers": len(servers),
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+            }
         except Exception as e:
             checks["crafty"] = {"ok": False, "error": str(e)}
     else:
@@ -128,7 +171,12 @@ def _storage_check() -> dict:
         )
         return {"ok": False, "error": f"{hint} ({e.__class__.__name__})",
                 "path": str(config.DATA_DIR)}
-    return {"ok": True, "path": str(config.DATA_DIR)}
+    free = None
+    try:
+        free = round(shutil.disk_usage(str(config.DATA_DIR)).free / 1024 ** 3, 1)
+    except OSError:
+        pass
+    return {"ok": True, "path": str(config.DATA_DIR), "free_gb": free}
 
 
 # --- browsing ----------------------------------------------------------
@@ -283,6 +331,12 @@ async def instances() -> dict:
             info["minecraft"] = manifest.get("minecraft")
             info["loader"] = manifest.get("loader")
             info["managed"] = bool(manifest.get("pack"))
+            # `complete` is written only when an install reaches the end, so
+            # its absence on a manifest BlessForge wrote means the install
+            # stopped half-way and left the instance behind. Defaults to True
+            # so instances created before this existed are not all accused.
+            info["incomplete"] = bool(manifest) and not manifest.get("complete", True)
+            info["problems"] = len(manifest.get("problems") or [])
         except Exception:
             info["managed"] = False
         # Infer loader/version from the executable path when unmanaged.
@@ -297,13 +351,47 @@ async def instances() -> dict:
             stats = await crafty.get_stats(sid)
             info["running"] = bool(stats.get("running"))
             info["players"] = stats.get("online")
+            info["max_players"] = stats.get("max")
             info["cpu"] = stats.get("cpu")
             info["mem"] = stats.get("mem")
+            info["world_size"] = stats.get("world_size")
+            # Crafty tracks this itself; no need to go looking for crash
+            # reports on every card of a fleet list to find out.
+            info["crashed"] = bool(stats.get("crashed"))
+            info["reachable"] = True
         except Exception:
+            # Crafty answers 500 for a server whose directory has gone
+            # missing, and keeps doing so until it is restarted. That is a
+            # state worth naming rather than an error to swallow.
             info["running"] = None
+            info["reachable"] = False
+        info["state"] = _instance_state(info)
         return info
 
     return {"items": await asyncio.gather(*(enrich(s) for s in servers))}
+
+
+def _instance_state(info: dict) -> str:
+    """One word for what is going on with a server.
+
+    Computed here rather than in the browser so that every surface -- the
+    fleet list, the palette, an activity chip -- agrees about what a server
+    is doing, and so the rules live next to the facts they are drawn from.
+
+    `orphan` is the one that matters: Crafty keeps a record for a server
+    whose files have been removed and then fails every request about it
+    forever after its next restart. It looks like a broken app unless it is
+    named.
+    """
+    if not info.get("reachable"):
+        return "orphan"
+    if info.get("running"):
+        return "running"
+    if info.get("incomplete"):
+        return "incomplete"
+    if info.get("crashed"):
+        return "crashed"
+    return "stopped"
 
 
 @app.get("/api/instances/{server_id}")
@@ -543,6 +631,30 @@ async def diagnose(server_id: str) -> dict:
         result["findings"].sort(
             key=lambda f: diagnostics.SEVERITY_ORDER.get(f.get("severity"), 9)
         )
+
+        # "The server crashed" is not a useful answer on its own. Whenever a
+        # crash report exists, the log is read end to end and the jars it
+        # actually implicates are named, with the line that implicates each.
+        if isinstance(logs, dict) and logs.get("crash_path"):
+            try:
+                review = await diagnostics.crash_review(server_id)
+                result["crash"] = review
+                if review.get("culprits"):
+                    top = review["culprits"][:4]
+                    result["findings"].insert(0, {
+                        "severity": "critical",
+                        "category": "mods",
+                        "title": f"Crash traced to {len(review['culprits'])} mod(s)",
+                        "detail": "; ".join(
+                            f"{c['file']} — {c['why']}" for c in top
+                        ),
+                        "fix": {"action": "disable_mods",
+                                "files": [c["file"] for c in top
+                                          if c["confidence"] != "low"]},
+                        "evidence": "\n".join(c["evidence"] for c in top)[:1500],
+                    })
+            except Exception:
+                pass
         return result
     except Exception as e:
         raise _err(e)
@@ -550,7 +662,7 @@ async def diagnose(server_id: str) -> dict:
 
 @app.post("/api/instances/{server_id}/deep-scan")
 async def deep_scan(server_id: str) -> dict:
-    job = registry.create("deep_scan", f"Dependency scan for {server_id[:8]}")
+    job = await _job_for("deep_scan", "Dependency scan", server_id)
     registry.start(job, lambda j: diagnostics.deep_scan(j, server_id))
     return {"job_id": job.id}
 
@@ -621,6 +733,138 @@ async def instance_logs(server_id: str, lines: int = 300) -> dict:
             "crash_path": result["crash_path"],
             "crash_tail": result["crash_tail"],
         }
+    except Exception as e:
+        raise _err(e)
+
+
+# --- terminal ----------------------------------------------------------
+#
+# Crafty keeps a live console buffer per server and also writes
+# logs/latest.log. Neither on its own is enough: the buffer is empty for a
+# server Crafty did not start itself (or that was running before Crafty
+# restarted), and the file lags behind by a flush. So "auto" reads the buffer
+# and falls back to the file, which is what someone opening a terminal
+# actually wants to see.
+
+# Crafty answers a missing log file with a line of prose rather than an
+# empty list, which would otherwise be rendered as the server's own output.
+_NO_LOG_FILE = "Unable to find file to tail"
+
+
+async def _console_snapshot(server_id: str, source: str = "auto",
+                            with_stats: bool = True) -> dict:
+    lines: list[str] = []
+    used = source
+    if source in ("auto", "buffer"):
+        try:
+            lines = await crafty.console_lines(server_id)
+            used = "buffer"
+        except crafty.CraftyError:
+            lines = []
+    if not lines and source in ("auto", "file"):
+        try:
+            file_lines = await crafty.console_lines(server_id, from_file=True)
+        except crafty.CraftyError:
+            file_lines = []
+        if len(file_lines) == 1 and _NO_LOG_FILE in file_lines[0]:
+            file_lines = []
+        if file_lines or source == "file":
+            lines, used = file_lines, "file"
+
+    running = None
+    if with_stats:
+        try:
+            stats = await crafty.get_stats(server_id)
+            running = bool(stats.get("running"))
+        except Exception:
+            running = False
+    return {"lines": lines, "source": used, "running": running,
+            "count": len(lines)}
+
+
+@app.get("/api/instances/{server_id}/console")
+async def console(server_id: str, source: str = "auto") -> dict:
+    """A snapshot of the server console."""
+    if source not in ("auto", "buffer", "file"):
+        raise HTTPException(400, "source must be auto, buffer or file")
+    try:
+        return await _console_snapshot(server_id, source)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/instances/{server_id}/console/stream")
+async def console_stream(server_id: str, source: str = "auto") -> StreamingResponse:
+    """Follow the console live.
+
+    Crafty exposes no push channel, so this polls it and forwards only what
+    is new. The diff is done here rather than in the browser so a reconnect
+    does not repaint the whole buffer, and so the wire carries one line
+    rather than the last five hundred every second.
+    """
+    async def stream():
+        seen: list[str] = []
+        idle = 0
+        tick = 0
+        running = False
+        try:
+            while True:
+                # Whether the server is up changes on the scale of minutes,
+                # not of the 1.5s poll the console needs, so it is asked for
+                # every fifth pass instead of doubling the calls to Crafty.
+                tick += 1
+                want_stats = tick % 5 == 1
+                try:
+                    snap = await _console_snapshot(server_id, source,
+                                                   with_stats=want_stats)
+                    if snap["running"] is not None:
+                        running = snap["running"]
+                    snap["running"] = running
+                except Exception as e:
+                    yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+                    await asyncio.sleep(5)
+                    continue
+
+                lines = snap["lines"]
+                # The buffer is a ring: when it wraps, the tail no longer
+                # starts where we left off, so fall back to sending the lot
+                # rather than silently dropping output.
+                if lines[: len(seen)] == seen:
+                    fresh = lines[len(seen):]
+                else:
+                    fresh = lines
+                    yield f"data: {json.dumps({'event': 'reset'})}\n\n"
+                seen = lines
+
+                if fresh:
+                    idle = 0
+                    yield "data: " + json.dumps({
+                        "event": "lines", "lines": fresh,
+                        "running": snap["running"], "source": snap["source"],
+                    }) + "\n\n"
+                else:
+                    idle += 1
+                    if idle % 10 == 0:
+                        yield "data: " + json.dumps({
+                            "event": "idle", "running": snap["running"],
+                            "source": snap["source"],
+                        }) + "\n\n"
+                await asyncio.sleep(1.5)
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/instances/{server_id}/command")
+async def send_command(server_id: str, body: dict = Body(...)) -> dict:
+    """Send one line to the server console."""
+    try:
+        return await crafty.send_command(server_id, body.get("command", ""))
     except Exception as e:
         raise _err(e)
 
@@ -708,6 +952,209 @@ async def install_preflight(body: dict = Body(...)) -> dict:
     return {"job_id": job.id}
 
 
+# --- mod roulette ------------------------------------------------------
+
+
+@app.get("/api/roulette/meta")
+async def roulette_meta() -> dict:
+    """The controls the roulette screen is built from, and the host it rolls for."""
+    return {
+        "categories": [
+            {k: c[k] for k in ("key", "title", "glyph", "color")}
+            for c in roulette.CATEGORIES
+        ],
+        "intensity": roulette.INTENSITY_LABELS,
+        "defaults": roulette.DEFAULT_CONSTRAINTS,
+        "loaders": ["Forge", "NeoForge", "Fabric", "Quilt"],
+        "sources": ["curseforge", "modrinth", "both"],
+        "host": specs.effective_host(),
+        "seed": roulette.mint_seed(),
+    }
+
+
+@app.post("/api/roulette/pool")
+async def roulette_pool(body: dict = Body(default={})) -> dict:
+    """Build (or reuse) the candidate pool for a set of constraints.
+
+    Returned as a job because the first build on a fresh Minecraft version is
+    dozens of catalogue requests; every later call is a disk read and
+    finishes immediately.
+    """
+    c = roulette.merge_constraints(body)
+    job = registry.create("roulette_pool", f"Pool for {c['loader']} {c['minecraft']}")
+
+    async def run(j) -> dict:
+        pool = await roulette.build_pool(
+            c["minecraft"], c["loader"], c["source"], job=j,
+            refresh=bool(body.get("refresh")),
+        )
+        allowed = roulette.eligible(pool["mods"], c)
+        j.log_line(f"{len(allowed)} of {len(pool['mods'])} mods pass these constraints")
+        return _pool_view(pool, allowed, c)
+
+    registry.start(job, run)
+    return {"job_id": job.id}
+
+
+def _pool_view(pool: dict, allowed: list[dict], c: dict) -> dict:
+    by_cat: dict[str, int] = {}
+    for m in allowed:
+        by_cat[m["category"]] = by_cat.get(m["category"], 0) + 1
+    return {
+        "minecraft": pool["minecraft"],
+        "loader": pool["loader"],
+        "source": pool["source"],
+        "total": len(pool["mods"]),
+        "eligible": len(allowed),
+        "by_category": by_cat,
+        "built_at": pool["built_at"],
+        "note": (
+            "Too narrow to deal a full hand. Un-ban a category or drop the "
+            "quality floor."
+            if len(allowed) < max(8, c["count"] // 4)
+            else f"{len(allowed)} of {len(pool['mods'])} pass your constraints "
+                 f"on {pool['minecraft']} / {pool['loader']}."
+        ),
+    }
+
+
+@app.post("/api/roulette/roll")
+async def roulette_roll(body: dict = Body(default={})) -> dict:
+    """Pull the lever. Deterministic: same seed + constraints == same hand.
+
+    Returned as a job rather than a plain response because dealing a hand of
+    120 mods means pinning 120 real builds, one catalogue request each. That
+    is fifteen seconds of honest work, and a spinner with nothing behind it
+    for fifteen seconds reads as a hang.
+    """
+    c = roulette.merge_constraints(body.get("constraints") or body)
+    seed = roulette.normalise_seed(body.get("seed"))
+    holds = [str(h) for h in (body.get("holds") or [])]
+    job = registry.create("roulette_roll", f"Rolling {seed}")
+
+    async def run(j) -> dict:
+        j.set_step("Reading the pool", 4)
+        pool = await roulette.build_pool(c["minecraft"], c["loader"], c["source"], job=j)
+        allowed = roulette.eligible(pool["mods"], c)
+        if len(allowed) < 5:
+            raise RuntimeError(
+                f"Only {len(allowed)} mods pass these constraints — not enough to "
+                "deal a hand. Un-ban a category or drop the quality floor."
+            )
+        # Deal generously, then pin real builds and drop whatever has none, so
+        # the hand shown is one that can actually be installed. Over-dealing
+        # first means a few unavailable mods do not silently shrink the pack.
+        wide = dict(c, count=min(len(allowed), int(c["count"] * 1.35) + 4))
+        dealt = roulette.deal(seed, pool["mods"], wide, holds)
+        j.set_step(f"Pinning a build for {len(dealt)} mods", 20)
+        hand, dropped = await roulette.resolve_hand(dealt, c, job=j)
+
+        # Side information only arrives with the file, so a mod the pool
+        # believed was server-safe can turn out not to be. Honour the toggle
+        # now that the truth is known, and use the over-deal to replace what
+        # leaves rather than handing back a short pack.
+        if not c["toggles"].get("client"):
+            kept = []
+            for m in hand:
+                if m.get("flag") == "CLIENT" and m["name"] not in holds:
+                    dropped.append({
+                        "name": m["name"],
+                        "reason": (m.get("flag_why") or {}).get("client", "client-only"),
+                    })
+                else:
+                    kept.append(m)
+            hand = kept
+        hand = hand[: c["count"]]
+        j.set_step("Reading the odds", 94)
+        return {
+            "seed": seed,
+            "constraints": c,
+            "hand": hand,
+            "dropped": dropped,
+            "summary": roulette.summarise(hand, c, specs.effective_host()),
+            "pool": _pool_view(pool, allowed, c),
+        }
+
+    registry.start(job, run)
+    return {"job_id": job.id}
+
+
+@app.post("/api/roulette/reroll")
+async def roulette_reroll(body: dict = Body(...)) -> dict:
+    """Replace one slot in a hand, leaving the rest of the roll alone."""
+    c = roulette.merge_constraints(body.get("constraints") or {})
+    hand = body.get("hand") or []
+    target = body.get("mod")
+    if not hand or not target:
+        raise HTTPException(400, "hand and mod are both required")
+    try:
+        pool = await roulette.build_pool(c["minecraft"], c["loader"], c["source"])
+        seed = roulette.normalise_seed(body.get("seed"))
+        fresh = roulette.reroll_one(seed, hand, target, pool["mods"], c)
+        return {
+            "seed": seed,
+            "hand": fresh,
+            "summary": roulette.summarise(fresh, c, specs.effective_host()),
+        }
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/roulette/install")
+async def roulette_install(body: dict = Body(...)) -> dict:
+    """Accept a hand: build the pack, install it, keep the export."""
+    hand = body.get("hand") or []
+    if not hand:
+        raise HTTPException(400, "no hand supplied — pull the lever first")
+    c = roulette.merge_constraints(body.get("constraints") or {})
+    seed = roulette.normalise_seed(body.get("seed"))
+    name = (body.get("server_name") or f"Roulette {seed}").strip()
+    job = registry.create("roulette", f"Rolling {name}", server_name=name)
+
+    registry.start(job, lambda j: roulette.install_roll(
+        j, seed=seed, constraints=c, hand=hand, server_name=name,
+        port=int(body.get("port", 25565)), motd=body.get("motd"),
+        optimize=bool(body.get("optimize", True)),
+    ))
+    return {"job_id": job.id}
+
+
+@app.get("/api/roulette/export/{roll_id}")
+async def roulette_export(roll_id: str) -> FileResponse:
+    """Download the CurseForge pack a roll produced."""
+    path = roulette.export_path(roll_id)
+    if not path.exists():
+        raise HTTPException(404, "that export is no longer on disk")
+    return FileResponse(
+        path, media_type="application/zip", filename=f"{roll_id}.zip"
+    )
+
+
+@app.post("/api/roulette/preview-export")
+async def roulette_preview_export(body: dict = Body(...)) -> dict:
+    """What the export would contain, without installing anything."""
+    hand = body.get("hand") or []
+    if not hand:
+        raise HTTPException(400, "no hand supplied")
+    c = roulette.merge_constraints(body.get("constraints") or {})
+    c["seed"] = roulette.normalise_seed(body.get("seed"))
+    cf = [m for m in hand if m.get("source") == "curseforge"]
+    return {
+        "files": len(cf),
+        "bundled": len(hand) - len(cf),
+        "manifest_only": len(hand) == len(cf),
+        "note": (
+            "Every rolled mod is on CurseForge, so the export is a small "
+            "manifest the CurseForge app can open directly."
+            if len(hand) == len(cf) else
+            f"{len(hand) - len(cf)} rolled mods are Modrinth-only, so their "
+            "jars travel inside the zip under overrides/mods/."
+        ),
+    }
+
+
 # --- optimizer ---------------------------------------------------------
 
 
@@ -792,7 +1239,7 @@ async def ai_analyse(server_id: str, body: dict = Body(default={})) -> dict:
     It only ever proposes: every action comes back for the user to approve,
     and destructive ones are flagged so the UI can ask twice.
     """
-    job = registry.create("ai", "AI analysis")
+    job = await _job_for("ai", "AI analysis", server_id)
 
     async def run(j) -> dict:
         j.set_step("Gathering evidence", 8)
@@ -868,26 +1315,227 @@ async def ai_apply(server_id: str, body: dict = Body(...)) -> dict:
     listing = await modmgr.list_mods(server_id)
     known = {m["file"] for m in listing.get("mods", [])}
     plan = ai.validate_plan({"actions": actions}, known)
+    applied, failed = await _apply_actions(server_id, plan["actions"])
+    return {"applied": applied, "failed": failed,
+            "rejected": plan.get("rejected", [])}
 
+
+@app.get("/api/instances/{server_id}/crash-review")
+async def crash_review(server_id: str) -> dict:
+    """Which mods does the crash log blame? Deterministic, no model needed."""
+    try:
+        return await diagnostics.crash_review(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/ai/crash-review")
+async def ai_crash_review(server_id: str) -> dict:
+    """Read the whole crash log and name the mods that caused the crash.
+
+    The regex pass runs first and is handed to the model as evidence, so the
+    two halves of the answer can never contradict each other -- and if the
+    model is unreachable, the deterministic culprits are still returned.
+    """
+    job = await _job_for("ai_crash", "Crash review", server_id)
+
+    async def run(j) -> dict:
+        j.set_step("Reading the crash report", 8)
+        context = await diagnostics.read_crash_context(server_id)
+        j.set_step("Listing mods", 18)
+        listing = await modmgr.list_mods(server_id)
+        mods = listing.get("mods", [])
+
+        combined = "\n".join(
+            t for t in (context["crash_text"], context["log_text"]) if t
+        )
+        found = diagnostics.attribute_crash(combined, [m["file"] for m in mods]) \
+            if combined else []
+        quick = await diagnostics.quick_check(server_id)
+        findings = (quick.get("findings") or []) + (
+            diagnostics.scan_text(combined) if combined else []
+        )
+
+        if not context["has_logs"]:
+            j.set_step("No logs to read", 100)
+            return {
+                "available": True, "ok": True, "kind": "crash_review",
+                "no_logs": True, "culprits": [], "actions": [],
+                "summary": "This instance has produced no log and no crash "
+                           "report at all. That is itself the finding: the "
+                           "server was rejected before the JVM started, which "
+                           "means the EULA gate, the Java version, or memory.",
+                "confidence": "medium", "findings": findings,
+            }
+
+        j.log_line(
+            f"Crash report {context['crash_path'] or '(none)'}, "
+            f"log {context['log_path'] or '(none)'}, "
+            f"{len(combined):,} characters, {len(mods)} jars installed"
+        )
+        if found:
+            j.log_line(
+                "The log itself points at: "
+                + ", ".join(f"{c['file']} ({c['confidence']})" for c in found[:5])
+            )
+
+        j.set_step("Model is reading the crash report", 35)
+        started = time.time()
+        first = {"seen": False}
+
+        def on_token(piece: str) -> None:
+            if not first["seen"]:
+                first["seen"] = True
+                j.set_step("Writing the review", 55)
+                j.log_line(f"Model started writing after "
+                           f"{time.time() - started:.0f}s")
+            j.stream_chunk(piece)
+            j.percent = min(90.0, 55 + (time.time() - started) * 0.8)
+
+        result = await ai.review_crash(
+            instance={
+                "minecraft": quick.get("minecraft") or listing.get("minecraft"),
+                "loader": quick.get("loader") or listing.get("loader"),
+                "pack": quick.get("pack") or listing.get("pack"),
+            },
+            mods=mods,
+            crash_text=context["crash_text"],
+            log_text=context["log_text"],
+            findings=findings,
+            crash_path=context["crash_path"],
+            log_path=context["log_path"],
+            attributed=found,
+            on_token=on_token,
+        )
+        j.stream_chunk("", flush=True)
+
+        # Merge the two views. The log's own attributions are facts, so they
+        # lead; the model's are added where it saw something the patterns
+        # did not, and marked as such.
+        merged = {c["file"]: {**c, "from": "log"} for c in found}
+        for c in result.get("culprits", []):
+            if c["file"] in merged:
+                merged[c["file"]]["model_why"] = c["why"]
+            else:
+                merged[c["file"]] = {**c, "from": "model", "score": 30,
+                                     "reasons": [c["why"]]}
+        result["culprits"] = sorted(
+            merged.values(), key=lambda c: -c.get("score", 0)
+        )
+        result["findings"] = findings
+        result["crash_path"] = context["crash_path"]
+        result["log_path"] = context["log_path"]
+        j.set_step("Done", 100)
+        return result
+
+    registry.start(job, run)
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/ai/autofix")
+async def ai_autofix(server_id: str, body: dict = Body(default={})) -> dict:
+    """Review the instance and apply the reversible fixes without asking again.
+
+    "Fix it" is the request; this is the whole of the consent. It is still
+    bounded: only actions that can be undone from the Mods tab are applied,
+    and deleting a jar never is unless `allow_destructive` is set explicitly.
+    Everything held back comes home in `held` for the user to approve.
+    """
+    allow_destructive = bool(body.get("allow_destructive"))
+    job = await _job_for("ai_fix", "AI auto-fix", server_id)
+
+    async def run(j) -> dict:
+        j.set_step("Gathering evidence", 6)
+        quick = await diagnostics.quick_check(server_id)
+        logs = await diagnostics.analyse_logs(server_id)
+        listing = await modmgr.list_mods(server_id)
+        mods = listing.get("mods", [])
+        context = await diagnostics.read_crash_context(server_id)
+        combined = "\n".join(
+            t for t in (context["crash_text"], context["log_text"]) if t
+        )
+        findings = (quick.get("findings") or []) + logs["findings"]
+
+        j.set_step("Model is reviewing the instance", 25)
+        started = time.time()
+
+        def on_token(piece: str) -> None:
+            j.stream_chunk(piece)
+            j.percent = min(70.0, 25 + (time.time() - started) * 0.8)
+
+        if context["crash_text"]:
+            plan = await ai.review_crash(
+                instance={"minecraft": quick.get("minecraft"),
+                          "loader": quick.get("loader"),
+                          "pack": quick.get("pack")},
+                mods=mods, crash_text=context["crash_text"],
+                log_text=context["log_text"], findings=findings,
+                crash_path=context["crash_path"], log_path=context["log_path"],
+                attributed=diagnostics.attribute_crash(
+                    combined, [m["file"] for m in mods]) if combined else [],
+                on_token=on_token,
+            )
+        else:
+            plan = await ai.analyse(
+                instance={"minecraft": quick.get("minecraft"),
+                          "loader": quick.get("loader"),
+                          "pack": quick.get("pack"),
+                          "mod_count": listing.get("count")},
+                findings=findings, log_tail=logs.get("log_tail", ""),
+                crash_tail=logs.get("crash_tail", ""), mods=mods,
+                question=body.get("question", ""), on_token=on_token,
+            )
+        j.stream_chunk("", flush=True)
+
+        if not plan.get("ok"):
+            return {**plan, "applied": [], "held": [], "failed": []}
+
+        auto, held = ai.split_auto_actions(
+            plan, allow_destructive=allow_destructive
+        )
+        if not auto:
+            j.log_line("Nothing here can be fixed automatically.")
+            j.set_step("Done", 100)
+            return {**plan, "applied": [], "held": held, "failed": []}
+
+        j.set_step(f"Applying {len(auto)} fix(es)", 78)
+        applied, failed = await _apply_actions(server_id, auto, job=j)
+        j.set_step("Done", 100)
+        return {**plan, "applied": applied, "held": held, "failed": failed,
+                "auto_applied": True}
+
+    registry.start(job, run)
+    return {"job_id": job.id}
+
+
+async def _apply_actions(server_id: str, actions: list[dict], job=None
+                         ) -> tuple[list[dict], list[dict]]:
+    """Execute a validated action list. Shared by /ai/apply and /ai/autofix."""
     applied, failed = [], []
-    for action in plan["actions"]:
+    for action in actions:
         name, args = action["action"], action["args"]
         try:
             if name == "accept_eula":
                 await crafty.write_file(server_id, "eula.txt", crafty.EULA_ACCEPTED)
+                detail = "eula.txt rewritten in the exact form Crafty accepts"
             elif name == "set_java":
-                await crafty.set_java_version(server_id, args["minecraft"])
+                result = await crafty.set_java_version(server_id, args["minecraft"])
+                detail = f"Java {result.get('java_major', '?')} selected"
             elif name == "set_ram":
                 await optimizer.apply(server_id, {"heap_gb": args["max_gb"],
                                                   "flags": []})
+                detail = f"heap set to {args['max_gb']:g} GB"
             elif name == "disable_mods":
                 for f in args["files"]:
                     await modmgr.set_enabled(server_id, f, False)
+                detail = "disabled " + ", ".join(args["files"])
             elif name == "delete_mods":
                 await modmgr.delete_mods(server_id, args["files"])
+                detail = "deleted " + ", ".join(args["files"])
             elif name == "edit_property":
                 await optimizer.apply(
                     server_id, {"properties": {args["key"]: args["value"]}})
+                detail = f"{args['key']} = {args['value']}"
             else:
                 # install_mod / switch_mod_version / inspect_config need a
                 # choice of project and version, so they are handed back to
@@ -895,12 +1543,54 @@ async def ai_apply(server_id: str, body: dict = Body(...)) -> dict:
                 failed.append({"action": name,
                                "error": "needs to be completed in the UI"})
                 continue
-            applied.append({"action": name, "args": args})
+            applied.append({"action": name, "args": args, "detail": detail})
+            if job:
+                job.log_line(f"Applied {name}: {detail}")
         except Exception as e:
             failed.append({"action": name, "error": str(e)})
+            if job:
+                job.log_line(f"{name} failed: {e}", "error")
+    return applied, failed
 
-    return {"applied": applied, "failed": failed,
-            "rejected": plan.get("rejected", [])}
+
+@app.get("/api/ai/models")
+async def ai_models() -> dict:
+    """What the configured Ollama endpoint has, and what we are using."""
+    return await ai.status()
+
+
+@app.post("/api/ai/pull")
+async def ai_pull(body: dict = Body(default={})) -> dict:
+    """Ask the Ollama host to fetch a model. Explicit, never automatic."""
+    model = (body.get("model") or ai.AI_MODEL).strip()
+    job = registry.create("ai_pull", f"Pull {model}")
+
+    async def run(j) -> dict:
+        def progress(chunk: dict) -> None:
+            total, done = chunk.get("total"), chunk.get("completed")
+            if total and done:
+                j.set_step(f"{chunk.get('status', 'downloading')} "
+                           f"({done / total * 100:.0f}%)", done / total * 100)
+            elif chunk.get("status"):
+                j.set_step(chunk["status"])
+
+        result = await ai.pull_model(model, on_progress=progress)
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "pull failed"))
+        j.log_line(f"{model} is now available on {ai.OLLAMA_URL}")
+        return result
+
+    registry.start(job, run)
+    return {"job_id": job.id}
+
+
+@app.get("/api/instances/{server_id}/mods/dependencies")
+async def mod_dependencies(server_id: str) -> dict:
+    """Which mods pulled in which -- the Mods tab's dependency view."""
+    try:
+        return await modmgr.dependency_map(server_id)
+    except Exception as e:
+        raise _err(e)
 
 
 @app.post("/api/instances/{server_id}/fix/versions")
@@ -921,7 +1611,11 @@ async def install_modpack(body: dict = Body(...)) -> dict:
         "Imported modpack" if "upload_id" in ref else f"Modpack {ref.get('mod_id')}"
     )
     name = body.get("server_name") or default_name
-    job = registry.create("install", f"Install {name}")
+    target = body.get("server_id")
+    job = registry.create(
+        "install", f"Install {name}",
+        server_id=target, server_name=await _instance_name(target) or name,
+    )
     registry.start(
         job,
         lambda j: installer.install_modpack(
@@ -936,6 +1630,8 @@ async def install_modpack(body: dict = Body(...)) -> dict:
             motd=body.get("motd"),
             existing_server_id=body.get("server_id"),
             exclude_files=body.get("exclude_files"),
+            disable_files=body.get("disable_files"),
+            client_reasons=body.get("client_reasons"),
             optimize=bool(body.get("optimize", True)),
         ),
     )
@@ -945,7 +1641,7 @@ async def install_modpack(body: dict = Body(...)) -> dict:
 @app.post("/api/instances/{server_id}/switch-pack-version")
 async def switch_pack_version(server_id: str, body: dict = Body(...)) -> dict:
     ref = _pack_ref(body)
-    job = registry.create("switch", f"Switch pack version for {server_id[:8]}")
+    job = await _job_for("switch", "Switch pack version", server_id)
     registry.start(
         job,
         lambda j: installer.switch_pack_version(
@@ -956,6 +1652,8 @@ async def switch_pack_version(server_id: str, body: dict = Body(...)) -> dict:
             skip_client_only=bool(body.get("skip_client_only", True)),
             keep_world=bool(body.get("keep_world", True)),
             exclude_files=body.get("exclude_files"),
+            disable_files=body.get("disable_files"),
+            client_reasons=body.get("client_reasons"),
         ),
     )
     return {"job_id": job.id}

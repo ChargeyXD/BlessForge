@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import json
 import posixpath
 import re
+import shutil
+import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -38,15 +39,60 @@ from typing import Any
 
 import httpx
 
-from app import config, crafty, curseforge, jarmeta, modrinth, packs, uploads
+from app import (config, crafty, curseforge, jarmeta, modrinth, optimizer,
+                 packs, properties, uploads)
 from app import preflight as preflight_mod
 from app import specs
 from app.jobs import Job
 from app.packs import PackPlan
 
 # Upload batches are capped so a 3 GB pack never lands in memory at once.
-BATCH_BYTES = 120 * 1024 * 1024
+#
+# The cap used to be the only thing standing between a big pack and the
+# machine's RAM, because every file in a batch was held as `bytes` and then
+# copied twice more (into a BytesIO zip, then out of it). Now that batches
+# are built on disk and streamed, this only bounds how much scratch space one
+# batch occupies and how often we round-trip to Crafty -- so it can be
+# smaller, which also makes progress smoother.
+BATCH_BYTES = 64 * 1024 * 1024
 BATCH_FILES = 400
+
+
+class PackEntry:
+    """One file destined for the instance, and where to read it from.
+
+    Deliberately not the bytes. A modpack install moves a few hundred
+    megabytes to a few gigabytes, and the whole reason this app used ~2.3 GB
+    of RAM was that every jar and every override was held in memory from the
+    moment it was fetched until the moment the last batch finished uploading.
+    An entry is a *reference*: a cached jar's path, a member of the pack
+    archive, or -- only for things generated on the fly -- actual bytes.
+    """
+
+    __slots__ = ("target", "path", "member", "blob", "size")
+
+    def __init__(self, target: str, *, path: Path | None = None,
+                 member: str | None = None, blob: bytes | None = None,
+                 size: int = 0):
+        self.target = target
+        self.path = path
+        self.member = member
+        self.blob = blob
+        self.size = size
+
+    def write_into(self, archive: zipfile.ZipFile,
+                   source: zipfile.ZipFile | None) -> None:
+        """Copy this entry into an upload archive without buffering it."""
+        if self.blob is not None:
+            archive.writestr(self.target, self.blob)
+        elif self.path is not None:
+            archive.write(self.path, self.target)
+        elif self.member is not None and source is not None:
+            # Member-to-member: both sides are streams, so a 400 MB world
+            # folder costs a 64 KB buffer rather than 400 MB.
+            with source.open(self.member) as src, \
+                    archive.open(self.target, "w") as dst:
+                shutil.copyfileobj(src, dst, 1024 * 64)
 
 
 def _cache_path(file_id: int, file_name: str) -> Path:
@@ -54,12 +100,19 @@ def _cache_path(file_id: int, file_name: str) -> Path:
     return config.CACHE_DIR / f"{file_id}-{safe}"
 
 
-async def fetch_pack_archive(job: Job, mod_id: int, file_id: int) -> tuple[bytes, dict]:
-    """Download a pack archive, reusing the on-disk copy when we have it.
+async def fetch_pack_archive(job: Job, mod_id: int, file_id: int
+                             ) -> tuple[Path, dict]:
+    """Download a pack archive to disk and return its path.
 
-    Preflight and install both need the same archive, and these are hundreds
-    of megabytes -- caching turns the review step from a second download into
-    a disk read.
+    Deliberately a path, not bytes. These archives run from tens of megabytes
+    to just under a gigabyte (the Better MC server pack in this machine's
+    cache is 983 MB), and `zipfile` reads members perfectly well from a file
+    -- so reading the whole thing into memory bought nothing and cost exactly
+    its own size for the length of the install.
+
+    Preflight and install both need the same archive, so the cached copy is
+    reused; when the cache is unwritable it falls back to a temp file rather
+    than to memory.
     """
     meta = await curseforge.get_file(mod_id, file_id)
     path = _cache_path(file_id, meta.get("file_name", ""))
@@ -67,7 +120,7 @@ async def fetch_pack_archive(job: Job, mod_id: int, file_id: int) -> tuple[bytes
 
     if path.exists() and (not expected or abs(path.stat().st_size - expected) < 1024):
         job.log_line(f"Using cached {meta.get('file_name')}")
-        return path.read_bytes(), meta
+        return path, meta
 
     size_mb = expected / (1024 * 1024)
     job.log_line(f"Downloading {meta.get('file_name')} ({size_mb:.0f} MB)")
@@ -77,7 +130,12 @@ async def fetch_pack_archive(job: Job, mod_id: int, file_id: int) -> tuple[bytes
         path.write_bytes(data)
     except OSError as e:
         job.log_line(f"Could not cache the archive: {e}", "warn")
-    return data, meta
+        fallback = Path(tempfile.gettempdir()) / path.name
+        fallback.write_bytes(data)
+        path = fallback
+    finally:
+        del data
+    return path, meta
 
 
 async def preflight(
@@ -181,8 +239,8 @@ async def _load_plan(
     if server_pack_id and prefer_server_pack:
         job.set_step("Downloading server pack", 5)
         try:
-            data, sp_meta = await fetch_pack_archive(job, mod_id, server_pack_id)
-            zf = zipfile.ZipFile(io.BytesIO(data))
+            archive, sp_meta = await fetch_pack_archive(job, mod_id, server_pack_id)
+            zf = zipfile.ZipFile(archive)
             plan = packs.analyse_server_pack(zf)
             plan.name = plan.name or file_meta.get("display_name") or ""
             job.log_line(
@@ -202,8 +260,8 @@ async def _load_plan(
             job.log_line(f"Server pack unusable ({e}); using client manifest.", "warn")
 
     job.set_step("Downloading pack manifest", 5)
-    data, _ = await fetch_pack_archive(job, mod_id, file_id)
-    zf = zipfile.ZipFile(io.BytesIO(data))
+    archive, _ = await fetch_pack_archive(job, mod_id, file_id)
+    zf = zipfile.ZipFile(archive)
     plan = packs.analyse_client_pack(zf)
     plan.name = plan.name or file_meta.get("display_name") or ""
     job.log_line(
@@ -266,12 +324,20 @@ def _load_upload_plan(job: Job, upload_id: str
 async def _download_manifest_mods(
     job: Job, plan: PackPlan, skip_client_only: bool,
     exclude_files: set[str] | None = None,
-) -> tuple[list[tuple[str, bytes]], list[dict], list[dict], list[str]]:
+    disable_files: set[str] | None = None,
+    client_reasons: dict[str, list[str]] | None = None,
+) -> tuple[list[PackEntry], list[dict], list[dict], list[str], list[str]]:
     """Resolve and fetch every mod the manifest lists.
 
-    Returns (files, records, problems, skipped) where files are (name, bytes)
-    pairs ready to be zipped into the overlay, and skipped names the jars an
-    exclusion actually matched.
+    Returns (files, records, problems, matched, disabled).
+
+    Client-only mods are installed *disabled* rather than dropped. Stripping
+    them made the instance a lie: the pack no longer matched what the user
+    exported, nothing on the Mods tab explained where a mod had gone, and
+    re-enabling one meant finding and downloading it by hand. A jar written
+    as `<name>.jar.disabled` is inert to every loader -- the same convention
+    Crafty and the CurseForge app use -- so the server still boots clean, but
+    the mod is present, labelled, and one click from coming back.
     """
     entries = plan.manifest_files
     file_ids = [e["fileID"] for e in entries if e.get("fileID")]
@@ -281,10 +347,12 @@ async def _download_manifest_mods(
     mod_ids = {m.get("mod_id") for m in file_meta.values() if m.get("mod_id")}
     projects = await curseforge.get_mods(mod_ids) if mod_ids else {}
 
-    results: list[tuple[str, bytes]] = []
+    results: list[PackEntry] = []
     records: list[dict] = []
     problems: list[dict] = []
-    skipped_client: list[str] = []
+    matched_names: list[str] = []
+    disabled_client: list[str] = []
+    reasons = client_reasons or {}
 
     sem = asyncio.Semaphore(config.DOWNLOAD_CONCURRENCY)
     done = 0
@@ -310,31 +378,58 @@ async def _download_manifest_mods(
                         })
                         return
                     fname = meta.get("file_name") or f"{fid}.jar"
-                    # An explicit exclusion list from the review step always
-                    # wins -- the user has already seen the evidence and made
-                    # the call, so no heuristic should second-guess it.
-                    if exclude_files is not None:
-                        if fname in exclude_files:
-                            skipped_client.append(fname)
-                            return
-                    elif skip_client_only and packs.is_client_only_jar(fname):
-                        skipped_client.append(fname)
+                    # The review step's decisions always win -- the user has
+                    # already seen the evidence and made the call, so no
+                    # heuristic should second-guess it.
+                    drop = exclude_files is not None and fname in exclude_files
+                    if drop:
+                        matched_names.append(fname)
                         return
                     # Non-jar manifest entries are resource packs etc.
                     if not fname.lower().endswith(".jar"):
                         return
-                    # Reuses whatever the review step already downloaded.
-                    blob = await curseforge.download_cached(meta, client)
-                    # With no explicit list, fall back to the jar's own
+
+                    client_only = False
+                    why: list[str] = []
+                    if disable_files is not None and fname in disable_files:
+                        client_only = True
+                        matched_names.append(fname)
+                        why = reasons.get(fname) or [
+                            "flagged as client-only in the pre-install review"
+                        ]
+
+                    # Reuses whatever the review step already downloaded, and
+                    # keeps it on disk: holding 300 jars in memory until the
+                    # last batch uploads is what made this app's footprint
+                    # scale with pack size.
+                    cached = await curseforge.cache_jar(meta, client)
+                    blob = None if cached else await curseforge.download_cached(
+                        meta, client)
+
+                    # With no review to go on, fall back to the jar's own
                     # declaration: Fabric/Quilt state their side outright, and
-                    # a client-only mod left in place takes the server down.
-                    if exclude_files is None and skip_client_only:
-                        info = jarmeta.parse(blob, fname)
+                    # a client-only mod left enabled takes the server down.
+                    if not client_only and disable_files is None and skip_client_only:
+                        probe = blob if blob is not None else cached.read_bytes()
+                        info = jarmeta.parse(probe, fname)
+                        del probe
                         if info.get("side") == "client":
-                            skipped_client.append(fname)
-                            return
-                    results.append((fname, blob))
+                            client_only = True
+                            why = ["the jar declares environment=client"]
+                        elif packs.is_client_only_jar(fname):
+                            client_only = True
+                            why = ["name matches a known client-only mod"]
+
+                    target = fname + (".disabled" if client_only else "")
+                    if client_only:
+                        disabled_client.append(fname)
+                    results.append(PackEntry(
+                        target, path=cached, blob=blob,
+                        size=(cached.stat().st_size if cached else len(blob or b"")),
+                    ))
                     records.append({
+                        # Recorded under the enabled name whatever its state
+                        # on disk, so toggling a mod never orphans its record.
                         "file": f"mods/{fname}",
                         "source": "curseforge",
                         "project_id": pid,
@@ -342,6 +437,8 @@ async def _download_manifest_mods(
                         "name": project.get("name") or fname,
                         "version": meta.get("display_name"),
                         "required": entry.get("required", True),
+                        "client_only": client_only,
+                        "client_only_reasons": why,
                     })
                 except Exception as e:
                     problems.append({
@@ -359,60 +456,84 @@ async def _download_manifest_mods(
 
         await asyncio.gather(*(one(e) for e in entries))
 
-    if skipped_client:
+    if disabled_client:
         job.log_line(
-            f"Skipped {len(skipped_client)} client-only mods: "
-            + ", ".join(sorted(skipped_client)[:8])
-            + ("..." if len(skipped_client) > 8 else ""),
-            "warn",
+            f"Installed {len(disabled_client)} client-only mods as disabled "
+            "(they are on the Mods tab, tagged client-side, and can be "
+            "re-enabled in one click): "
+            + ", ".join(sorted(disabled_client)[:8])
+            + ("..." if len(disabled_client) > 8 else "")
         )
     if problems:
         job.log_line(f"{len(problems)} mods could not be downloaded", "warn")
         for p in problems[:10]:
             job.log_line(f"  - {p['name']}: {p['reason']}", "warn")
-    return results, records, problems, skipped_client
+    return results, records, problems, matched_names, disabled_client
 
 
-def _batch(items: list[tuple[str, bytes]]) -> list[list[tuple[str, bytes]]]:
-    """Split (path, bytes) pairs into upload batches bounded by size/count."""
-    batches: list[list[tuple[str, bytes]]] = []
-    current: list[tuple[str, bytes]] = []
+def _batch(items: list[PackEntry]) -> list[list[PackEntry]]:
+    """Split entries into upload batches bounded by size and count."""
+    batches: list[list[PackEntry]] = []
+    current: list[PackEntry] = []
     size = 0
-    for name, blob in items:
-        if current and (size + len(blob) > BATCH_BYTES or len(current) >= BATCH_FILES):
+    for entry in items:
+        if current and (size + entry.size > BATCH_BYTES
+                        or len(current) >= BATCH_FILES):
             batches.append(current)
             current, size = [], 0
-        current.append((name, blob))
-        size += len(blob)
+        current.append(entry)
+        size += entry.size
     if current:
         batches.append(current)
     return batches
 
 
 async def _push_batches(
-    job: Job, server_id: str, items: list[tuple[str, bytes]],
+    job: Job, server_id: str, items: list[PackEntry],
     start_pct: float, end_pct: float, label: str,
+    source: zipfile.ZipFile | None = None,
 ) -> None:
-    """Zip -> upload -> unzip, in chunks, so memory stays bounded."""
+    """Zip -> upload -> unzip, in batches, without buffering any of it.
+
+    Both halves used to happen in memory: the batch was assembled in a
+    `BytesIO` and then `getvalue()` copied the lot again, so a 120 MB batch
+    briefly cost 240 MB *on top of* the source bytes it was built from. The
+    archive is now written to a scratch file and streamed to Crafty from
+    there, so a batch of any size costs one 8 MB upload chunk.
+    """
     batches = _batch(items)
     if not batches:
         return
+    scratch = config.CACHE_DIR / "batches"
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        scratch = Path(tempfile.gettempdir())
+
     for i, batch in enumerate(batches, 1):
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
-            for name, blob in batch:
-                zf.writestr(name, blob)
-        payload = buf.getvalue()
         zip_name = f".studio-batch-{int(time.time())}-{i}.zip"
-        pct = start_pct + (end_pct - start_pct) * ((i - 1) / len(batches))
-        job.set_step(
-            f"{label} ({i}/{len(batches)}, {len(payload)/1048576:.0f} MB)", pct
-        )
-        await crafty.upload_file(server_id, ".", zip_name, payload)
+        local = scratch / zip_name
+        try:
+            with zipfile.ZipFile(local, "w", zipfile.ZIP_STORED) as archive:
+                for entry in batch:
+                    entry.write_into(archive, source)
+            size_mb = local.stat().st_size / 1048576
+            pct = start_pct + (end_pct - start_pct) * ((i - 1) / len(batches))
+            job.set_step(f"{label} ({i}/{len(batches)}, {size_mb:.0f} MB)", pct)
+
+            await crafty.upload_path(server_id, ".", zip_name, local)
+        finally:
+            # The scratch copy has served its purpose the moment it is sent;
+            # leaving it would double the disk cost of every install.
+            try:
+                local.unlink()
+            except OSError:
+                pass
+
         await crafty.unzip(server_id, zip_name)
 
         # Unzip runs on a background thread: wait for a member to appear.
-        probe = batch[0][0]
+        probe = batch[0].target
         if not await crafty.wait_for_path(server_id, probe, timeout=600):
             job.log_line(
                 f"Timed out waiting for {probe} to appear after extraction", "warn"
@@ -663,9 +784,10 @@ async def _rewrite_modded_command(job: Job, server_id: str, plan: PackPlan) -> N
 
 
 async def _apply_server_settings(
-    job: Job, server_id: str, plan: PackPlan, mem_max_gb: int, motd: str | None
+    job: Job, server_id: str, plan: PackPlan, mem_max_gb: int, motd: str | None,
+    port: int | None = None,
 ) -> None:
-    """EULA, RAM and a few server.properties niceties."""
+    """EULA, RAM, the port, and a few server.properties niceties."""
     try:
         await crafty.write_file(server_id, "eula.txt", crafty.EULA_ACCEPTED)
     except Exception:
@@ -690,6 +812,25 @@ async def _apply_server_settings(
             await crafty.write_file(server_id, "user_jvm_args.txt", args)
         except Exception:
             job.log_line("Could not write user_jvm_args.txt", "warn")
+
+    # The port the user typed at the install step has to be written HERE,
+    # after the pack files have landed. Crafty is told the port at creation
+    # time and writes it into a fresh server.properties, but the pack's own
+    # overrides are laid over the top afterwards -- and a modpack that ships
+    # a server.properties (most of them do) puts 25565 straight back. That is
+    # why every instance ended up on 25565 no matter what was typed.
+    #
+    # Written through properties.set_port so Crafty's record and
+    # server.properties can never disagree; one is what Minecraft binds, the
+    # other is what Crafty polls for status.
+    if port:
+        try:
+            result = await properties.set_port(server_id, port, force=True)
+            job.log_line(f"Port set to {port} in server.properties and Crafty")
+            for w in result.get("warnings", []):
+                job.log_line(w, "warn")
+        except Exception as e:
+            job.log_line(f"Could not set the port to {port}: {e}", "warn")
 
     if motd:
         try:
@@ -724,6 +865,8 @@ async def install_modpack(
     motd: str | None = None,
     existing_server_id: str | None = None,
     exclude_files: list[str] | None = None,
+    disable_files: list[str] | None = None,
+    client_reasons: dict[str, list[str]] | None = None,
     optimize: bool = True,
 ) -> dict:
     """Install a modpack into a new (or existing) Crafty instance.
@@ -736,10 +879,14 @@ async def install_modpack(
         prefer_server_pack=prefer_server_pack,
     )
     excluded = set(exclude_files) if exclude_files is not None else None
-    if excluded is not None:
+    to_disable = set(disable_files) if disable_files is not None else None
+    if to_disable is not None:
         job.log_line(
-            f"Using your review decisions: {len(excluded)} mods will be skipped"
+            f"Using your review decisions: {len(to_disable)} client-only mods "
+            "will be installed but left disabled"
         )
+    if excluded:
+        job.log_line(f"{len(excluded)} mods will not be installed at all")
 
     if not plan.mc_version:
         raise RuntimeError(
@@ -763,6 +910,7 @@ async def install_modpack(
     # --- create the instance ------------------------------------------
     if existing_server_id:
         server_id = existing_server_id
+        job.set_instance(server_id, server_name)
         job.log_line(f"Installing into existing instance {server_id}")
     else:
         job.set_step(
@@ -777,6 +925,23 @@ async def install_modpack(
             port=port,
         )
         job.log_line(f"Created instance {server_id}")
+        job.set_instance(server_id, server_name)
+        # Stamp the instance as soon as it exists, marked unfinished. If the
+        # install dies after this point the instance is left behind on
+        # purpose (so it can be retried into), and this is what lets the
+        # fleet list say "half-finished" rather than showing it as a healthy
+        # server with no mods.
+        try:
+            await crafty.write_studio_manifest(server_id, {
+                "schema": 1,
+                "complete": False,
+                "started_at": time.time(),
+                "pack": {"name": plan.name},
+                "minecraft": plan.mc_version,
+                "loader": plan.loader,
+            })
+        except Exception:
+            pass
         job.emit("server_created", server_id, server_id=server_id)
         await _wait_for_loader(job, server_id, plan)
 
@@ -794,49 +959,72 @@ async def install_modpack(
     # --- gather the payload -------------------------------------------
     records: list[dict] = []
     problems: list[dict] = []
-    payload: list[tuple[str, bytes]] = []
+    payload: list[PackEntry] = []
 
     matched_exclusions: set[str] = set()
+    disabled_mods: list[str] = []
     if plan.source == "manifest":
-        mods, records, problems, skipped = await _download_manifest_mods(
-            job, plan, skip_client_only, excluded
+        mods, records, problems, matched, disabled = await _download_manifest_mods(
+            job, plan, skip_client_only, excluded, to_disable, client_reasons
         )
-        matched_exclusions.update(skipped)
-        payload.extend((f"mods/{name}", blob) for name, blob in mods)
+        matched_exclusions.update(matched)
+        disabled_mods.extend(disabled)
+        for entry in mods:
+            entry.target = f"mods/{entry.target}"
+        payload.extend(mods)
 
     job.set_step("Preparing pack files", 58)
-    overlay_skipped = 0
+    overlay_dropped = 0
+    reasons_by_file = client_reasons or {}
     for entry in plan.overlay_members:
         target = entry["target"]
         base = posixpath.basename(target)
         is_mod_jar = target.startswith("mods/") and target.endswith(".jar")
-        if excluded is not None:
-            if is_mod_jar and base in excluded:
-                overlay_skipped += 1
-                matched_exclusions.add(base)
-                continue
-        elif (
-            skip_client_only
-            and target.startswith("mods/")
-            and packs.is_client_only_jar(target)
-        ):
-            overlay_skipped += 1
+        if excluded is not None and is_mod_jar and base in excluded:
+            overlay_dropped += 1
+            matched_exclusions.add(base)
             continue
-        try:
-            blob = zf.read(entry["member"])
-        except Exception as e:
-            problems.append({"name": target, "reason": f"unreadable in archive: {e}"})
-            continue
-        if (
-            excluded is None
-            and skip_client_only
-            and is_mod_jar
-            and jarmeta.parse(blob, target).get("side") == "client"
-        ):
-            overlay_skipped += 1
-            continue
-        payload.append((target, blob))
+
+        client_only, why = False, []
         if is_mod_jar:
+            if to_disable is not None and base in to_disable:
+                client_only = True
+                matched_exclusions.add(base)
+                why = reasons_by_file.get(base) or [
+                    "flagged as client-only in the pre-install review"
+                ]
+            elif to_disable is None and skip_client_only:
+                # No review to defer to: judge the jar on its own metadata,
+                # then on its name. Either way it is disabled, not deleted.
+                # Only mod jars are read here, and only one at a time --
+                # everything else in the overlay (configs, a world folder,
+                # resource packs) is never materialised at all.
+                try:
+                    probe = zf.read(entry["member"])
+                except Exception as e:
+                    problems.append(
+                        {"name": target, "reason": f"unreadable in archive: {e}"})
+                    continue
+                side = jarmeta.parse(probe, target).get("side")
+                del probe
+                if side == "client":
+                    client_only, why = True, ["the jar declares environment=client"]
+                elif packs.is_client_only_jar(target):
+                    client_only = True
+                    why = ["name matches a known client-only mod"]
+
+        try:
+            declared = zf.getinfo(entry["member"]).file_size
+        except KeyError:
+            problems.append({"name": target, "reason": "missing from the archive"})
+            continue
+        payload.append(PackEntry(
+            target + (".disabled" if client_only else ""),
+            member=entry["member"], size=declared,
+        ))
+        if is_mod_jar:
+            if client_only:
+                disabled_mods.append(base)
             records.append({
                 # A jar in a client export's overrides/ was added by hand and
                 # is in no catalogue, so it can never be version-checked --
@@ -845,16 +1033,20 @@ async def install_modpack(
                 "file": target,
                 "source": "bundled" if plan.source == "manifest" else "server_pack",
                 "name": posixpath.basename(target),
+                "client_only": client_only,
+                "client_only_reasons": why,
             })
-    if overlay_skipped:
-        job.log_line(f"Skipped {overlay_skipped} client-only jars from the pack", "warn")
+    if overlay_dropped:
+        job.log_line(f"Removed {overlay_dropped} jars from the pack as requested",
+                     "warn")
 
     # An exclusion that matches nothing means the caller and the pack disagree
     # about what is in it -- a review answered against a different version, or
     # a hand-made API call. Silently installing the mod anyway is the one
     # outcome nobody wants, so say it plainly.
-    if excluded:
-        unmatched = excluded - matched_exclusions
+    decided = (excluded or set()) | (to_disable or set())
+    if decided:
+        unmatched = decided - matched_exclusions
         if unmatched:
             job.log_line(
                 f"{len(unmatched)} exclusion(s) matched no file in this pack and "
@@ -864,17 +1056,27 @@ async def install_modpack(
                 "warn",
             )
 
-    total_mb = sum(len(b) for _, b in payload) / 1048576
-    job.log_line(f"Uploading {len(payload)} files ({total_mb:.0f} MB) to the instance")
+    total_mb = sum(e.size for e in payload) / 1048576
+    uploaded_count = len(payload)
+    job.log_line(f"Uploading {uploaded_count} files ({total_mb:.0f} MB) to the instance")
 
-    await _push_batches(job, server_id, payload, 60, 92, "Uploading pack files")
+    await _push_batches(job, server_id, payload, 60, 92, "Uploading pack files",
+                        source=zf)
+    # Entries are references, not bytes, but dropping them still releases the
+    # archive's member table for a pack with thousands of files. Counted
+    # first: the summary is built much further down.
+    payload.clear()
 
     # --- finishing touches --------------------------------------------
     job.set_step("Applying server settings", 94)
-    await _apply_server_settings(job, server_id, plan, ram_max, motd)
+    await _apply_server_settings(job, server_id, plan, ram_max, motd, port)
 
     # Size the heap against the host, not just the pack's wishlist: a pack
     # asking for 8 GB on a box with 5 GB free dies at startup with no log.
+    # Set when the loader keeps its JVM args in Crafty's launch command
+    # rather than in a file; applied after the Java selection below, which
+    # rewrites that same command and would otherwise undo it.
+    pending_heap: tuple | None = None
     if optimize:
         try:
             host = specs.effective_host()
@@ -898,8 +1100,14 @@ async def install_modpack(
                     f"(host has {host.get('total_ram_gb')} GB, "
                     f"{host.get('cpu_count')} CPUs)"
                 )
-            for w in memory.get("warnings", []):
-                job.log_line(w, "warn")
+            else:
+                # Fabric, vanilla, Paper: no user_jvm_args.txt exists, so the
+                # heap lives in Crafty's launch command. This used to be
+                # computed and then thrown away, leaving the instance on
+                # whatever the pack asked for -- a pack requesting 6 GB got
+                # 6 GB on a host with 11 GB total and Minecraft servers
+                # already running on it.
+                pending_heap = (heap, flags, host)
         except Exception as e:
             job.log_line(f"Could not apply performance tuning: {e}", "warn")
 
@@ -925,9 +1133,24 @@ async def install_modpack(
     except Exception as e:
         job.log_line(f"Could not set the Java version: {e}", "warn")
 
+    if pending_heap:
+        heap, flags, host = pending_heap
+        try:
+            await optimizer.set_command_memory(server_id, heap, flags)
+            job.log_line(
+                f"Tuned JVM: {heap:g} GB heap, {len(flags)} flags "
+                f"(host has {host.get('total_ram_gb')} GB, "
+                f"{host.get('cpu_count')} CPUs)"
+            )
+        except Exception as e:
+            job.log_line(f"Could not set the heap size: {e}", "warn")
+
     job.set_step("Recording install manifest", 97)
     manifest = {
         "schema": 1,
+        # The counterpart to the stub written at creation: reaching here is
+        # what makes an instance finished.
+        "complete": True,
         "installed_at": time.time(),
         "pack": {
             "source": "upload" if upload_id else "curseforge",
@@ -956,6 +1179,7 @@ async def install_modpack(
         "recommended_ram_mb": plan.recommended_ram,
         "java_version": plan.java_version,
         "excluded_mods": sorted(excluded) if excluded else [],
+        "disabled_mods": sorted(set(disabled_mods)),
         "mods": records,
         "problems": problems,
     }
@@ -974,12 +1198,16 @@ async def install_modpack(
         "loader_version": plan.loader_version,
         "install_source": plan.source,
         "mods_installed": len([r for r in records if r.get("file", "").endswith(".jar")]),
-        "files_uploaded": len(payload),
+        "client_only_disabled": sorted(set(disabled_mods)),
+        "files_uploaded": uploaded_count,
+        "port": port,
         "problems": problems,
         "note": installed_note,
     }
     job.log_line(
         f"Done: {summary['mods_installed']} mods installed into '{server_name}'"
+        + (f", {len(summary['client_only_disabled'])} left disabled as client-only"
+           if summary["client_only_disabled"] else "")
     )
     return summary
 
@@ -995,6 +1223,8 @@ async def switch_pack_version(
     skip_client_only: bool = True,
     keep_world: bool = True,
     exclude_files: list[str] | None = None,
+    disable_files: list[str] | None = None,
+    client_reasons: dict[str, list[str]] | None = None,
 ) -> dict:
     """Move an existing instance to a different version of its modpack.
 
@@ -1044,6 +1274,8 @@ async def switch_pack_version(
         skip_client_only=skip_client_only,
         existing_server_id=server_id,
         exclude_files=exclude_files,
+        disable_files=disable_files,
+        client_reasons=client_reasons,
     )
     result["previous"] = current.get("pack")
     return result

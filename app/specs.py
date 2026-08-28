@@ -97,16 +97,28 @@ EXTRA_FLAGS = [
 
 
 def host_specs() -> dict:
-    """What this machine has. Read from cgroup limits first, then the host.
+    """What the machine running the Minecraft servers has.
 
-    The container's own limits matter more than the physical machine: if the
-    app or Crafty is capped by a cgroup, that cap is the real ceiling.
+    Read from `/proc/meminfo`, which inside a container still reports the
+    host's memory -- deliberately NOT from this container's own cgroup limit.
+
+    That distinction was got wrong once and it matters: BlessForge reads its
+    *own* cgroup, but the servers it sizes heaps for run under Crafty, which
+    is a different container. Capping BlessForge at 1 GB (which the compose
+    file now does, because streaming installs no longer need more) made it
+    believe the machine had 1 GB and offer every pack a 1 GB heap.
+
+    The app's own cap is still reported, as `app_limit_gb`, because it is
+    worth seeing in the setup banner -- it just has no bearing on how much
+    memory a Minecraft server can be given. When Crafty runs on a *different*
+    machine, neither number is right and `HOST_RAM_GB` is the answer.
     """
     total_bytes = 0
     available_bytes = 0
     source = "unknown"
+    app_limit_bytes = 0
 
-    # cgroup v2, then v1 -- a container limit beats /proc/meminfo.
+    # This container's own ceiling: informational only.
     for path in ("/sys/fs/cgroup/memory.max",
                  "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
         try:
@@ -116,8 +128,7 @@ def host_specs() -> dict:
                 value = int(raw)
                 # Unlimited is reported as an implausibly huge number.
                 if 0 < value < (1 << 62):
-                    total_bytes = value
-                    source = "cgroup"
+                    app_limit_bytes = value
         except (OSError, ValueError):
             continue
 
@@ -131,9 +142,13 @@ def host_specs() -> dict:
     except OSError:
         pass
 
-    if not total_bytes:
-        total_bytes = meminfo.get("MemTotal", 0)
-        source = "host"
+    total_bytes = meminfo.get("MemTotal", 0)
+    source = "host" if total_bytes else "unknown"
+    # Last resort only: if /proc/meminfo is unreadable, our own cap is a
+    # better guess than nothing.
+    if not total_bytes and app_limit_bytes:
+        total_bytes = app_limit_bytes
+        source = "cgroup"
     available_bytes = meminfo.get("MemAvailable", 0)
 
     cpus = os.cpu_count() or 1
@@ -173,6 +188,8 @@ def host_specs() -> dict:
             "different machines, these are BlessForge's numbers -- set "
             "HOST_RAM_GB to describe the Crafty host instead."
         ) if source != "cgroup" else None,
+        "app_limit_gb": round(app_limit_bytes / (1024 ** 3), 1)
+        if app_limit_bytes else None,
     }
 
 

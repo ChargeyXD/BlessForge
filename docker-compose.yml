@@ -30,6 +30,15 @@ services:
     container_name: blessforge
     restart: unless-stopped
 
+    # A ceiling, not a target. Installs stream to disk rather than buffering
+    # in memory, so the heaviest real workload measured here -- a 301-mod
+    # preflight over the network, and a 91-mod / 260 MB install -- peaks
+    # around 400 MB and settles back near 60 MB. 1 GB is comfortable headroom
+    # and it matters on this kind of box: the RAM BlessForge is not using is
+    # RAM a Minecraft server can have. Raise it if you install packs far
+    # larger than that; it is not a soft limit, the container is killed.
+    mem_limit: 1g
+
     # The default bridge, deliberately. A CasaOS box accumulates one network
     # per app and Docker's address pools run out after about thirty, after
     # which every new project fails with "all predefined address pools have
@@ -75,10 +84,13 @@ services:
       MODRINTH_ENABLED: "true"
 
       # ---- AI troubleshooting assistant (optional) ----------------------
-      # Points at Ollama on the host. Leave OLLAMA_URL blank to disable the
-      # assistant entirely; everything else keeps working.
-      OLLAMA_URL: "http://host.docker.internal:11434"
-      AI_MODEL: "qwen2.5:3b-instruct-q4_K_M"
+      # A shared Ollama endpoint rather than one on this host: the box running
+      # Crafty needs its CPU for the Minecraft servers. Leave OLLAMA_URL blank
+      # to disable the assistant entirely; everything else keeps working.
+      OLLAMA_URL: "https://ai.shadowco.xyz"
+      # Only needed if that endpoint is behind an authenticating proxy.
+      OLLAMA_API_KEY: ""
+      AI_MODEL: "qwen3:4b-instruct"
       AI_ENABLED: "true"
       AI_TIMEOUT: "300"
 
@@ -164,9 +176,12 @@ services:
         - container: OLLAMA_URL
           description:
             en_us: "Ollama endpoint for the AI assistant (blank to disable)"
+        - container: OLLAMA_API_KEY
+          description:
+            en_us: "Bearer token, if the Ollama endpoint requires one"
         - container: AI_MODEL
           description:
-            en_us: "Local model, e.g. qwen2.5:3b-instruct-q4_K_M"
+            en_us: "Model to use, e.g. qwen3:4b-instruct"
         - container: HOST_RAM_GB
           description:
             en_us: "Override detected RAM when Crafty runs on another machine"

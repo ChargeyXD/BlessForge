@@ -1,3 +1,10 @@
+> **Historical — superseded 2026-08-28.** This brief describes the interface
+> built in August 2026 and the contract `app.js` currently binds to. It is
+> being replaced: `design-prompt.md` is the brief for the ground-up redesign,
+> and deliberately does not reference anything below. Keep this file until the
+> new design lands, because §4.3's list of DOM hooks is still what the running
+> front end depends on.
+
 # BlessForge — Full GUI Overhaul Brief
 
 You are redesigning the complete front end of **BlessForge**, a self-hosted web

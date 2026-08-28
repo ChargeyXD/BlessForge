@@ -60,22 +60,31 @@ Notes:
 - A client export names its mods by CurseForge id, so a CurseForge API key is
   required for this — the same one the rest of the app uses.
 
-### Review what gets stripped, before it happens
+### Review the client-only mods, before it happens
 
-Client-only mods have to come out of a server install, but doing that silently
-is how a working pack turns into a missing-dependency crash. So BlessForge
-shows you the list first, with the evidence behind each call:
+Client-only mods have to be inert on a server, but removing them silently is
+how a working pack turns into a missing-dependency crash — and how a mod you
+wanted vanishes with nothing to say where it went. So BlessForge shows you the
+list first, with the evidence behind each call, and then **disables rather
+than deletes**: the jar is installed as `<name>.jar.disabled`, tagged
+*client-side* on the Mods tab with the reason it was flagged, and is one click
+from being turned back on.
 
 | Verdict | Meaning |
 |---|---|
-| **remove** | The jar itself declares `environment=client`, or Modrinth says `server_side: unsupported`. Ticked by default. |
+| **remove** | The jar declares `environment=client`, or Modrinth says `server_side: unsupported`. Ticked by default — installed disabled. |
 | **review** | Weaker signals — a known client-mod name, or it requires a client-only library like YACL. Left for you to judge. |
-| **keep** | Looks client-only *but another mod in the pack requires it*. Never removed automatically. |
+| **keep** | Looks client-only *but another mod in the pack requires it*. Never disabled automatically. |
 
-Every jar in the pack is inspected, not just ones with suspicious names — the
-mods that break servers are usually the ones nobody thought to put on a list.
-Mods Modrinth marks `server_side: required` are cleared outright. This runs for
-imported packs as well, including jars that only exist inside the archive.
+Every jar is checked against Modrinth **by SHA-1 of the file**, before anything
+is flagged — not just the ones with suspicious names, and not by guessing a
+project from a display name. That matters: the mods that take a server down are
+the ones nobody thought to put on a name list. On a real 301-mod export, the
+name list found two client mods and the hash check found six, four of which no
+heuristic had suspected.
+
+Unticking the review means exactly that — the pack installs as published, with
+nothing disabled.
 
 ### Manage mods
 
@@ -100,36 +109,105 @@ editor.
 ### Troubleshoot
 
 - **Checks** — EULA state and format, Java/Minecraft mismatch, client-only mods,
-  low memory, mods that failed to install, mods built for another game version.
+  low memory, mods that failed to install, and mods built for another game
+  version. That last one is *verified* against what the publisher says the file
+  supports, not guessed from the filename: `alexsmobs-1.22.9.jar` is not a
+  1.22.9 mod, and a check that says otherwise on forty jars teaches you to
+  ignore it.
 - **Log analysis** — parses `latest.log` and the newest crash report for missing
   dependencies, duplicate mods, port conflicts, out-of-memory, wrong Java,
   mixin failures and client-only crashes. Where the trace names a jar, the
   finding names it too.
 - **Deep scan** — downloads every jar, reads its declared dependencies and
   builds the graph, so missing and duplicate mods surface *before* a launch.
+- **Crash attribution** — when a crash report exists, the whole of it is read
+  and the jars it implicates are named, ranked by how directly the log points
+  at each: a `-- MOD x --` failure block outranks a mixin failure, which
+  outranks appearing in the stack trace. Each culprit carries the line that
+  implicates it. Where the real cause is not a mod at all — a Java version the
+  pack refuses to run on, say — it says so rather than blaming the first mod
+  that noticed.
 - **One-click fixes** — accept EULA, set Java, disable the offending mods,
   search for a missing dependency, or swap mods to a compatible version.
 
+### Mod Roulette
+
+Set constraints — Minecraft version, loader, how many mods, how reckless to be,
+which of nine categories to prefer or ban — and pull the lever. BlessForge
+deals a **hand**: a specific set of mods drawn from the live CurseForge and
+Modrinth catalogues, which it can then install as a real server and hand back
+as a **CurseForge modpack zip** you can share or open in the CurseForge app.
+
+Two things make it more than a shuffle:
+
+- **A pull is reproducible.** Every roll carries a short seed (`QRT-8KM-4Z`).
+  Re-enter that seed with the same constraints and you get the same hand,
+  exactly — so a roll is something you can send to someone.
+- **The odds are honest.** The panel that says "this will not boot" is
+  computed from the same facts the installer acts on: real file sizes, download
+  counts, how long since anyone touched the mod, and whether it has a
+  server-side code path at all. Mods whose authors state `server_side:
+  unsupported` are dropped before they reach the hand, matched by file hash
+  rather than guessed from a name.
+
+Dependencies are resolved on top of the hand and do not count against your mod
+count. Rows can be **held** through the next pull, or rerolled one slot at a
+time.
+
+### Terminal
+
+A live console per instance: Crafty's output streamed as it arrives, coloured
+by severity, filterable, with a command box that types straight into the
+server. Following pauses when you scroll up and resumes when you scroll back,
+so reading scrollback while the server is chatty is actually possible.
+
+Crafty has no push channel, so the backend polls it and forwards only the lines
+that are new — the browser is never sent the last five hundred lines a second.
+
 ### AI assistant (optional)
 
-Points at a local [Ollama](https://ollama.com/) model — a 1–2 GB instruct model
-is plenty. It reads the deterministic findings plus the log and explains what
-is most likely wrong, proposing a plan.
+Points at an [Ollama](https://ollama.com/) endpoint — **not** this machine, by
+default. The box running Crafty needs its CPU for the Minecraft servers.
 
-Deliberately constrained, because a 3B model is a good pattern-matcher and a
+Three things it does:
+
+- **Ask** — reads the deterministic findings plus the log and explains what is
+  most likely wrong.
+- **Review Crash Log** — reads the whole crash report, not a tail of it, and
+  names the jars it implicates with the line that implicates each. The regex
+  pass runs first and is passed to the model as evidence, so this still gives
+  a useful answer when the endpoint is unreachable.
+- **Review & Fix** — applies the fixes it is confident about, confined to the
+  reversible half of the vocabulary: the EULA file, the Java version, the heap,
+  and disabling mods the crash blames. Nothing is ever deleted automatically.
+
+Deliberately constrained, because a small model is a good pattern-matcher and a
 poor decision-maker:
 
-- It **never executes anything**. Every action comes back for you to approve.
 - Its output is validated against a fixed action vocabulary; anything it
   invents is discarded, including filenames not present in your instance.
+  Near-misses are reconciled against the real file list rather than thrown
+  away — a small model reproduces a long jar name imperfectly.
 - Actions are classified `safe` or `major`. Deleting mods, replacing versions
-  and editing properties are **major** and need a second explicit confirmation.
+  and editing properties are **major** and need explicit confirmation; they are
+  never in the automatic half.
 - The deterministic checks run first and are fed in as evidence — the model
   explains and prioritises, it is not the detector.
 
+The default model is `qwen3:4b-instruct` (2.5 GB, no thinking preamble,
+reliable JSON, 256k context). If the endpoint is reachable but does not have
+it, the **AI** pill in the header offers to pull it.
+
 ```bash
-ollama pull qwen2.5:3b-instruct-q4_K_M
+curl -X POST https://your-ollama-host/api/pull -d '{"model":"qwen3:4b-instruct"}'
 ```
+
+**Prompt size is a real constraint.** The endpoint evaluates about 90
+tokens/second and typically sits behind a proxy that allows 120 seconds to
+first byte; streaming does not help, because nothing is emitted until the whole
+prompt has been read. So the evidence is *selected*, not truncated — a 369-mod
+inventory and a 67k crash report become a 7k prompt naming the six jars the log
+actually mentions.
 
 ### Optimize for the machine
 
@@ -238,8 +316,10 @@ Anything still missing is listed in a banner at the top of the app.
 | `CRAFTY_TOKEN` | — | Crafty API token |
 | `CURSEFORGE_API_KEY` | — | CurseForge Core API key |
 | `CRAFTY_VERIFY_SSL` | `false` | Verify Crafty's certificate. Crafty is self-signed by default |
-| `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama endpoint for the AI assistant |
-| `AI_MODEL` | `qwen2.5:3b-instruct-q4_K_M` | Local model to use |
+| `OLLAMA_URL` | `https://ai.shadowco.xyz` | Ollama endpoint for the AI assistant (blank disables it) |
+| `OLLAMA_API_KEY` | *(empty)* | Bearer token, if that endpoint requires one |
+| `AI_MODEL` | `qwen3:4b-instruct` | Model to use |
+| `ROULETTE_POOL_PAGES` | `4` | Catalogue pages per category when building a roulette pool |
 | `AI_ENABLED` | `true` | Set false to hide the AI panel |
 | `AI_TIMEOUT` | `180` | Seconds to wait for the model |
 | `HOST_RAM_GB` / `HOST_CPU_COUNT` | auto | Describe the **Crafty** host when it is a different machine |

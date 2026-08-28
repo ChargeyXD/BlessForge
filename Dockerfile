@@ -7,11 +7,21 @@ LABEL org.opencontainers.image.title="BlessForge" \
       org.opencontainers.image.documentation="https://github.com/ChargeyXD/BlessForge#readme" \
       org.opencontainers.image.licenses="MIT"
 
+# MALLOC_ARENA_MAX: glibc gives each thread its own arena (up to 8x cores),
+# and each arena keeps its own free lists. On an 8-core box that is a lot of
+# memory held per-arena and never returned. Two arenas is plenty for a
+# mostly-async process and cuts the resident footprint of a big install
+# substantially.
+# MALLOC_TRIM_THRESHOLD_: without it glibc raises the trim threshold
+# dynamically as the process allocates big blocks, and after a 400 MB install
+# it will effectively never trim on its own again.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PORT=8710 \
-    DATA_DIR=/data
+    DATA_DIR=/data \
+    MALLOC_ARENA_MAX=2 \
+    MALLOC_TRIM_THRESHOLD_=134217728
 
 WORKDIR /app
 

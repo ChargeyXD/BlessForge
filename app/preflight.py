@@ -151,11 +151,22 @@ async def analyse_manifest_pack(
             )
             all_mods.extend(bundled)
 
+    # Ask Modrinth about every mod by hash BEFORE splitting the list. The
+    # order is the whole point: a mod nothing else suspected can still be
+    # declared client-only by its author, and that is the case that used to
+    # sail through the review and crash the server on first boot.
+    matched = await _augment_with_modrinth_by_hash(job, all_mods)
+    if matched:
+        job.log_line(f"Modrinth identified {matched} of {len(all_mods)} jars by "
+                     "file hash and stated which side each one runs on")
+
     flagged = [m for m in all_mods if m["reasons"]]
     keep = [m for m in all_mods if not m["reasons"]]
 
-    # Cross-check against Modrinth, which states sides explicitly. This can
-    # clear a mod outright, so it runs before the candidate list is fixed.
+    # Slug-based fallback for the jars Modrinth could not identify by hash --
+    # CurseForge-exclusive mods, mostly. Only ever applied to mods something
+    # else already flagged, because a guessed slug can land on the wrong
+    # project.
     job.set_step("Checking mod side information", 60)
     await _augment_with_modrinth(flagged)
 
@@ -221,6 +232,83 @@ async def analyse_manifest_pack(
     }
 
 
+async def _augment_with_modrinth_by_hash(job: Job, items: list[dict]) -> int:
+    """Ask Modrinth about EVERY mod, by file hash, before anything is flagged.
+
+    This is the check that was missing, and it is the reason a client-only
+    mod like Figura installed cleanly and then took the server down on its
+    first start. The old flow only consulted Modrinth for mods some *other*
+    signal had already flagged -- so the single most authoritative source we
+    have (the author stating `server_side: unsupported`) was never asked
+    about the mods nobody had thought to put on a name list.
+
+    Matching is by SHA-1 of the exact jar, not by a slug guessed from a
+    display name, so it cannot land on the wrong project. Two bulk requests
+    cover a 300-mod pack.
+    """
+    if not config.MODRINTH_ENABLED:
+        return 0
+    by_hash = {i["sha1"]: i for i in items if i.get("sha1")}
+    if not by_hash:
+        return 0
+
+    job.set_step(f"Checking {len(by_hash)} mods against Modrinth", 58)
+    hashes = list(by_hash)
+    versions: dict[str, dict] = {}
+    for start in range(0, len(hashes), 250):
+        try:
+            versions.update(
+                await modrinth.versions_from_hashes(hashes[start: start + 250])
+            )
+        except Exception:
+            continue
+    if not versions:
+        return 0
+
+    project_ids = {v.get("mod_id") for v in versions.values() if v.get("mod_id")}
+    try:
+        projects = await modrinth.get_projects(project_ids)
+    except Exception:
+        return 0
+
+    matched = 0
+    for sha, version in versions.items():
+        item = by_hash.get(sha)
+        project = projects.get(version.get("mod_id"))
+        if not item or not project:
+            continue
+        matched += 1
+        item["modrinth_url"] = f"https://modrinth.com/mod/{project.get('slug')}"
+        _apply_modrinth_side(item, project.get("server_side"), exact=True)
+    return matched
+
+
+def _apply_modrinth_side(item: dict, side: str | None, *, exact: bool) -> None:
+    """Fold Modrinth's declared server support into a candidate's evidence."""
+    how = "" if exact else " (matched by name)"
+    if side == "unsupported":
+        item["reasons"].append(
+            f"Modrinth lists this mod as server_side: unsupported{how}")
+        item["confidence"] = "declared"
+    elif side == "required":
+        # The author says the server needs it. That outranks every heuristic
+        # we have, so clear the flags entirely -- but only for a mod
+        # something actually flagged. Marking all 190 healthy server mods
+        # "cleared" would be true and useless, and it made the job log claim
+        # it had rescued 169 mods from a review none of them were in.
+        if item["reasons"]:
+            item["reasons"] = [
+                f"Modrinth lists server_side: required — this mod belongs on "
+                f"the server{how}"
+            ]
+            item["confidence"] = "cleared"
+    elif side == "optional" and item["reasons"]:
+        item["reasons"].append(
+            f"Modrinth lists server_side: optional — it may still be needed{how}")
+        if item["confidence"] != "declared":
+            item["confidence"] = "contradicted"
+
+
 async def _augment_with_modrinth(candidates: list[dict]) -> None:
     """Ask Modrinth about each candidate by slug; it states the side outright."""
     if not config.MODRINTH_ENABLED or not candidates:
@@ -228,6 +316,10 @@ async def _augment_with_modrinth(candidates: list[dict]) -> None:
     sem = asyncio.Semaphore(6)
 
     async def one(item: dict) -> None:
+        # A hash match is exact; a slug guessed from a display name is not,
+        # so it must never overrule one.
+        if item.get("modrinth_url"):
+            return
         async with sem:
             # Derive a plausible slug from the display name.
             slug = (item["name"] or "").lower()
@@ -241,26 +333,7 @@ async def _augment_with_modrinth(candidates: list[dict]) -> None:
                 return
             if not project:
                 return
-            side = project.get("server_side")
-            if side == "unsupported":
-                item["reasons"].append(
-                    "Modrinth lists this mod as server_side: unsupported")
-                item["confidence"] = "declared"
-                item["modrinth_url"] = project.get("url")
-            elif side == "required":
-                # The author says the server needs it. That outranks every
-                # heuristic we have, so clear the flags entirely.
-                item["reasons"] = [
-                    "Modrinth lists server_side: required — this mod belongs "
-                    "on the server"
-                ]
-                item["confidence"] = "cleared"
-                item["modrinth_url"] = project.get("url")
-            elif side == "optional":
-                item["reasons"].append(
-                    "Modrinth lists server_side: optional — it may still be needed")
-                item["confidence"] = "contradicted"
-                item["modrinth_url"] = project.get("url")
+            _apply_modrinth_side(item, project.get("server_side"), exact=False)
 
     await asyncio.gather(*(one(c) for c in candidates))
 
@@ -277,15 +350,21 @@ async def _augment_with_jar_metadata(job: Job, items: list[dict]) -> None:
             nonlocal done
             async with sem:
                 try:
-                    blob = await curseforge.download_cached(
-                        {"file_id": item["file_id"],
-                         "file_name": item["file_name"],
-                         "download_url": item.get("download_url"),
-                         "size": item.get("size")},
-                        client,
-                    )
-                    info = jarmeta.parse(blob, item["file_name"])
-                    _apply_jar_info(item, info)
+                    meta = {"file_id": item["file_id"],
+                            "file_name": item["file_name"],
+                            "download_url": item.get("download_url"),
+                            "size": item.get("size")}
+                    # Cache to disk first, then read one jar at a time. The
+                    # install afterwards reuses the same file without ever
+                    # holding it, so nothing here scales with pack size.
+                    cached = await curseforge.cache_jar(meta, client)
+                    blob = (cached.read_bytes() if cached
+                            else await curseforge.download_cached(meta, client))
+                    try:
+                        item["sha1"] = modrinth.sha1(blob)
+                        _apply_jar_info(item, jarmeta.parse(blob, item["file_name"]))
+                    finally:
+                        del blob
                 except Exception:
                     pass
                 finally:
@@ -355,6 +434,7 @@ def _scan_bundled_jars(zf: zipfile.ZipFile, plan: PackPlan) -> list[dict]:
         try:
             blob = zf.read(entry["member"])
             item["size"] = len(blob)
+            item["sha1"] = modrinth.sha1(blob)
             info = jarmeta.parse(blob, name)
             item["name"] = info.get("name") or name
             _apply_jar_info(item, info)
@@ -379,7 +459,7 @@ async def _dependency_targets(file_meta: dict) -> dict[int, set[str]]:
 async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile, plan: PackPlan
                                    ) -> dict:
     """Same idea for a server pack, where the jars are already in hand."""
-    candidates: list[dict] = []
+    all_jars: list[dict] = []
     total = 0
     for entry in plan.overlay_members:
         target = entry["target"]
@@ -389,8 +469,10 @@ async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile, plan: PackPlan
         name = target.split("/")[-1]
         reasons = []
         confidence = "none"
+        sha = None
         try:
             blob = zf.read(entry["member"])
+            sha = modrinth.sha1(blob)
             info = jarmeta.parse(blob, name)
             if info.get("side") == "client":
                 reasons.append("the jar declares environment=client")
@@ -400,16 +482,32 @@ async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile, plan: PackPlan
         if _reason_from_name(name):
             reasons.append("name matches a known client-only mod")
             confidence = confidence or "name"
-        if reasons:
-            candidates.append({
-                "file_name": name,
-                "name": info.get("name") or name,
-                "mod_id": info.get("mod_id"),
-                "reasons": reasons,
-                "confidence": confidence,
-                "recommendation": "remove" if confidence == "jar" else "review",
-                "size": None,
-            })
+        # Held for the hash pass below whether or not anything flagged it:
+        # the author's own statement is what catches the ones no heuristic
+        # spotted.
+        all_jars.append({
+            "file_name": name,
+            "name": info.get("name") or name,
+            "mod_id": info.get("mod_id"),
+            "sha1": sha,
+            "reasons": reasons,
+            "confidence": confidence,
+            "size": None,
+        })
+
+    matched = await _augment_with_modrinth_by_hash(job, all_jars)
+    if matched:
+        job.log_line(f"Modrinth identified {matched} of {total} jars by file "
+                     "hash and stated which side each one runs on")
+
+    candidates = []
+    for item in all_jars:
+        if not item["reasons"] or item["confidence"] == "cleared":
+            continue
+        item["recommendation"] = (
+            "remove" if item["confidence"] in ("declared", "jar") else "review"
+        )
+        candidates.append(item)
 
     job.log_line(
         f"{len(candidates)} possible client-only jars in the server pack"

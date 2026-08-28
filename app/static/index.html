@@ -1,390 +1,85 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <title>BlessForge — Modpack Studio for Crafty</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='4' fill='%23191c14'/><path d='M4 4l3 3h10l3-3-1 7 2 3-4 2-5 5-5-5-4-2 2-3z' fill='%23d97742'/><rect x='9' y='10' width='2' height='2' fill='%23191c14'/><rect x='13' y='10' width='2' height='2' fill='%23191c14'/><rect x='11' y='14' width='2' height='2' fill='%237fa257'/></svg>">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlessForge</title>
+<link rel="icon" href="/static/img/appmark-fox.png">
 
-  <!-- Theme bootstrap. Four lines, inline on purpose: reading the stored theme
-       after app.js loads would paint dark first and then flip. Nothing else
-       runs here. -->
-  <script>
-    try {
-      var t = localStorage.getItem("bf-theme");
-      if (t === "light") document.documentElement.setAttribute("data-theme", "light");
-    } catch (e) {}
-  </script>
+<!-- Loaded non-blocking on purpose: this box is often on a LAN with no route
+     out, and the app must paint immediately when fonts.googleapis.com never
+     answers. The stacks in style.css stand in until (or unless) these land. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" media="print" onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
 
-  <!-- Web fonts are loaded non-blocking on purpose. BlessForge usually runs
-       on a LAN box that may have no route to the internet, and a plain
-       stylesheet link there stalls first paint until DNS to fonts.googleapis
-       .com times out -- seconds of white screen. Swapping media to "all"
-       on load applies the fonts when they arrive; style.css already declares
-       system-font fallbacks, so the UI is fully usable either way. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" media="print" onload="this.media='all';this.onload=null"
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
-  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"></noscript>
-  <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<header class="app-header">
-  <div class="header-inner">
-    <button class="brand" id="homeBtn" title="Back to instances" aria-label="Back to instances">
-      <span class="logo-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M3 3l4 3h10l4-3-1 7 2 3-4 2-6 6-6-6-4-2 2-3z" fill="currentColor"></path>
-          <path d="M12 21l-6-6 3-1h6l3 1z" fill="#e8e9e0" opacity=".9"></path>
-          <rect x="8" y="10" width="2.5" height="2.5" fill="#11130e"></rect>
-          <rect x="13.5" y="10" width="2.5" height="2.5" fill="#11130e"></rect>
-          <rect x="11" y="15" width="2" height="2" fill="#11130e"></rect>
-        </svg>
-      </span>
-      <span class="brand-text">
-        <span class="brand-name">Bless<em>Forge</em></span>
-        <span class="brand-tag">Studio</span>
-      </span>
-    </button>
+<div class="shell">
 
-    <nav id="topNav" class="nav-links" aria-label="Primary">
-      <button data-view="instances" class="nav-btn active" aria-current="page">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
-        <span>Instances</span>
+  <!-- ============ FLEET SPINE ============ -->
+  <aside class="spine" aria-label="Fleet">
+    <div class="spine-head">
+      <div class="appmark"><img src="/static/img/appmark-fox.png" alt=""></div>
+      <div style="min-width:0">
+        <div class="appmark-name">BlessForge</div>
+        <div class="appmark-sub" id="shellSub">home rack</div>
+      </div>
+      <div class="spacer"></div>
+      <button class="palette-btn" id="paletteBtn" title="Command palette"
+              aria-label="Open the command palette"><span class="kbd">⌘K</span></button>
+    </div>
+
+    <nav class="spine-nav">
+      <button class="nav-item" data-view="discover">
+        <span class="glyph">⌕</span><span>Discover modpacks</span>
       </button>
-      <button data-view="browse" class="nav-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-        <span>Browse Packs</span>
-      </button>
-      <button data-view="jobs" class="nav-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-        <span>Activity</span>
-        <span id="activeJobsBadge" class="badge-dot hidden" aria-hidden="true"></span>
+      <button class="nav-item" data-view="activity">
+        <span class="glyph">◴</span><span>Activity</span>
+        <span class="spacer"></span>
+        <span class="pill ember hidden" id="jobBadge"><span class="dot"></span><span id="jobBadgeN">0</span></span>
       </button>
     </nav>
 
-    <div class="header-status">
-      <span id="aiPill" class="pill pill-ai hidden" role="status" title="Local AI assistant">
-        <span class="pill-dot"></span>
-        <span class="pill-text">AI Ready</span>
-      </span>
-      <span id="health" class="pill pill-health" role="status">
-        <span class="pill-dot"></span>
-        <span class="pill-text">checking…</span>
-      </span>
-      <button class="theme-toggle" id="themeToggle" title="Switch theme"
-              aria-label="Switch to light theme" aria-pressed="false">
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4.5"></circle><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M5 5l1.8 1.8M17.2 17.2L19 19M19 5l-1.8 1.8M6.8 17.2L5 19"></path></svg>
-      </button>
+    <div class="spine-section">
+      <span>Fleet</span><span class="spacer"></span><span class="count" id="fleetSummary"></span>
     </div>
+    <div class="fleet" id="fleet"></div>
+
+    <div class="spine-foot">
+      <button class="btn" style="width:100%" id="newServerBtn">+ New server from a modpack</button>
+      <button class="nav-item" id="systemsToggle" style="margin-top:6px" aria-expanded="false">
+        <span class="glyph">⚙</span><span>Systems</span>
+        <span class="spacer"></span>
+        <span class="pill" id="systemsPill"><span class="dot"></span><span id="systemsN">—</span></span>
+      </button>
+      <div id="systems" class="hidden" style="margin-top:6px"></div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1 id="ctxTitle">BlessForge</h1>
+        <span class="topbar-sub" id="ctxSub"></span>
+      </div>
+      <div class="spacer"></div>
+      <nav class="tabs" id="tabs" role="tablist" aria-label="Sections"></nav>
+      <button class="btn sm ghost" id="drawerBtn" title="Show running work">◴</button>
+    </header>
+
+    <main class="canvas" id="canvas"></main>
   </div>
-</header>
 
-<main class="app-main">
-  <div id="setup" class="banner banner-setup hidden" role="status"></div>
-
-  <!-- ============ INSTANCES (list) ============ -->
-  <section id="view-instances" class="view active">
-    <div class="view-header">
-      <div class="view-titles">
-        <h1 class="view-title">Server Instances</h1>
-        <p class="view-subtitle">Minecraft servers registered in Crafty Controller — installed modpacks, configs, and live telemetry.</p>
-      </div>
-      <div class="view-actions">
-        <button class="btn btn-secondary" id="refreshInstances">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-          <span>Refresh</span>
-        </button>
-        <button class="btn btn-secondary" id="gotoImport" title="Install a modpack you exported from the CurseForge app">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-          <span>Import Export</span>
-        </button>
-        <button class="btn btn-primary" id="gotoBrowse">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          <span>Install Modpack</span>
-        </button>
-      </div>
-    </div>
-    <div id="instances" class="grid-cards"></div>
-  </section>
-
-  <!-- ============ BROWSE ============ -->
-  <section id="view-browse" class="view">
-    <div class="view-header">
-      <div class="view-titles">
-        <h1 class="view-title">Browse Modpacks</h1>
-        <p class="view-subtitle">CurseForge catalogue with automatic server assembly and client-only mod stripping review.</p>
-      </div>
-      <div class="view-actions">
-        <button class="btn btn-secondary" id="importPackBtn" title="Install a modpack you exported from the CurseForge app">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-          <span>Import Export</span>
-        </button>
-      </div>
-    </div>
-
-    <div class="card filter-card">
-      <div class="search-toolbar">
-        <div class="search-input-wrap">
-          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-          <input type="search" id="q" placeholder="Search modpacks by name, theme or author…">
-        </div>
-        <div class="filter-selects">
-          <select id="mcv" class="custom-select" aria-label="Minecraft version"><option value="">All MC Versions</option></select>
-          <select id="loader" class="custom-select" aria-label="Mod loader">
-            <option value="">All Loaders</option>
-            <option value="neoforge">NeoForge</option>
-            <option value="forge">Forge</option>
-            <option value="fabric">Fabric</option>
-          </select>
-          <select id="sort" class="custom-select" aria-label="Sort order">
-            <option value="2">Popularity</option>
-            <option value="6">Total Downloads</option>
-            <option value="3">Recently Updated</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" id="searchBtn"><span>Search</span></button>
-      </div>
-    </div>
-
-    <!-- Private packs never appear in a catalogue search, so the way in has to
-         be on the search page itself, above the results, rather than behind a
-         menu or an empty state -- otherwise the only answer the app appears to
-         have for "my own pack" is "no results". -->
-    <div class="import-cta" id="importCta">
-      <div class="import-cta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg></div>
-      <div class="import-cta-body">
-        <strong class="import-cta-title">Built your own pack?</strong>
-        <span class="import-cta-sub">Export the profile from the CurseForge app and drop the .zip here — same client-mod review, same tuning, no catalogue search needed.</span>
-      </div>
-      <button class="btn btn-primary" id="importCtaBtn">Import a pack export</button>
-    </div>
-
-    <div id="packs" class="grid pack-grid"></div>
-
-    <div class="load-more-wrap">
-      <button class="btn btn-secondary" id="morePacks">Load More Modpacks</button>
-    </div>
-  </section>
-
-  <!-- ============ INSTANCE DETAIL ============ -->
-  <section id="view-instance" class="view">
-    <div class="crumb-nav">
-      <button class="btn btn-sm btn-ghost" id="backToList">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
-        <span>All Instances</span>
-      </button>
-      <span class="crumb-sep">/</span>
-      <span class="crumb-current" id="crumbName"></span>
-    </div>
-
-    <div class="card inst-hero-card">
-      <div class="inst-hero-inner">
-        <div class="inst-hero-info">
-          <div class="inst-title-row">
-            <h2 id="instName" class="inst-main-title"></h2>
-            <span id="instState" class="pill pill-status"></span>
-          </div>
-          <div class="inst-meta-tags" id="instMeta"></div>
-        </div>
-        <div class="inst-power-actions">
-          <button class="btn btn-sm btn-power btn-power-start" data-power="start_server" title="Start Server">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-            <span>Start</span>
-          </button>
-          <button class="btn btn-sm btn-power btn-power-stop" data-power="stop_server" title="Gracefully Stop Server">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="6" y="6" width="12" height="12"></rect></svg>
-            <span>Stop</span>
-          </button>
-          <button class="btn btn-sm btn-power btn-power-restart" data-power="restart_server" title="Restart Server">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-            <span>Restart</span>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="tab-navigation" id="instTabs" role="tablist" aria-label="Instance sections">
-      <button data-tab="mods" class="tab-btn active" role="tab" id="tabbtn-mods" aria-controls="tab-mods" aria-selected="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-        <span>Mods</span>
-        <span class="tab-count" data-tab-count="mods"></span>
-      </button>
-      <button data-tab="configs" class="tab-btn" role="tab" id="tabbtn-configs" aria-controls="tab-configs" aria-selected="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
-        <span>Configs</span>
-        <span class="tab-count" data-tab-count="configs"></span>
-      </button>
-      <button data-tab="troubleshoot" class="tab-btn" role="tab" id="tabbtn-troubleshoot" aria-controls="tab-troubleshoot" aria-selected="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
-        <span>Troubleshoot &amp; AI</span>
-      </button>
-      <button data-tab="optimize" class="tab-btn" role="tab" id="tabbtn-optimize" aria-controls="tab-optimize" aria-selected="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-        <span>Optimizer</span>
-      </button>
-      <button data-tab="pack" class="tab-btn" role="tab" id="tabbtn-pack" aria-controls="tab-pack" aria-selected="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-        <span>Modpack</span>
-      </button>
-    </div>
-
-    <!-- ---- Mods tab ---- -->
-    <div class="tabpane active" id="tab-mods" role="tabpanel" aria-labelledby="tabbtn-mods" tabindex="0">
-      <div class="card mod-toolbar-card">
-        <div class="mod-toolbar">
-          <div class="search-input-wrap mod-search">
-            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-            <input type="search" id="modFilter" placeholder="Filter installed mods…">
-          </div>
-          <select id="modState" class="custom-select" aria-label="Mod state filter">
-            <option value="all">All Mods</option>
-            <option value="enabled">Enabled Only</option>
-            <option value="disabled">Disabled Only</option>
-            <option value="unidentified">Unidentified Only</option>
-          </select>
-          <div class="spacer"></div>
-          <div class="toolbar-btns">
-            <button class="btn btn-sm btn-secondary" id="identifyMods" title="Hash jars to match CurseForge and Modrinth projects">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"></path><line x1="16" y1="8" x2="2" y2="22"></line><line x1="17.5" y1="15" x2="9" y2="15"></line></svg>
-              <span>Identify Unknown</span>
-            </button>
-            <button class="btn btn-sm btn-secondary" id="checkUpdates">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-              <span>Check Updates</span>
-            </button>
-            <button class="btn btn-sm btn-primary" id="addModBtn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-              <span>Add Mod</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card mod-list-card">
-        <div class="mod-list-head">
-          <label class="custom-checkbox">
-            <input type="checkbox" id="selAll" aria-label="Select all mods">
-            <span class="checkbox-mark"></span>
-          </label>
-          <span id="modStats" class="mod-count-pill"></span>
-          <div class="spacer"></div>
-          <div id="bulkBar" class="bulk-bar hidden">
-            <span class="bulk-count" id="selCount"></span>
-            <div class="bulk-btns">
-              <button class="btn btn-sm btn-secondary" data-bulk="enable">Enable</button>
-              <button class="btn btn-sm btn-secondary" data-bulk="disable">Disable</button>
-              <button class="btn btn-sm btn-danger" data-bulk="delete">Delete</button>
-            </div>
-          </div>
-        </div>
-        <div id="modList" class="modlist"></div>
-      </div>
-    </div>
-
-    <!-- ---- Configs tab ---- -->
-    <div class="tabpane" id="tab-configs" role="tabpanel" aria-labelledby="tabbtn-configs" tabindex="0">
-      <div class="config-split-layout">
-        <div class="config-sidebar card">
-          <div class="search-input-wrap">
-            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-            <input type="search" id="cfgFilter" placeholder="Filter config files…">
-          </div>
-          <div class="list-side" id="cfgList"></div>
-        </div>
-        <div class="card config-editor-pane">
-          <div class="config-editor-head">
-            <div class="config-path-wrap">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-              <strong id="cfgPath" class="mono cfg-path-text">No file selected</strong>
-            </div>
-            <span id="cfgStatus" class="cfg-status-pill"></span>
-            <button class="btn btn-sm btn-primary" id="cfgSave" disabled>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-              <span>Save Changes</span>
-            </button>
-          </div>
-          <!-- The gutter is a plain <pre> on the same font metrics as the
-               textarea. app.js writes the line numbers on load and on input,
-               and mirrors the textarea's scrollTop onto it. -->
-          <div class="editor-wrap">
-            <pre class="editor-gutter" id="cfgGutter" aria-hidden="true"></pre>
-            <textarea class="editor mono" id="cfgEditor" spellcheck="false" placeholder="Select a configuration file on the left to edit…"></textarea>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ---- Troubleshoot tab ---- -->
-    <div class="tabpane" id="tab-troubleshoot" role="tabpanel" aria-labelledby="tabbtn-troubleshoot" tabindex="0">
-      <div class="card troubleshoot-action-card">
-        <div class="troubleshoot-actions">
-          <button class="btn btn-primary" id="runDiag">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-            <span>Run Health Checks</span>
-          </button>
-          <button class="btn btn-secondary" id="runDeep" title="Download jars and build the complete dependency graph to catch missing deps before launch">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-            <span>Deep Dependency Scan</span>
-          </button>
-          <button class="btn btn-accent" id="runAI">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4l3 3h10l3-3-1 7 2 3-4 2-5 5-5-5-4-2 2-3z" fill="currentColor"></path></svg>
-            <span>Ask AI Assistant</span>
-          </button>
-          <div class="spacer"></div>
-          <span class="faint" id="aiHint"></span>
-        </div>
-      </div>
-      <div id="aiOut"></div>
-      <div id="diagOut"></div>
-      <div class="card flush hidden" id="logCard">
-        <div class="log-card-head">
-          <div class="log-title-row">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-            <h3 class="log-title">Latest Server &amp; Crash Logs</h3>
-          </div>
-          <div class="spacer"></div>
-          <span class="mono faint" id="logPath"></span>
-        </div>
-        <div class="log" id="logTail"></div>
-      </div>
-    </div>
-
-    <!-- ---- Optimize tab ---- -->
-    <div class="tabpane" id="tab-optimize" role="tabpanel" aria-labelledby="tabbtn-optimize" tabindex="0">
-      <div id="optOut">
-        <div class="card flush">
-          <div class="skel-row"><span class="skel skel-tile"></span><span class="skel skel-line w40"></span></div>
-          <div class="skel-row"><span class="skel skel-tile"></span><span class="skel skel-line w60"></span></div>
-          <div class="skel-row"><span class="skel skel-tile"></span><span class="skel skel-line w25"></span></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ---- Modpack tab ---- -->
-    <div class="tabpane" id="tab-pack" role="tabpanel" aria-labelledby="tabbtn-pack" tabindex="0">
-      <div id="packOut"></div>
-    </div>
-  </section>
-
-  <!-- ============ JOBS ============ -->
-  <section id="view-jobs" class="view">
-    <div class="view-header">
-      <div class="view-titles">
-        <h1 class="view-title">Activity &amp; Tasks</h1>
-        <p class="view-subtitle">Modpack installations, dependency scans and AI diagnostics. Finished tasks are pruned after an hour.</p>
-      </div>
-    </div>
-    <div id="jobList" class="job-list-container"></div>
-  </section>
-</main>
+  <div id="drawerHost"></div>
+</div>
 
 <div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
-<div id="modalRoot"></div>
+<div id="overlays"></div>
 
 <script src="/static/app.js"></script>
 </body>

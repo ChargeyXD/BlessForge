@@ -249,10 +249,46 @@ def _scan_missing_client_class(text: str) -> list[dict]:
     return []
 
 
+_JAVA_FEATURE_LOG = re.compile(
+    r"([\w\-.]+)\s*\([\w\-.]+\) is missing a feature it requires to run"
+    r".*?requires\s+javaVersion\s+([\d.]+)\s+or above.*?but\s+([\d.]+)\s+is"
+    r"\s+available",
+    re.I | re.S,
+)
+
+
+def _scan_java_feature(text: str) -> list[dict]:
+    """A mod rejecting the JVM it was handed.
+
+    Forge and NeoForge check the Java version per mod and abort the whole
+    load when one refuses, naming that mod. The mod is not the problem: the
+    instance is running a Java the pack never supported -- most often because
+    the host's default `java` is newer than the loader allows. Reported as a
+    runtime fault rather than a mod fault, because "disable Cobblemon" is the
+    one fix that cannot work here.
+    """
+    m = _JAVA_FEATURE_LOG.search(text)
+    if not m:
+        return []
+    mod, need, have = m.group(1), m.group(2), m.group(3)
+    major = need.split(".")[0]
+    return [_finding(
+        "critical", f"Java {have.split('.')[0]} is installed, but the pack needs "
+                    f"Java {major}",
+        f"{mod} refused to load because it requires Java {need} or above and "
+        f"below the next major, and this instance launched with Java {have}. "
+        "Every mod that checks will refuse in turn, so this is one fault and "
+        "not a mod problem -- pinning the instance to the right Java fixes it.",
+        fix={"action": "set_java", "java_major": int(major)},
+        evidence=" ".join(m.group(0).split())[:400],
+        category="runtime",
+    )]
+
+
 def scan_text(text: str) -> list[dict]:
     """Run every pattern over a log/crash report."""
     findings = (_scan_missing_deps(text) + _scan_wrong_environment(text)
-                + _scan_missing_client_class(text))
+                + _scan_missing_client_class(text) + _scan_java_feature(text))
     for pattern, builder in _PATTERNS:
         m = pattern.search(text)
         if m:
@@ -464,37 +500,19 @@ async def quick_check(server_id: str) -> dict:
     except Exception:
         pass
 
-    # Mods built for a different Minecraft version. The filename is not
-    # authoritative, but a jar named "...-1.20.1-..." sitting in a 1.21.1
-    # instance is worth surfacing -- that mismatch is a very common cause of
-    # a loader refusing the whole mod set.
+    # Mods built for a different Minecraft version.
+    #
+    # This used to be a pure filename scan, which meant a health check on a
+    # perfectly good instance announced that a dozen mods "may target a
+    # different Minecraft version" purely because their own version number
+    # happened to look like one -- `create-1.20.1-0.5.1` on a 1.21.1 server,
+    # or worse, `sodium-0.5.8` where 0.5.8 was never a game version at all.
+    # The filename is now only used to pick candidates; nothing is reported
+    # until the claim has been checked against what the mod's own publisher
+    # says the file supports.
     mc = manifest.get("minecraft")
     if mc and mod_files:
-        mismatched = []
-        for f in mod_files:
-            if f.endswith(".disabled"):
-                continue
-            found = set(re.findall(r"1\.\d{1,2}(?:\.\d{1,2})?", f))
-            # Ignore mod version numbers that merely look like MC versions by
-            # requiring every detected version to disagree with the instance.
-            if found and mc not in found:
-                # A 1.21 tag on a 1.21.1 server is fine.
-                base = ".".join(mc.split(".")[:2])
-                if not any(v == base or mc.startswith(v) for v in found):
-                    mismatched.append({"file": f, "detected": sorted(found)})
-        if mismatched:
-            findings.append(_finding(
-                "warning",
-                f"{len(mismatched)} mod(s) may target a different Minecraft version",
-                "These filenames mention a version other than "
-                f"{mc}: " + ", ".join(m["file"] for m in mismatched[:6])
-                + ("..." if len(mismatched) > 6 else "")
-                + ". Filenames can be misleading, so check before acting.",
-                fix={"action": "fix_versions",
-                     "files": [m["file"] for m in mismatched[:20]],
-                     "minecraft": mc},
-                category="mods",
-            ))
+        findings.extend(await _version_mismatch_findings(mc, mod_files, manifest))
 
     # Install problems recorded at install time
     for problem in (manifest.get("problems") or [])[:20]:
@@ -514,6 +532,139 @@ async def quick_check(server_id: str) -> dict:
         "minecraft": manifest.get("minecraft"),
         "loader": manifest.get("loader"),
     }
+
+
+
+# --- version verification ----------------------------------------------
+
+
+def _versions_in_name(filename: str) -> set[str]:
+    """Version-shaped tokens in a jar name, minus the mod's own version.
+
+    A jar is named `<mod>-<mcversion>-<modversion>.jar` about half the time
+    and `<mod>-<modversion>.jar` the rest, and nothing in the name says
+    which. So this is a candidate filter, never a verdict.
+    """
+    return set(re.findall(r"(?<![\d.])(1\.\d{1,2}(?:\.\d{1,2})?)(?![\d.])", filename))
+
+
+def _accepts(mc: str, declared: set[str]) -> bool:
+    """Does a set of declared game versions cover this instance?"""
+    if not declared:
+        return True                      # nothing declared, nothing to contradict
+    if mc in declared:
+        return True
+    base = ".".join(mc.split(".")[:2])    # 1.21.1 -> 1.21
+    return any(v == base or v == mc or mc.startswith(v + ".") for v in declared)
+
+
+async def _declared_game_versions(manifest: dict, files: list[str]
+                                  ) -> dict[str, set[str]]:
+    """Ask CurseForge/Modrinth what each installed file actually supports.
+
+    Two bulk calls for the whole instance, not one per mod: both APIs take a
+    list. Only mods recorded at install time (or matched by Identify) can be
+    checked this way, which is exactly the honest limit of this check.
+    """
+    records = {
+        posixpath.basename(r.get("file", "")): r for r in manifest.get("mods", [])
+    }
+    wanted = {f: records.get(f.replace(".disabled", "")) for f in files}
+
+    cf_ids: dict[int, list[str]] = defaultdict(list)
+    mr_ids: dict[str, list[str]] = defaultdict(list)
+    for fname, record in wanted.items():
+        if not record or not record.get("file_id"):
+            continue
+        if record.get("source") == "curseforge":
+            try:
+                cf_ids[int(record["file_id"])].append(fname)
+            except (TypeError, ValueError):
+                continue
+        elif record.get("source") == "modrinth":
+            mr_ids[str(record["file_id"])].append(fname)
+
+    declared: dict[str, set[str]] = {}
+    if cf_ids:
+        try:
+            metas = await curseforge.get_files(list(cf_ids))
+            for fid, meta in metas.items():
+                for fname in cf_ids.get(int(fid), []):
+                    declared[fname] = set(meta.get("game_versions") or [])
+        except Exception:
+            pass
+    if mr_ids:
+        async def one(version_id: str, names: list[str]) -> None:
+            try:
+                version = await modrinth.get_version(version_id)
+            except Exception:
+                return
+            if version:
+                for fname in names:
+                    declared[fname] = set(version.get("game_versions") or [])
+
+        await asyncio.gather(*(one(v, n) for v, n in mr_ids.items()))
+    return declared
+
+
+async def _version_mismatch_findings(mc: str, mod_files: list[str],
+                                     manifest: dict) -> list[dict]:
+    """Report only the mods whose publisher says they do not support `mc`."""
+    candidates = []
+    for f in mod_files:
+        if f.endswith(".disabled"):
+            continue
+        found = _versions_in_name(f)
+        if found and not _accepts(mc, found):
+            candidates.append(f)
+    if not candidates:
+        return []
+
+    declared = await _declared_game_versions(manifest, candidates[:60])
+
+    confirmed, unverified = [], []
+    for f in candidates:
+        versions = declared.get(f)
+        if versions is None:
+            unverified.append(f)
+        elif not _accepts(mc, versions):
+            confirmed.append({"file": f, "declared": sorted(versions)})
+
+    out = []
+    if confirmed:
+        out.append(_finding(
+            "error",
+            f"{len(confirmed)} mod(s) are published for a different Minecraft version",
+            "Their own listing says they do not support "
+            f"{mc}: "
+            + ", ".join(
+                f"{c['file']} (built for {', '.join(c['declared'][:3]) or 'unknown'})"
+                for c in confirmed[:6]
+            )
+            + ("..." if len(confirmed) > 6 else "")
+            + ". A loader normally refuses the whole mod set over this.",
+            fix={"action": "fix_versions",
+                 "files": [c["file"] for c in confirmed[:20]],
+                 "minecraft": mc},
+            category="mods",
+        ))
+    if unverified:
+        # Deliberately `info`, and deliberately worded as a question rather
+        # than a claim: all we know is that a filename mentions another
+        # number, which is true of a great many correctly installed mods.
+        out.append(_finding(
+            "info",
+            f"{len(unverified)} mod(s) could not be version-checked",
+            "These jars have never been matched to a project, so the only "
+            "thing to go on is the filename -- which mentions a version other "
+            f"than {mc}, but usually because that is the mod's own version "
+            "number. Run Identify Unknown on the Mods tab to check them "
+            "properly: "
+            + ", ".join(unverified[:6]) + ("..." if len(unverified) > 6 else ""),
+            fix={"action": "identify_mods"},
+            category="mods",
+        ))
+    return out
 
 
 # --- dependency graph --------------------------------------------------
@@ -743,3 +894,272 @@ async def suggest_dependency_sources(mod_id: str, *, game_version: str | None,
     except Exception as e:
         out["modrinth_error"] = str(e)
     return out
+
+
+# --- crash attribution -------------------------------------------------
+#
+# "The server crashed, which mod did it?" is the question actually asked
+# after a failed start, and it is not the same question as "is this instance
+# healthy". Answering it means reading the WHOLE crash report rather than a
+# tail of it: the section that names the culprit sits in the middle, between
+# the exception at the top and the system details at the bottom.
+#
+# Every attribution below carries the line it came from, because a mod named
+# without evidence is worth nothing to whoever has to decide whether to
+# disable it.
+
+# Forge and NeoForge each write a per-mod block when a mod fails to load,
+# and they do not agree on the heading or the field names:
+#
+#   Forge      -- MOD examplemod --
+#                Details:
+#                    Mod File: /path/to/examplemod-1.2.3.jar
+#                    Failure message: Mixin apply failed ...
+#
+#   NeoForge   -- Mod loading issue for: cobblemon --
+#                Details:
+#                    Mod file: /path/to/Cobblemon-neoforge-1.7.3+1.21.1.jar
+#                    Failure message: Cobblemon (cobblemon) is missing a
+#                        feature it requires to run
+#                            It requires javaVersion 21 or above ...
+#
+# Both are matched, and the failure message is read as a block rather than a
+# line: NeoForge puts the sentence that actually explains the crash on the
+# *continuation* line, indented under the first.
+_MOD_BLOCK = re.compile(
+    r"^--\s*(?:MOD\s+|Mod loading issue for:\s*)([\w\-.]+)\s*--\s*$"
+    r"(.*?)(?=^--\s|\Z)",
+    re.M | re.S,
+)
+_MOD_FILE = re.compile(r"Mod file:\s*(?:.*[/\\])?([^\s/\\]+\.jar)", re.I)
+_FAILURE_MSG = re.compile(
+    r"(?:Failure message|Exception message):[ \t]*(.+(?:\n[ \t]+\S.*)*)", re.I
+)
+
+# A mod refusing to run on the JVM it was given. The mod is named, but it is
+# not the culprit -- the Java version is -- and disabling the mod would be
+# exactly the wrong fix. Caught here so it can be reported as what it is.
+_JAVA_FEATURE = re.compile(
+    r"requires\s+javaVersion\s+([\d.]+)\s+or above.*?but\s+([\d.]+)\s+is available",
+    re.I | re.S,
+)
+
+# The header Forge prints above the stack trace on a mod-attributed crash.
+_SUSPECTED = re.compile(r"Suspected Mods?:\s*(.+)", re.I)
+
+# Mixin failures name the owning mod directly.
+_MIXIN_FAIL = re.compile(
+    r"Mixin apply(?:ing)? (?:for mod )?([\w\-.]+)?\s*failed[:\s]+(\S+)", re.I
+)
+_MIXIN_CONFIG = re.compile(r"([\w\-.]+)\.mixins\.json", re.I)
+
+# Fabric names the jar in brackets at the end of a frame it attributes.
+_TRACE_JAR = re.compile(r"\[([\w.\-+ ]+\.jar)(?::[^\]]*)?\]")
+
+# Frames belonging to the platform rather than to any mod. Counting these
+# would rank the loader as the top culprit on every single crash.
+_PLATFORM_JARS = re.compile(
+    r"^(fabric-loader|fabric-api|fabric[-_]|quilt|forge|neoforge|minecraft|"
+    r"server-intermediary|client-intermediary|mixin|asm|guava|gson|log4j|"
+    r"netty|authlib|brigadier|datafixerupper|sponge-mixin|bootstraplauncher|"
+    r"securejarhandler|modlauncher|eventbus|coremods|accesstransformers)",
+    re.I,
+)
+
+# A package prefix that identifies the owning project of a stack frame.
+_FRAME_PACKAGE = re.compile(r"^\s*at\s+([\w.$]+)\.[\w$]+\(")
+
+
+def _mod_id_to_file(mod_id: str, mod_files: list[str]) -> str | None:
+    """Best match between a loader's mod id and a jar on disk."""
+    if not mod_id:
+        return None
+    norm = re.sub(r"[^a-z0-9]", "", mod_id.lower())
+    if not norm:
+        return None
+    best = None
+    for f in mod_files:
+        stem = re.sub(r"\.jar(\.disabled)?$", "", f, flags=re.I)
+        key = re.sub(r"[^a-z0-9]", "", stem.lower())
+        if key.startswith(norm) or norm in key:
+            # Prefer the shortest match: "create" should not win "createaddition".
+            if best is None or len(f) < len(best):
+                best = f
+    return best
+
+
+def _resolve_jar(name: str, mod_files: list[str]) -> str | None:
+    """Match a jar name from a log against the jars really installed."""
+    if not name:
+        return None
+    base = posixpath.basename(name.strip())
+    for f in mod_files:
+        if f == base or f == base + ".disabled" or _base(f) == base:
+            return f
+    key = re.sub(r"[^a-z0-9]", "", _base(base).lower())
+    for f in mod_files:
+        if re.sub(r"[^a-z0-9]", "", _base(f).lower()) == key:
+            return f
+    return None
+
+
+def _base(name: str) -> str:
+    return name[: -len(".disabled")] if name.endswith(".disabled") else name
+
+
+def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
+    """Name the mods a crash log implicates, strongest evidence first.
+
+    Ranked by how directly the log points at each one:
+      100  the loader wrote a "-- MOD x --" block naming the jar
+       90  the loader listed it under "Suspected Mods"
+       80  a mixin owned by the mod failed to apply
+       70  a client-only class was loaded from it on a dedicated server
+       40  its classes appear in the stack trace
+    """
+    hits: dict[str, dict] = {}
+
+    def add(file: str | None, score: int, why: str, evidence: str) -> None:
+        if not file:
+            return
+        current = hits.get(file)
+        if current is None:
+            hits[file] = {"file": file, "score": score, "why": why,
+                          "reasons": [why], "evidence": evidence.strip()[:400],
+                          "signals": 1}
+            return
+        # Every reason is kept, not just the strongest: "listed under
+        # Suspected Mods" and "loaded a client-only class on a server" are
+        # both true of the same jar and only the second one tells the user
+        # what to do about it. Two independent pointers at one jar is also
+        # worth saying on its own, so the count is tracked.
+        if why not in current["reasons"]:
+            current["reasons"].append(why)
+            current["signals"] += 1
+        if score > current["score"]:
+            current.update(score=score, why=why, evidence=evidence.strip()[:400])
+
+    # 1. Per-mod failure blocks -- the loader's own verdict.
+    for mod_id, block in _MOD_BLOCK.findall(text):
+        jar = _MOD_FILE.search(block)
+        failure = _FAILURE_MSG.search(block)
+        file = (_resolve_jar(jar.group(1), mod_files) if jar
+                else _mod_id_to_file(mod_id, mod_files))
+        message = " ".join((failure.group(1) if failure else "").split())
+        evidence = ((jar.group(0) if jar else "") + "\n"
+                    + (failure.group(0) if failure else ""))
+
+        java = _JAVA_FEATURE.search(block)
+        if java:
+            # Naming the mod here would send someone to disable a mod that is
+            # working perfectly. The instance is running the wrong Java.
+            add(file, 60,
+                f"it refuses to run on Java {java.group(2)} — it needs Java "
+                f"{java.group(1)}. The mod is fine; the instance's Java "
+                f"version is not, and disabling this mod will only move the "
+                f"failure to the next mod that checks.",
+                evidence)
+            continue
+        add(file, 100,
+            "the loader reported this mod as failed: "
+            + (message[:220] or "no reason given"),
+            evidence)
+
+    # 2. "Suspected Mods: Foo (foo), Bar (bar)"
+    for line in _SUSPECTED.findall(text):
+        for mod_id in re.findall(r"\(([\w\-.]+)\)", line):
+            add(_mod_id_to_file(mod_id, mod_files), 90,
+                "the loader listed it under Suspected Mods", line)
+
+    # 3. Mixin failures. The config filename carries the owning mod id even
+    #    when the message does not.
+    for match in _MIXIN_FAIL.finditer(text):
+        line = text[match.start(): text.find("\n", match.start())]
+        owner = match.group(1)
+        config = _MIXIN_CONFIG.search(match.group(2) or "") or _MIXIN_CONFIG.search(line)
+        mod_id = owner or (config.group(1) if config else "")
+        add(_mod_id_to_file(mod_id, mod_files), 80,
+            "one of its mixins failed to apply, which usually means it is "
+            "built against a different version of the mod it patches", line)
+
+    # 4. A client-only class loaded on a dedicated server, attributed to the
+    #    jar that appears in the frames underneath.
+    for match in _FABRIC_WRONG_ENV.finditer(text):
+        tail = text[match.end(): match.end() + 4000]
+        for jar in _TRACE_JAR.findall(tail):
+            if _PLATFORM_JARS.match(jar):
+                continue
+            add(_resolve_jar(jar, mod_files), 70,
+                f"it loaded the client-only class {match.group(1)} on a "
+                "dedicated server", match.group(0))
+            break
+
+    # 5. Stack-trace attribution, counted rather than taken at face value:
+    #    one frame proves nothing, a jar owning most of the trace does.
+    counts: dict[str, int] = defaultdict(int)
+    for jar in _TRACE_JAR.findall(text):
+        if _PLATFORM_JARS.match(jar):
+            continue
+        resolved = _resolve_jar(jar, mod_files)
+        if resolved:
+            counts[resolved] += 1
+    for file, count in sorted(counts.items(), key=lambda kv: -kv[1])[:5]:
+        if count < 2:
+            continue
+        add(file, 40,
+            f"its classes appear in {count} frames of the stack trace",
+            f"{file} x{count}")
+
+    ranked = sorted(hits.values(), key=lambda h: (-h["score"], -h["signals"],
+                                                  h["file"]))
+    for hit in ranked:
+        hit["confidence"] = ("high" if hit["score"] >= 90 else
+                             "medium" if hit["score"] >= 70 else "low")
+    return ranked
+
+
+async def read_crash_context(server_id: str) -> dict:
+    """Fetch the newest crash report and the server log, untrimmed."""
+    log_path, log_text = await _read_first_available(server_id, LOG_CANDIDATES)
+    crash_path, crash_text = await _latest_crash_report(server_id)
+    return {
+        "log_path": log_path, "log_text": log_text,
+        "crash_path": crash_path, "crash_text": crash_text,
+        "has_logs": bool(log_text or crash_text),
+    }
+
+
+async def crash_review(server_id: str) -> dict:
+    """Deterministic half of "which mod crashed this server".
+
+    Runs on its own (the Health Check surfaces it) and is also handed to the
+    model as evidence, so the two never disagree about what the log said.
+    """
+    context = await read_crash_context(server_id)
+    try:
+        entries = await crafty.list_dir(server_id, "mods")
+        mod_files = [
+            n for n, m in entries.items()
+            if n != "root_path" and isinstance(m, dict) and not m.get("dir")
+            and n.lower().endswith((".jar", ".jar.disabled"))
+        ]
+    except crafty.CraftyError:
+        mod_files = []
+
+    combined = "\n".join(t for t in (context["crash_text"], context["log_text"]) if t)
+    culprits = attribute_crash(combined, mod_files) if combined else []
+    findings = scan_text(combined) if combined else []
+
+    enabled_culprits = [c for c in culprits if not c["file"].endswith(".disabled")]
+    return {
+        "has_logs": context["has_logs"],
+        "crash_path": context["crash_path"],
+        "log_path": context["log_path"],
+        "crashed": bool(context["crash_text"]) or any(
+            f["severity"] == "critical" for f in findings
+        ),
+        "culprits": enabled_culprits,
+        "already_disabled": [c for c in culprits if c["file"].endswith(".disabled")],
+        "findings": sorted(findings, key=lambda f: SEVERITY_ORDER[f["severity"]]),
+        "mod_count": len(mod_files),
+    }

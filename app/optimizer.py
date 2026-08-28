@@ -124,7 +124,7 @@ async def apply(server_id: str, selection: dict) -> dict:
             )
         else:
             # Fabric/vanilla: memory lives in Crafty's launch command.
-            updated = await _rewrite_command_memory(server_id, heap, flags)
+            updated = await set_command_memory(server_id, heap, flags)
             result["applied"].append(
                 f"launch command: {heap:g} GB heap, {len(flags)} flags"
             )
@@ -179,13 +179,18 @@ async def _patch_properties(server_id: str, updates: dict) -> None:
     await crafty.write_file(server_id, "server.properties", "\n".join(out) + "\n")
 
 
-async def _rewrite_command_memory(
+async def set_command_memory(
     server_id: str, heap_gb: float, flags: list[str]
 ) -> str:
     """Swap -Xms/-Xmx (and our flags) inside Crafty's launch command.
 
     Used for Fabric and vanilla, which have no user_jvm_args.txt. The java
     path and everything after the flags is preserved exactly.
+
+    Public because the installer needs it too: a fresh Fabric instance keeps
+    whatever heap Crafty derived from the pack's requested RAM until someone
+    rewrites this command, and "someone" used to mean the user visiting the
+    Optimize tab and pressing a button.
     """
     server = await crafty.get_server(server_id)
     command = server.get("execution_command") or ""

@@ -101,6 +101,13 @@ MAX_UPLOAD_MB = _int("MAX_UPLOAD_MB", 4096)
 # How many imports to keep on disk. The oldest are pruned past this.
 MAX_UPLOADS = _int("MAX_UPLOADS", 12)
 
+# --- Mod Roulette ------------------------------------------------------
+# Catalogue pages (50 mods each) fetched per category when building a pool.
+# Four gives roughly 3,000 candidates on a well-served version, which is
+# ample for a 300-mod hand; raising it makes the first roll on a fresh
+# version slower and the pool broader.
+ROULETTE_POOL_PAGES = _int("ROULETTE_POOL_PAGES", 4)
+
 PORT = _int("PORT", 8710)
 
 GAME_ID_MINECRAFT = 432

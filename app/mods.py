@@ -66,7 +66,13 @@ async def list_mods(server_id: str, directory: str = "mods") -> dict:
             "file_id": record.get("file_id"),
             "logo": record.get("logo"),
             "required_by": record.get("required_by"),
+            # Recorded at install time from the review's evidence. Distinct
+            # from the guess below: this one is a decision that was made and
+            # acted on, and it is why the jar sits there disabled.
+            "client_only": bool(record.get("client_only")),
+            "client_only_reasons": record.get("client_only_reasons") or [],
             "client_only_guess": packs.is_client_only_jar(base),
+            "dependencies": record.get("dependencies") or [],
             "identified": bool(record.get("project_id")),
         })
     mods.sort(key=lambda m: (not m["enabled"], (m["name"] or "").lower()))
@@ -74,6 +80,7 @@ async def list_mods(server_id: str, directory: str = "mods") -> dict:
         "directory": directory,
         "count": len(mods),
         "enabled": sum(1 for m in mods if m["enabled"]),
+        "client_only": sum(1 for m in mods if m["client_only"]),
         "mods": mods,
         "pack": manifest.get("pack"),
         "minecraft": manifest.get("minecraft"),
@@ -145,6 +152,7 @@ async def add_mod(
     directory: str = "mods",
     replace_file: str | None = None,
     required_by: str | None = None,
+    dependency_files: list[str] | None = None,
 ) -> dict:
     """Install a single mod from CurseForge or Modrinth into an instance."""
     if source == "curseforge":
@@ -193,6 +201,8 @@ async def add_mod(
     }
     if required_by:
         record["required_by"] = required_by
+    if dependency_files:
+        record["dependencies"] = sorted(set(dependency_files))
     await _remember_mod(server_id, record)
     return {
         "installed": filename,
@@ -244,21 +254,28 @@ async def add_mod_with_dependencies(
                 f"Conflict: project {c['project_id']} -- {c['reason']}", "warn")
 
     installed, failed = [], []
+    # Filenames the root mod pulled in, recorded on its manifest entry so the
+    # Mods tab can show "this brought in these three" without re-resolving
+    # the graph over the network every time the page opens.
+    dependency_files: list[str] = []
     total = len(queue)
     for index, entry in enumerate(queue, 1):
         label = entry.get("name") or entry.get("file_name")
         job.set_step(f"Installing {label} ({index}/{total})",
                      5 + 90 * (index - 1) / max(total, 1))
         try:
+            is_root = entry is plan["root"]
             result = await add_mod(
                 server_id,
                 source=entry["source"],
                 project_id=entry["project_id"],
                 file_id=entry["file_id"],
                 directory=directory,
-                replace_file=replace_file if entry is plan["root"] else None,
+                replace_file=replace_file if is_root else None,
                 required_by=entry.get("required_by"),
             )
+            if not is_root:
+                dependency_files.append(result["installed"])
             installed.append(result)
             suffix = (f" (required by {entry['required_by']})"
                       if entry.get("required_by") else "")
@@ -266,6 +283,20 @@ async def add_mod_with_dependencies(
         except Exception as e:
             failed.append({"name": label, "error": str(e)})
             job.log_line(f"Failed to install {label}: {e}", "error")
+
+    if dependency_files and installed:
+        # Re-save the root's record now that the full list is known.
+        root_file = installed[0].get("installed")
+        if root_file:
+            manifest = await crafty.read_studio_manifest(server_id)
+            for rec in manifest.get("mods", []):
+                if posixpath.basename(rec.get("file", "")) == root_file:
+                    rec["dependencies"] = sorted(set(dependency_files))
+                    try:
+                        await crafty.write_studio_manifest(server_id, manifest)
+                    except Exception:
+                        pass
+                    break
 
     if plan.get("already_satisfied"):
         job.log_line(
@@ -546,3 +577,65 @@ async def check_updates(server_id: str, directory: str = "mods") -> dict:
     updates.sort(key=lambda u: (u["name"] or "").lower())
     return {"checked": len(records), "updates": updates,
             "minecraft": mc, "loader": loader}
+
+
+async def dependency_map(server_id: str, directory: str = "mods") -> dict:
+    """Which mods pulled in which, for the Mods tab's dependency view.
+
+    Adding a mod no longer stops to show its dependency list before
+    installing -- that was three clicks and a wait to answer a question most
+    people did not have. The information itself is still worth having, so it
+    is recorded as mods are added and shown here on demand instead.
+
+    Everything comes from the instance manifest, so this is a couple of file
+    reads and no network calls at all.
+    """
+    listing = await list_mods(server_id, directory)
+    by_file = {m["file"]: m for m in listing["mods"]}
+    by_base = {_base_name(f): m for f, m in by_file.items()}
+
+    def brief(name: str) -> dict:
+        mod = by_base.get(_base_name(name))
+        return {
+            "file": mod["file"] if mod else name,
+            "name": (mod or {}).get("name") or name,
+            "logo": (mod or {}).get("logo"),
+            "enabled": (mod or {}).get("enabled", True),
+            "present": bool(mod),
+        }
+
+    parents: list[dict] = []
+    child_of: dict[str, list[str]] = {}
+    for mod in listing["mods"]:
+        for dep in mod.get("dependencies") or []:
+            child_of.setdefault(_base_name(dep), []).append(mod["name"] or mod["file"])
+        if mod.get("dependencies"):
+            parents.append({
+                **brief(mod["file"]),
+                "dependencies": [brief(d) for d in mod["dependencies"]],
+            })
+
+    # Mods installed as somebody's dependency but whose parent never recorded
+    # the link -- an older install, or a dependency added on its own.
+    orphans = [
+        {**brief(m["file"]), "required_by": m["required_by"]}
+        for m in listing["mods"]
+        if m.get("required_by") and not child_of.get(_base_name(m["file"]))
+    ]
+
+    standalone = sum(
+        1 for m in listing["mods"]
+        if not m.get("dependencies") and not m.get("required_by")
+    )
+    parents.sort(key=lambda p: (p["name"] or "").lower())
+    return {
+        "count": listing["count"],
+        "parents": parents,
+        "orphans": orphans,
+        "standalone": standalone,
+        "note": None if parents or orphans else (
+            "Nothing here records a dependency yet. Mods added from now on "
+            "note what they pulled in; mods that arrived with the modpack "
+            "were resolved by the pack author instead."
+        ),
+    }

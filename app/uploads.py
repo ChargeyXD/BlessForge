@@ -116,6 +116,21 @@ async def store(filename: str, chunks: AsyncIterator[bytes]) -> dict:
     return record
 
 
+async def store_bytes(data: bytes, filename: str) -> dict:
+    """Store an archive this app generated rather than one a user sent.
+
+    Mod Roulette builds a pack in memory and then hands it to the ordinary
+    import path, so the rolled pack travels the same road as an uploaded one
+    -- same analysis, same review, same installer. Shares `store` rather than
+    duplicating it so the size limit, the digest and the pruning stay in one
+    place.
+    """
+    async def one() -> AsyncIterator[bytes]:
+        yield data
+
+    return await store(filename, one())
+
+
 def get(upload_id: str) -> dict:
     meta = _meta_path(upload_id)
     if not meta.exists() or not archive_path(upload_id).exists():

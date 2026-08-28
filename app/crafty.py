@@ -36,7 +36,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import pathlib
 import posixpath
+import re
 import urllib.parse
 import uuid
 from typing import Any
@@ -549,6 +551,79 @@ async def upload_file(
                 raise last
 
 
+async def upload_path(
+    server_id: str, location: str, filename: str, src: "pathlib.Path"
+) -> None:
+    """Upload a file from disk without reading it into memory.
+
+    The bytes version above needs the whole payload in RAM, which for an
+    install batch is a hundred megabytes that exists only to be handed
+    straight to a socket. This reads a chunk, sends it, and drops it -- so a
+    3 GB pack costs one chunk of memory instead of the whole batch.
+    """
+    loc = location.strip().strip("/") or "."
+    file_id = str(uuid.uuid4())
+    url = f"/api/v2/servers/{server_id}/files/upload"
+    total = src.stat().st_size
+
+    if total <= CHUNK_THRESHOLD:
+        async with _client(timeout=600) as c:
+            _unwrap(
+                await c.post(
+                    url,
+                    headers=_upload_headers(filename, loc, total, file_id),
+                    content=src.read_bytes(),
+                ),
+                f"upload {filename}",
+            )
+        return
+
+    total_chunks = (total + CHUNK_SIZE - 1) // CHUNK_SIZE
+    async with _client(timeout=1800) as c:
+        _unwrap(
+            await c.post(
+                url,
+                headers=_upload_headers(
+                    filename, loc, total, file_id,
+                    {"chunked": "true", "totalChunks": str(total_chunks)},
+                ),
+            ),
+            f"begin upload {filename}",
+        )
+
+        with src.open("rb") as fh:
+            for index in range(total_chunks):
+                start = index * CHUNK_SIZE
+                fh.seek(start)
+                chunk = fh.read(CHUNK_SIZE)
+                headers = _upload_headers(
+                    filename, loc, total, file_id,
+                    {
+                        "chunked": "true",
+                        "totalChunks": str(total_chunks),
+                        "chunkId": str(index),
+                        "chunkHash": hashlib.sha256(chunk).hexdigest(),
+                        "Content-Range":
+                            f"bytes {start}-{start + len(chunk) - 1}/{total}",
+                    },
+                )
+                last: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        _unwrap(
+                            await c.post(url, headers=headers, content=chunk),
+                            f"upload {filename} chunk {index + 1}/{total_chunks}",
+                        )
+                        last = None
+                        break
+                    except (httpx.TransportError, CraftyError) as e:
+                        last = e
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                if last:
+                    raise last
+                del chunk
+
+
 async def unzip(server_id: str, rel_zip_path: str) -> None:
     """Ask Crafty to extract a zip already sitting in the server directory.
 
@@ -630,6 +705,67 @@ async def walk(server_id: str, root: str = ".", max_entries: int = 20000) -> lis
                     }
                 )
     return out
+
+
+# --- console -----------------------------------------------------------
+#
+#   GET  /api/v2/servers/{id}/logs            the live console ring buffer
+#   GET  /api/v2/servers/{id}/logs?file=true  a tail of logs/latest.log
+#   POST /api/v2/servers/{id}/stdin           raw body = one command
+#
+# Two things about the logs handler are worth knowing. Without `raw=true` it
+# runs every line through `html.escape`, so `<player>` arrives as `&lt;...`
+# and a console rendered as text shows the entities; with `raw=true` it skips
+# the escaping but also stops stripping ANSI colour codes, so we strip those
+# here. And the buffer form only holds what Crafty has seen since IT started
+# the server -- a server started elsewhere, or before Crafty restarted, has
+# an empty buffer and a perfectly good log file.
+
+_ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+async def console_lines(server_id: str, *, from_file: bool = False) -> list[str]:
+    """The server console, newest last."""
+    params = {"raw": "true"}
+    if from_file:
+        params["file"] = "true"
+    async with _client(timeout=45) as c:
+        data = _unwrap(
+            await c.get(f"/api/v2/servers/{server_id}/logs",
+                        params=params, headers=_headers()),
+            "read console",
+        )
+    if not isinstance(data, list):
+        return []
+    return [_ANSI.sub("", str(line)).rstrip("\r\n") for line in data]
+
+
+async def send_command(server_id: str, command: str) -> dict:
+    """Type one line into the server console.
+
+    Crafty answers 200 with `status: error` when the server is not running,
+    rather than a 4xx, so the body has to be read rather than the status.
+    """
+    line = (command or "").strip()
+    if not line:
+        raise ValueError("no command given")
+    async with _client(timeout=30) as c:
+        resp = await c.post(
+            f"/api/v2/servers/{server_id}/stdin",
+            headers=_headers({"Content-Type": "text/plain"}),
+            content=line.encode("utf-8"),
+        )
+    if resp.status_code >= 400:
+        _unwrap(resp, "send command")
+    body = resp.json() if resp.content else {}
+    if body.get("status") != "ok":
+        raise CraftyError(
+            "the server is not running, so it cannot accept commands"
+            if body.get("error") == "SERVER_NOT_RUNNING"
+            else f"send command failed: {body.get('error_data') or body.get('error')}",
+            resp.status_code, body,
+        )
+    return {"sent": line}
 
 
 # --- studio manifest ---------------------------------------------------

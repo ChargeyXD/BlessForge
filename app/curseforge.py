@@ -259,6 +259,41 @@ def _jar_cache_path(file_meta: dict) -> "Path | None":
     return config.CACHE_DIR / "mods" / f"{fid}-{safe}"
 
 
+async def cache_jar(
+    file_meta: dict, client: httpx.AsyncClient | None = None
+) -> Path | None:
+    """Ensure a jar is on disk and return its path -- never its bytes.
+
+    The install pipeline used to pass jars around as `bytes`, which meant a
+    300-mod pack held every jar in memory at once purely so it could be
+    written into an upload archive later. The jars are already being written
+    to the cache; handing back the path lets the archive be built by
+    streaming, so peak memory stops scaling with pack size.
+
+    Returns None when there is no cache directory to write to, in which case
+    the caller falls back to the in-memory path.
+    """
+    path = _jar_cache_path(file_meta)
+    if not path:
+        return None
+    expected = file_meta.get("size") or 0
+    if path.exists():
+        try:
+            if not expected or abs(path.stat().st_size - expected) < 1024:
+                return path
+        except OSError:
+            pass
+    data = await download(file_meta, client)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    except OSError:
+        return None
+    finally:
+        del data
+    return path
+
+
 async def download_cached(
     file_meta: dict, client: httpx.AsyncClient | None = None
 ) -> bytes:
