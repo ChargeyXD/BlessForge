@@ -11,3 +11,7 @@ __pycache__/
 dev/ui-tests/node_modules/
 dev/ui-tests/package*.json
 dev/ui-tests/*.png
+
+# Crafty HAR capture used while reverse-engineering the API. Carries LAN
+# addresses and server names; kept out of the repo.
+*.har
