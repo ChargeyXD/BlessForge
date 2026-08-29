@@ -13,6 +13,7 @@ numbers move, every seed anyone has ever shared stops reproducing, and
 nothing else in the app would notice.
 """
 import json
+import re
 import pathlib
 import sys
 import zipfile
@@ -194,7 +195,8 @@ def main():
 
     # --- the export -------------------------------------------------------
     hand = a[:12]
-    blob = roulette.build_export(hand, dict(c, seed="QRT-8KM-4Z"), "Roulette Test")
+    blob = roulette.build_export(hand, dict(c, seed="QRT-8KM-4Z"), "Roulette Test",
+                                 None, "neoforge-21.1.249")
     z = zipfile.ZipFile(__import__("io").BytesIO(blob))
     names = z.namelist()
     check("the export is a CurseForge modpack",
@@ -204,8 +206,15 @@ def main():
           manifest["manifestType"] == "minecraftModpack")
     check("the manifest names the runtime",
           manifest["minecraft"]["version"] == "1.21.1"
-          and manifest["minecraft"]["modLoaders"][0]["id"] == "neoforge",
+          and manifest["minecraft"]["modLoaders"][0]["id"] == "neoforge-21.1.249",
           json.dumps(manifest["minecraft"]))
+    # The CurseForge app rejects a manifest whose loader id has no build
+    # number -- MinecraftUnsupportedModLoader, "check manifest!" -- and every
+    # export written before this carried a bare 'neoforge'.
+    loader_id = manifest["minecraft"]["modLoaders"][0]["id"]
+    check("the loader id carries a build, not just a family",
+          re.match(r"^(forge|neoforge|fabric|quilt)-\d", loader_id) is not None,
+          loader_id)
     cf = [m for m in hand if m["source"] == "curseforge"]
     check("every CurseForge mod is listed as a project/file pair",
           len(manifest["files"]) == len(cf)

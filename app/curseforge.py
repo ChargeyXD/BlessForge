@@ -227,6 +227,55 @@ async def get_minecraft_versions() -> list[str]:
     return [v["versionString"] for v in data]
 
 
+def _strip_mc_suffix(name: str, mc_version: str) -> str:
+    """Catalogue names and manifest ids disagree for Fabric and Quilt.
+
+    The catalogue lists 'fabric-0.19.5-1.21.11', but every published Fabric
+    pack's manifest says 'fabric-0.19.5'. Forge and NeoForge names carry no
+    Minecraft version to begin with, so they pass through untouched.
+    """
+    tail = f"-{mc_version}"
+    return name[: -len(tail)] if mc_version and name.endswith(tail) else name
+
+
+async def loader_build_id(mc_version: str, family: str) -> str:
+    """The exact modLoader id CurseForge expects in a manifest, e.g.
+    'forge-47.4.12', 'neoforge-21.1.99', 'fabric-0.19.5-1.21.11'.
+
+    The shape is not uniform -- Forge omits the Minecraft version, Fabric and
+    Quilt append it -- so the name is taken from the catalogue rather than
+    assembled here. A manifest carrying a bare family name ('neoforge') is
+    rejected by the CurseForge app with MinecraftUnsupportedModLoader.
+
+    Returns "" when the catalogue has nothing for that pair, which leaves the
+    caller to decide whether that is fatal.
+    """
+    type_id = LOADER_TYPE.get(family.lower())
+    if not mc_version or not type_id:
+        return ""
+    try:
+        data = await _get(
+            "/v1/minecraft/modloader",
+            {"version": mc_version, "includeAll": "true"},
+        ) or []
+    except Exception:
+        return ""
+
+    builds = [b for b in data if b.get("type") == type_id and b.get("name")]
+    if not builds:
+        return ""
+    # NeoForge marks neither `recommended` nor `latest` on any build, so the
+    # ordering fallback is not a rare path -- it is the only path for it. The
+    # catalogue returns newest first, which the dateModified sort preserves
+    # while also fixing families where it does not.
+    for flag in ("recommended", "latest"):
+        hit = next((b for b in builds if b.get(flag)), None)
+        if hit:
+            return _strip_mc_suffix(hit["name"], mc_version)
+    builds.sort(key=lambda b: str(b.get("dateModified") or ""), reverse=True)
+    return _strip_mc_suffix(builds[0]["name"], mc_version)
+
+
 # --- downloading -------------------------------------------------------
 
 

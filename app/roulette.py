@@ -643,9 +643,14 @@ def summarise(hand: list[dict], c: dict, host: dict | None = None) -> dict:
 # --- turning a hand into a modpack --------------------------------------
 
 
+# Last resort only. A real manifest id carries the loader build too
+# ('forge-47.4.12'), and the shape differs per family, so the id is normally
+# resolved from CurseForge's catalogue -- see curseforge.loader_build_id.
+# Writing one of these bare names is what made every export before this fail
+# to import with MinecraftUnsupportedModLoader.
 LOADER_MANIFEST_ID = {
-    "forge": "forge", "neoforge": "neoforge", "fabric": "fabric-loader",
-    "quilt": "quilt-loader",
+    "forge": "forge", "neoforge": "neoforge", "fabric": "fabric",
+    "quilt": "quilt",
 }
 
 
@@ -857,7 +862,8 @@ async def _with_dependencies(resolved: list[dict], c: dict, job: Job | None = No
 
 
 def build_export(hand: list[dict], c: dict, name: str,
-                 bundled: dict[str, bytes] | None = None) -> bytes:
+                 bundled: dict[str, bytes] | None = None,
+                 loader_id: str = "") -> bytes:
     """Write a CurseForge modpack archive for a hand.
 
     The format is the one the CurseForge app itself exports, which means the
@@ -871,7 +877,8 @@ def build_export(hand: list[dict], c: dict, name: str,
     """
     cf = [m for m in hand if m["source"] == "curseforge"]
     other = [m for m in hand if m["source"] != "curseforge"]
-    loader_key = LOADER_MANIFEST_ID.get(c["loader"].lower(), c["loader"].lower())
+    loader_key = loader_id or LOADER_MANIFEST_ID.get(
+        c["loader"].lower(), c["loader"].lower())
 
     manifest = {
         "minecraft": {
@@ -984,7 +991,18 @@ async def install_roll(
 
     job.set_step("Writing the CurseForge export", 44)
     pack_name = server_name or f"Roulette {seed}"
-    archive = build_export(full, c, pack_name, bundled)
+    # The manifest has to name a real loader build, not just the family, or
+    # the CurseForge app refuses the import outright. BlessForge's own
+    # importer is happy either way, which is how this went unnoticed.
+    loader_id = await curseforge.loader_build_id(c["minecraft"], c["loader"])
+    if loader_id:
+        job.log_line(f"Export targets {loader_id}")
+    else:
+        job.log_line(
+            f"No {c['loader']} build listed for {c['minecraft']}; the export "
+            "will name the loader without a version, which BlessForge can "
+            "import but the CurseForge app cannot.", "warn")
+    archive = build_export(full, c, pack_name, bundled, loader_id)
 
     roll_id = f"{seed}-{int(time.time())}"
     path = export_path(roll_id)
