@@ -337,6 +337,11 @@ async def instances() -> dict:
             # so instances created before this existed are not all accused.
             info["incomplete"] = bool(manifest) and not manifest.get("complete", True)
             info["problems"] = len(manifest.get("problems") or [])
+            # Off the manifest, not off a directory listing: the fleet is
+            # re-read every twenty seconds and a list_dir per server per poll
+            # is a Crafty request per server for a number that only changes
+            # when someone installs something.
+            info["mod_count"] = len(manifest.get("mods") or []) or None
         except Exception:
             info["managed"] = False
         # Infer loader/version from the executable path when unmanaged.
@@ -356,7 +361,9 @@ async def instances() -> dict:
             # Crafty reports `mem` as a human string ("1.2GB") and the share
             # of host RAM separately. The gauges want the number.
             info["mem"] = stats.get("mem_percent")
-            info["mem_text"] = stats.get("mem")
+            # `mem` is the resident set in bytes, and mem_percent its share of
+            # host RAM. Crafty names them the other way round to how they read.
+            info["mem_bytes"] = stats.get("mem")
             info["world_size"] = stats.get("world_size")
             # Crafty tracks this itself; no need to go looking for crash
             # reports on every card of a fleet list to find out.

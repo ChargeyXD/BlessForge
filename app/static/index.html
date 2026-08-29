@@ -306,11 +306,11 @@
               <p style="margin:0 0 11px; font-size:11.5px; color:#9C9EA4; line-height:1.55; text-wrap:pretty;">Two different things, deliberately not one button. Deleting the panel record alone leaves the world on disk.</p>
               <button onClick="{{ actForget }}" style="display:block; width:100%; padding:8px; margin-bottom:5px; background:#1A1D22; border:1px solid rgba(255,255,255,.12); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:500; text-align:left; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,255,255,.28);">
                 Remove from the panel only
-                <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#71747B; margin-top:2px;">files stay in /srv/minecraft/{{ sidRaw }}</span>
+                <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#71747B; margin-top:2px;">files stay in {{ srvPath }}</span>
               </button>
               <button onClick="{{ actDestroy }}" style="display:block; width:100%; padding:8px; background:rgba(255,59,92,.09); border:1px solid rgba(255,59,92,.4); border-radius:2px; color:#FF8095; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:600; text-align:left; cursor:pointer; transition:all .16s;" style-hover="background:rgba(255,59,92,.16);">
                 Delete the server and its world
-                <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#C4707E; margin-top:2px; font-weight:400;">irreversible · 41.2 GB · requires typing the name</span>
+                <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#C4707E; margin-top:2px; font-weight:400;">irreversible · {{ worldSize }} · requires typing the name</span>
               </button>
             </section>
           </div>
@@ -324,17 +324,17 @@
             <div style="position:absolute; top:0; left:0; width:26%; height:1px; background:linear-gradient(90deg,transparent,#FF3B5C,transparent); animation:bfScan 4.2s linear infinite;"></div>
             <div style="display:flex; align-items:flex-start; gap:12px;">
               <div style="flex:0 0 auto; display:grid; place-items:center; width:34px; height:34px; background:rgba(255,59,92,.14); border:1px solid rgba(255,59,92,.4);">
-                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; color:#FF3B5C;">✕</span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; color:#FF3B5C;">{{ rootGlyph }}</span>
               </div>
               <div style="min-width:0; flex:1;">
                 <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                  <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.14em; color:#FF3B5C;">ROOT CAUSE · CONFIRMED</span>
-                  <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#8C8F96; letter-spacing:.06em;">▰▰▰</span>
+                  <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.14em; color:#FF3B5C;">{{ rootLabel }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#8C8F96; letter-spacing:.06em;">{{ rootConfGlyph }}</span>
                 </div>
-                <h1 style="margin:6px 0 0; font-size:19px; font-weight:700; letter-spacing:-.03em; line-height:1.25; text-wrap:pretty;">The pack is built for Java 21. This server is being launched with Java 17.</h1>
-                <p style="margin:7px 0 0; font-size:12.5px; color:#B3AFAB; line-height:1.6; max-width:78ch; text-wrap:pretty;">The crash report blames a mod. It is wrong — or rather, it names the first jar that happened to load. Twelve jars in this pack carry Java 21 bytecode, so any of them would have thrown the same error.</p>
+                <h1 style="margin:6px 0 0; font-size:19px; font-weight:700; letter-spacing:-.03em; line-height:1.25; text-wrap:pretty;">{{ rootTitle }}</h1>
+                <p style="margin:7px 0 0; font-size:12.5px; color:#B3AFAB; line-height:1.6; max-width:78ch; text-wrap:pretty;">{{ rootDetail }}</p>
               </div>
-              <button onClick="{{ actFixRoot }}" style="flex:0 0 auto; padding:9px 14px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12.5px; font-weight:700; cursor:pointer; transition:filter .16s;" style-hover="filter:brightness(1.12);">Pin Java 21 and retry</button>
+              <button onClick="{{ actFixRoot }}" style="flex:0 0 auto; padding:9px 14px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12.5px; font-weight:700; cursor:pointer; transition:filter .16s;" style-hover="filter:brightness(1.12);">{{ rootFix }}</button>
             </div>
           </section>
 
@@ -486,7 +486,7 @@
             <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:10px;">
               <div style="position:relative; flex:1 1 200px; min-width:170px;">
                 <span style="position:absolute; left:9px; top:50%; transform:translateY(-50%); font-family:'JetBrains Mono',monospace; font-size:11px; color:#5F6269;">⌕</span>
-                <input value="{{ modQ }}" onInput="{{ setModQ }}" placeholder="Filter 387 mods by name or jar…" style="width:100%; padding:7px 10px 7px 26px; background:#121417; border:1px solid rgba(255,255,255,.09); border-radius:2px; color:#ECEAE7; font-family:'JetBrains Mono',monospace; font-size:11px; outline:none; transition:border-color .16s;" style-focus="border-color:rgba(255,107,53,.6);" />
+                <input value="{{ modQ }}" onInput="{{ setModQ }}" placeholder="{{ modFilterHint }}" style="width:100%; padding:7px 10px 7px 26px; background:#121417; border:1px solid rgba(255,255,255,.09); border-radius:2px; color:#ECEAE7; font-family:'JetBrains Mono',monospace; font-size:11px; outline:none; transition:border-color .16s;" style-focus="border-color:rgba(255,107,53,.6);" />
               </div>
               <div style="display:flex; gap:2px; padding:2px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:2px;">
                 <sc-for list="{{ modFilters }}" as="f" hint-placeholder-count="5">
@@ -510,8 +510,8 @@
                 <div style="display:flex; align-items:center; gap:9px; width:100%; min-width:0; font-family:'JetBrains Mono',monospace; font-size:10px; color:#6A6D74; letter-spacing:.06em;">
                   <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ modCounts }}</span>
                   <span style="margin-left:auto; display:flex; gap:9px; flex:0 0 auto;">
-                    <button onClick="{{ actIdentify }}" style="background:transparent; border:0; color:#8C8F96; font-family:inherit; font-size:10px; cursor:pointer; text-decoration:underline; text-underline-offset:3px; white-space:nowrap;">identify 2 unknown</button>
-                    <button onClick="{{ actUpdates }}" style="background:transparent; border:0; color:var(--ember,#FF6B35); font-family:inherit; font-size:10px; cursor:pointer; text-decoration:underline; text-underline-offset:3px; white-space:nowrap;">14 updates available</button>
+                    <button onClick="{{ actIdentify }}" style="background:transparent; border:0; color:#8C8F96; font-family:inherit; font-size:10px; cursor:pointer; text-decoration:underline; text-underline-offset:3px; white-space:nowrap;">{{ identifyLabel }}</button>
+                    <button onClick="{{ actUpdates }}" style="background:transparent; border:0; color:var(--ember,#FF6B35); font-family:inherit; font-size:10px; cursor:pointer; text-decoration:underline; text-underline-offset:3px; white-space:nowrap;">{{ updatesLabel }}</button>
                   </span>
                 </div>
               </sc-if>
@@ -547,13 +547,13 @@
                 <div style="position:relative; padding:74px 20px 30px; text-align:center; overflow:hidden;">
                   <img src="assets/chargey-peek.png" alt="" style="position:absolute; top:0; left:50%; width:132px; margin-left:-66px; transform:translateY(-58%); animation:bfPeek 3.4s ease-in-out infinite alternate; opacity:.92; pointer-events:none;" />
                   <div style="font-size:13px; font-weight:600; margin-top:26px;">Nothing matches “{{ modQ }}”</div>
-                  <div style="font-size:11.5px; color:#8C8F96; margin-top:5px;">387 mods are installed. Try a jar filename, or clear the filter.</div>
+                  <div style="font-size:11.5px; color:#8C8F96; margin-top:5px;">{{ modEmptyHint }}</div>
                 </div>
               </sc-if>
             </div>
             <div style="display:flex; align-items:center; gap:8px; margin-top:8px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269;">
-              <span>showing {{ modShownN }} of 387 · virtualised, 44 px rows</span>
-              <span style="margin-left:auto;">enabled 371 · disabled 16</span>
+              <span>showing {{ modShownN }} of {{ modTotalN }}</span>
+              <span style="margin-left:auto;">enabled {{ modOnN }} · disabled {{ modOffN }}</span>
             </div>
           </div>
 
@@ -771,7 +771,7 @@
             <span style="display:flex; align-items:center; gap:6px; font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.08em; color:#56D9A3;">
               <span style="width:6px; height:6px; border-radius:50%; background:#56D9A3; animation:bfBreathe 2s ease-in-out infinite;"></span>LIVE CONSOLE
             </span>
-            <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269;">websocket · 41 ms</span>
+            <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269;">{{ conSource }}</span>
             <span style="width:1px; height:12px; background:rgba(255,255,255,.12);"></span>
             <div style="display:flex; gap:2px;">
               <sc-for list="{{ conFilters }}" as="f" hint-placeholder-count="4">
@@ -815,7 +815,7 @@
             <div style="padding:9px 10px; border-bottom:1px solid rgba(255,255,255,.07);">
               <div style="position:relative;">
                 <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); font-family:'JetBrains Mono',monospace; font-size:10px; color:#5F6269;">⌕</span>
-                <input value="{{ cfgQ }}" onInput="{{ setCfgQ }}" placeholder="filter 241 files…" style="width:100%; padding:6px 8px 6px 24px; background:#0E1013; border:1px solid rgba(255,255,255,.09); border-radius:2px; color:#ECEAE7; font-family:'JetBrains Mono',monospace; font-size:10.5px; outline:none;" style-focus="border-color:rgba(255,107,53,.6);" />
+                <input value="{{ cfgQ }}" onInput="{{ setCfgQ }}" placeholder="{{ cfgFilterHint }}" style="width:100%; padding:6px 8px 6px 24px; background:#0E1013; border:1px solid rgba(255,255,255,.09); border-radius:2px; color:#ECEAE7; font-family:'JetBrains Mono',monospace; font-size:10.5px; outline:none;" style-focus="border-color:rgba(255,107,53,.6);" />
               </div>
             </div>
             <div style="max-height:52vh; overflow-y:auto; overflow-x:hidden;">
@@ -1372,7 +1372,7 @@
             <span style="font-size:13px; font-weight:600; color:#FFD98A;">Finished with 3 warnings</span>
           </div>
           <div style="display:flex; gap:14px; margin-top:9px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96;">
-            <span>386 / 387 mods</span><span>482 MB</span><span>4m 51s</span>
+            <span>{{ jobSummaryMods }}</span><span>{{ jobSummarySize }}</span><span>{{ jobClock }}</span>
           </div>
           <div style="margin-top:9px; padding:9px 10px; background:rgba(255,59,92,.08); border-left:2px solid #FF3B5C;">
             <div style="font-size:11.5px; font-weight:500; color:#E5A3AE;">ars_nouveau-4.12.1.jar could not be downloaded</div>
@@ -1643,10 +1643,42 @@ async function api(path, opts) {
 
 /* --- formatting ---------------------------------------------------------- */
 
-const bytes = (b) => b == null ? '—'
-  : b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB'
-  : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB'
-  : b >= 1024 ? Math.round(b / 1024) + ' KB' : b + ' B';
+// Crafty hands back sizes already formatted ("25.0KB"); CurseForge hands back
+// byte counts. Passing a string through the number formatter produced
+// "25.0KB B", which is how this was found.
+const bytes = (b) => {
+  if (b == null || b === '') return '—';
+  if (typeof b === 'string') return isNaN(Number(b)) ? b : bytes(Number(b));
+  return b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB'
+       : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB'
+       : b >= 1024 ? Math.round(b / 1024) + ' KB' : b + ' B';
+};
+
+/** Crafty stringifies Python's False into fields it could not fill: a server
+    whose query ping has not succeeded reports version "False", desc "False"
+    and players "False". Rendering those verbatim gives "reporting False". */
+const craftyStr = (v) => {
+  const t = String(v == null ? '' : v).trim();
+  if (!t || t === 'False' || t === 'None' || t === 'Unable to Connect') return '';
+  return t;
+};
+
+/** A version short enough for a 62px column. Mod metadata is wildly
+    inconsistent -- some records carry "1.5.2", others "[NeoForge 1.21(.1)]
+    v13.0.8" -- so the version-shaped token is pulled out when there is one. */
+const shortVer = (v) => {
+  let t = String(v || '').trim().replace(/\.jar(\.disabled)?$/i, '');
+  if (!t || t === '—') return '—';
+  if (t.length <= 12) return t;
+  // Take the LAST version-shaped token: mod metadata almost always leads with
+  // the Minecraft version ("1.21-3.0.8") and ends with the mod's own.
+  const all = t.match(/\d+(?:\.\d+)+/g);
+  if (all && all.length) {
+    const pick = all[all.length - 1];
+    return pick.length <= 12 ? pick : pick.slice(0, 12);
+  }
+  return t.slice(0, 11) + '…';
+};
 const num = (n) => n == null ? '—' : Number(n).toLocaleString();
 const short = (n) => n == null ? '—'
   : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M'
@@ -1784,11 +1816,11 @@ class Component extends DCLogic {
       loader:loaderLabel(s.loader),
       port:s.port,
       pack:s.pack ? [s.pack.name, s.pack.version].filter(Boolean).join(' ') : (s.managed ? 'managed' : 'unmanaged'),
-      players:s.state === 'running' && s.max_players != null
+      players:s.state === 'running' && s.max_players
         ? (s.players || 0) + ' / ' + s.max_players : '—',
       cpu:s.cpu || 0,
       mem:s.mem || 0,
-      memText:s.mem_text || '',
+      memText:bytes(s.mem_bytes),
       mods:s.mod_count != null ? s.mod_count : null,
       worldSize:s.world_size || '',
       note:s.state === 'crashed' ? 'Crashed — see Diagnose'
@@ -1832,13 +1864,28 @@ class Component extends DCLogic {
       return;
     }
     if (!id) return;
+    if (view === 'diagnose' || view === 'situation') {
+      // Situation's "needs you" list is the same findings, ranked. It is the
+      // landing screen, so this is the one call worth making eagerly.
+      if (!this.state.d.diag) this.load('diag', '/api/instances/' + id + '/diagnose');
+      if (view === 'situation' && !this.state.d.port)
+        this.load('port', '/api/instances/' + id + '/port');
+    }
     if (view === 'diagnose') {
       this.load('diag', '/api/instances/' + id + '/diagnose');
     } else if (view === 'mods') {
       this.load('mods', '/api/instances/' + id + '/mods');
       this.load('updates', '/api/instances/' + id + '/mods/updates');
     } else if (view === 'configs') {
-      this.load('configs', '/api/instances/' + id + '/configs', r => r.files || []);
+      this.load('configs', '/api/instances/' + id + '/configs', r => r.files || [])
+        .then(files => {
+          if (!files || !files.length || this.state.cfgPath) return;
+          // server.properties is what people come here for; fall back to the
+          // first editable file so the pane is never empty for no reason.
+          const first = files.find(f => f.path === 'server.properties')
+                     || files.find(f => f.editable) || files[0];
+          if (first) this.openConfig(first.path);
+        });
     } else if (view === 'tune') {
       this.load('optimize', '/api/instances/' + id + '/optimize');
       this.load('props', '/api/instances/' + id + '/properties');
@@ -1963,6 +2010,7 @@ class Component extends DCLogic {
     };
     window.addEventListener('keydown', this._key);
 
+    this._seen = { view:this.state.view, sid:this.state.sid, dSub:this.state.dSub };
     this.loadSystems();
     this.loadFleet().then(() => this.loadFor(this.state.view));
     this.load('jobs', '/api/jobs', r => r.items || []);
@@ -1983,21 +2031,26 @@ class Component extends DCLogic {
     this.t4 = setInterval(() => this.loadSystems(), 45000);
   }
 
-  componentDidUpdate(_p, prev) {
+  // The runtime calls componentDidUpdate(prevProps) -- one argument, and it is
+  // props. There is no prevState, so "what changed" has to be tracked here.
+  // Relying on a second argument that never arrives meant no screen ever
+  // fetched anything, and every tab rendered its empty state.
+  componentDidUpdate() {
     const S = this.state;
-    if (!prev) return;
-    if (prev.view !== S.view || prev.sid !== S.sid || prev.dSub !== S.dSub) {
-      if (prev.view === 'console' && S.view !== 'console') this.closeConsole();
-      if (prev.sid !== S.sid && S.sid) {
-        this.setD({ inst:null, diag:null, crash:null, mods:null, configs:null,
-                    optimize:null, props:null, port:null, console:[], updates:null,
-                    aiText:'', aiActions:[] });
-        this.setState({ sel:[], modOn:{}, flagOn:{}, propDraft:{}, cfgPath:'',
-                        cfgDraft:{}, cfgDirty:{}, heap:null });
-        this.loadInstance(S.sid);
-      }
-      this.loadFor(S.view);
+    const was = this._seen || {};
+    if (was.view === S.view && was.sid === S.sid && was.dSub === S.dSub) return;
+    this._seen = { view:S.view, sid:S.sid, dSub:S.dSub };
+
+    if (was.view === 'console' && S.view !== 'console') this.closeConsole();
+    if (was.sid !== S.sid && S.sid) {
+      this.setD({ inst:null, diag:null, crash:null, mods:null, configs:null,
+                  optimize:null, props:null, port:null, console:[], updates:null,
+                  aiText:'', aiActions:[] });
+      this.setState({ sel:[], modOn:{}, flagOn:{}, propDraft:{}, cfgPath:'',
+                      cfgDraft:{}, cfgDirty:{}, heap:null });
+      this.loadInstance(S.sid);
     }
+    this.loadFor(S.view);
   }
 
   componentWillUnmount() {
@@ -2388,14 +2441,22 @@ class Component extends DCLogic {
       const r = await api('/api/install/preflight', { method:'POST',
         body:{ ...ref, prefer_server_pack:S.setup.official } });
       this.follow(r.job_id, 'Analysing the pack', (j) => {
-        if (j && j.result) {
-          const sel = {};
-          (j.result.candidates || []).forEach(c => { sel[c.file] = c.decision !== 'keep'; });
-          this.setState({ d:{ ...this.state.d, preflight:j.result }, reviewSel:sel,
-                          reviewOpen:true, jobsOpen:false });
-        } else if (j && j.error) this.toast(j.error, 'crit');
+        if (j && j.result) this.openReview(j.result);
+        else if (j && j.error) this.toast(j.error, 'crit');
       });
     } catch (e) { this.toast(e.message, 'crit'); }
+  }
+
+  /** Unpack a preflight result. The candidates live under `review`, keyed by
+      `file_name`, and each carries a recommendation rather than a decision:
+      `remove` is a confident client-only jar, `review` is a maybe, and `keep`
+      is one another mod depends on and which must not be turned off. */
+  openReview(result) {
+    const rv = result.review || {};
+    const sel = {};
+    (rv.candidates || []).forEach(c => { sel[c.file_name] = c.recommendation === 'remove'; });
+    this.setState({ d:{ ...this.state.d, preflight:{ ...result, ...rv } },
+                    reviewSel:sel, reviewOpen:true, jobsOpen:false });
   }
 
   /** Commit the install. Client-only mods are *disabled and tagged*, never
@@ -2409,10 +2470,10 @@ class Component extends DCLogic {
     if (review) {
       const pf = this.state.d.preflight || {};
       const sel = this.state.reviewSel;
-      const chosen = (pf.candidates || []).filter(c => sel[c.file]);
-      body.disable_files = chosen.map(c => c.file);
+      const chosen = (pf.candidates || []).filter(c => sel[c.file_name]);
+      body.disable_files = chosen.map(c => c.file_name);
       body.client_reasons = {};
-      chosen.forEach(c => { body.client_reasons[c.file] = c.reasons || []; });
+      chosen.forEach(c => { body.client_reasons[c.file_name] = c.reasons || []; });
     }
     this.setState({ reviewOpen:false });
     try {
@@ -2465,12 +2526,7 @@ class Component extends DCLogic {
       const r = await api('/api/install/preflight', { method:'POST',
         body:{ upload_id:u.upload_id } });
       this.follow(r.job_id, 'Analysing the archive', (j) => {
-        if (j && j.result) {
-          const sel = {};
-          (j.result.candidates || []).forEach(c => { sel[c.file] = c.decision !== 'keep'; });
-          this.setState({ d:{ ...this.state.d, preflight:j.result }, reviewSel:sel,
-                          reviewOpen:true, jobsOpen:false });
-        }
+        if (j && j.result) this.openReview(j.result);
       });
     } catch (e) { this.toast(e.message, 'crit'); }
   }
@@ -2677,10 +2733,11 @@ class Component extends DCLogic {
             + 'that implicates each.' },
       running: { head:'Running, and holding.',
         blurb:[stats.max ? (stats.online || 0) + ' of ' + stats.max + ' players connected' : null,
-               stats.version ? 'reporting ' + stats.version : null,
-               stats.desc && stats.desc !== 'Unable to Connect' ? '“' + stats.desc + '”' : null]
+               craftyStr(stats.version) ? 'reporting ' + craftyStr(stats.version) : null,
+               craftyStr(stats.desc) ? '“' + craftyStr(stats.desc) + '”' : null]
               .filter(Boolean).join(' · ')
-              || 'Crafty is watching the process but has not managed to ping it.' },
+              || 'The process is up. Crafty has not managed to query it yet, which is '
+                 + 'normal for the first minute and a port problem after that.' },
       orphan: { head:'Crafty has a record. The disk does not.',
         blurb:'The server directory is gone, so the controller returns an error for '
             + 'this record and will keep doing so. Deleting the record is the way out.' },
@@ -2699,6 +2756,7 @@ class Component extends DCLogic {
 
     /* --- needs you ------------------------------------------------------ */
     const findings = ((D.diag && D.diag.findings) || []);
+    const rootF = findings[0] || {};
     const needs = [];
     D.fleet.forEach(s => {
       if (s.st === 'orphan') needs.push({ t:s.name + ' has no files on disk',
@@ -2826,7 +2884,7 @@ class Component extends DCLogic {
       if (dn) badges.push('deps:' + Math.min(4, dn));
       if (m.required_by && m.required_by.length) badges.push('dep');
       if (updBy[m.file]) badges.push('update');
-      return { n:m.name || m.file, j:m.file, v:m.version || '—',
+      return { n:m.name || m.file, j:m.file, v:shortVer(m.version), vFull:m.version || '',
                sz:bytes(m.size), on:m.enabled, badges, unknown:!m.identified,
                logo:m.logo || '', reasons:m.client_only_reasons || [], raw:m };
     });
@@ -3071,7 +3129,7 @@ class Component extends DCLogic {
           c:EMBER, pct:live ? (stats.cpu || 0) : 0 },
         // DESIGN: labelled "Heap". Crafty measures the JVM process, not the
         // heap inside it, so the label follows the measurement.
-        { k:'Memory', v:live ? (stats.mem || '—') : '—', c:'#7AA7FF',
+        { k:'Memory', v:live ? bytes(stats.mem) : '—', c:'#7AA7FF',
           pct:live ? (stats.mem_percent || 0) : 0 },
         // DESIGN: a TPS tile. Nothing in Crafty measures TPS. The world on
         // disk is real, and it is the number the delete button asks about.
@@ -3100,12 +3158,36 @@ class Component extends DCLogic {
         { k:'data dir', v:(inst && inst.server && inst.server.path) || '—', c:'#9C9EA4' }
       ],
       sidRaw:srv.id,
+      srvPath:(inst && inst.server && inst.server.path) || 'the server directory',
+      worldSize:stats.world_size || 'size unknown until it has run',
       actForget:() => this.setState({ confirmOpen:'forget' }),
       actDestroy:() => this.setState({ confirmOpen:'destroy' }),
 
       /* --- diagnose --- */
-      actFixRoot:() => { const top = findings.find(f => f.fix); if (top) this.applyFix(top);
-                         else this.toast('Nothing here has a one-click fix.', 'info'); },
+      // The hero states the worst thing BlessForge currently knows about this
+      // server. The design hard-coded a Java mismatch here; what belongs is
+      // whichever finding actually ranks first.
+      rootGlyph:!findings.length ? '✓' : (rootF.severity === 'warning' ? '▲' : '✕'),
+      rootLabel:!findings.length ? 'NOTHING BLOCKING'
+        : (rootF.severity || 'issue').toUpperCase()
+          + (rootF.evidence ? ' · CONFIRMED' : ' · LIKELY'),
+      rootConfGlyph:!findings.length ? '▰▰▰' : (rootF.evidence ? '▰▰▰' : '▰▰▱'),
+      rootTitle:!findings.length
+        ? (S.busy.diag ? 'Running the health checks…'
+                       : (S.err.diag ? 'The health checks could not run.'
+                                     : 'Nothing is blocking this server.'))
+        : rootF.title,
+      rootDetail:!findings.length
+        ? (S.err.diag || 'Every check BlessForge runs came back clean. Crash reports, '
+           + 'the EULA, the launch command, mod versions and client-only jars were all '
+           + 'looked at.')
+        : (rootF.detail || ''),
+      rootFix:findings.length && this.fixLabel(rootF) ? this.fixLabel(rootF) : '',
+      rootTone:!findings.length ? '#56D9A3'
+        : (rootF.severity === 'warning' ? '#FFC44D' : '#FF3B5C'),
+      actFixRoot:() => { if (!findings.length) return this.toast('Nothing needs fixing.', 'ok');
+        if (rootF.fix) this.applyFix(rootF);
+        else this.toast('This one has no one-click fix — open it for the evidence.', 'info'); },
       actDeepScan:() => this.deepScan(),
       diagTabs:[
         { key:'checks', label:'Health checks', count:String(findings.length || '') },
@@ -3204,6 +3286,19 @@ class Component extends DCLogic {
       }),
       modsEmpty:modRows.length === 0,
       modShownN:modRows.length,
+      modTotalN:modList.length,
+      modOnN:nOn, modOffN:modList.length - nOn,
+      modFilterHint:'Filter ' + modList.length + ' mods by name or jar…',
+      modEmptyHint:modList.length
+        ? modList.length + ' mods are installed. Try a jar filename, or clear the filter.'
+        : (S.busy.mods ? 'Reading the mods directory…'
+                       : (S.err.mods || 'No jars in this instance\'s mods directory.')),
+      identifyLabel:nUnk ? 'identify ' + nUnk + ' unknown' : 'identify jars',
+      updatesLabel:upd.length ? upd.length + ' updates available' : 'check for updates',
+      jobSummaryMods:(J && J.result && J.result.mods_installed != null)
+        ? J.result.mods_installed + ' mods' : '',
+      jobSummarySize:(J && J.result && J.result.files_uploaded != null)
+        ? J.result.files_uploaded + ' files' : '',
       addQ:S.addQ, setAddQ:e => this.searchMods(e.target.value),
       addPips:[{ d:'0ms' }, { d:'160ms' }, { d:'320ms' }],
       sources:[
@@ -3240,8 +3335,9 @@ class Component extends DCLogic {
         { k:'available', v:host.available_ram_gb ? host.available_ram_gb + ' GB' : '—', c:'#56D9A3' },
         { k:'cpu', v:host.cpu_count ? host.cpu_count + ' threads' : '—', c:'#ECEAE7' },
         { k:'model', v:host.cpu_model || '—', c:'#9C9EA4' },
-        { k:'free disk', v:host.free_disk_gb ? host.free_disk_gb + ' GB' : '—', c:'#56D9A3' },
-        { k:'load 1m', v:host.load_1m != null ? String(host.load_1m) : '—', c:'#FFC44D' }
+        { k:'free disk', v:host.disk_free_gb ? host.disk_free_gb + ' GB' : '—', c:'#56D9A3' },
+        { k:'load 1m', v:host.load_1m != null ? String(host.load_1m) : '—',
+          c:host.load_per_core > 1 ? '#FF3B5C' : host.load_per_core > 0.7 ? '#FFC44D' : '#56D9A3' }
       ],
       tuneTabs:[
         { k:'heap', label:'Heap' },
@@ -3335,6 +3431,13 @@ class Component extends DCLogic {
         bd:S.conFilter === t ? 'rgba(255,107,53,.4)' : 'rgba(255,255,255,.1)',
         col:S.conFilter === t ? '#ECEAE7' : '#8C8F96',
         pick:() => this.setState({ conFilter:t }) })),
+      // DESIGN: the canvas said "websocket · 41 ms". Crafty exposes no push
+      // channel; the backend polls it and forwards new lines over SSE. What is
+      // worth saying is where the lines come from and whether they are still
+      // arriving.
+      conSource:live ? 'live · polled from Crafty every 1.5s'
+                     : (D.console || []).length ? 'latest.log · the server is stopped'
+                                                : 'nothing to read yet',
       conClear:() => this.setD({ console:[] }),
       conLines,
       cmd:S.cmd, setCmd:e => this.setState({ cmd:e.target.value }),
@@ -3366,6 +3469,7 @@ class Component extends DCLogic {
         pick:() => { if (S.cfgDirty[S.cfgPath] && c.path !== S.cfgPath) {
             this.setState({ confirmOpen:'leave', cfgNext:c.path }); return; }
           this.openConfig(c.path); } })),
+      cfgFilterHint:'filter ' + cfgAll.length + ' files…',
       cfgEmpty:cfgList.length === 0,
       cfgFooter:cfgList.length + ' of ' + cfgAll.length + ' shown · '
                 + Object.keys(S.cfgDirty).length + ' unsaved',
@@ -3683,22 +3787,24 @@ class Component extends DCLogic {
             ? ((D.preflight || {}).recommended_ram_mb / 1024).toFixed(1) + ' GB' : 'auto', c:EMBER }
       ],
       candidates:((D.preflight || {}).candidates || []).map((c, i) => {
-        const on = S.reviewSel[c.file] === undefined ? (c.decision !== 'keep') : S.reviewSel[c.file];
-        const conf = c.confidence === 'declared' ? 'confirmed'
-                   : c.decision === 'keep' ? 'protected'
-                   : c.confidence === 'bundled' ? 'bundled'
-                   : c.confidence === 'high' ? 'confirmed' : 'uncertain';
+        const on = S.reviewSel[c.file_name] === undefined
+          ? (c.recommendation === 'remove') : S.reviewSel[c.file_name];
+        const conf = c.recommendation === 'keep' ? 'protected'
+                   : c.confidence === 'declared' ? 'confirmed'
+                   : c.confidence === 'jar' ? 'confirmed'
+                   : c.confidence === 'none' ? 'bundled' : 'uncertain';
         const cf = CONF[conf], lock = conf === 'protected';
         const AUTH = { 'jar manifest':'#56D9A3', 'modrinth':'#7AA7FF',
                        'dependency graph':'#C77DFF', 'name list':'#FFC44D' };
         const src = c.source || (c.confidence === 'declared' ? 'modrinth' : 'name list');
-        return { n:c.name || c.file, j:c.file, conf, on,
+        return { n:c.name || c.file_name, j:c.file_name, conf, on,
           reasons:c.reasons || [], src,
-          req:(c.required_by || []).length ? 'Required by ' + c.required_by.join(', ') : '',
+          req:(c.required_by_others || []).length
+            ? 'Required by ' + c.required_by_others.join(', ') : '',
           d:(i * 50) + 'ms',
           bg:on ? 'rgba(255,107,53,.05)' : '#15181C',
           bd:on ? 'rgba(255,107,53,.3)' : 'rgba(255,255,255,.07)',
-          initials:(c.name || c.file || '?').replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || '?',
+          initials:(c.name || c.file_name || '?').replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || '?',
           iconCol:conf === 'bundled' ? '#8C8F96' : '#5F6269',
           confLabel:cf.label, confGlyph:cf.glyph, confCol:cf.c,
           confBg:cf.c + '1A', confBd:cf.c + '55',
@@ -3710,11 +3816,11 @@ class Component extends DCLogic {
           reasonList:(c.reasons || []).map((r, ri) => ({ r, i:ri + 1 })),
           srcCol:AUTH[String(src).toLowerCase()] || '#8C8F96',
           toggle:lock ? (() => {}) : (() => this.setState(s =>
-            ({ reviewSel:{ ...s.reviewSel, [c.file]:!on } }))) };
+            ({ reviewSel:{ ...s.reviewSel, [c.file_name]:!on } }))) };
       }),
       reviewCount:(() => { const cs = (D.preflight || {}).candidates || [];
-        const n = cs.filter(c => S.reviewSel[c.file] === undefined
-          ? c.decision !== 'keep' : S.reviewSel[c.file]).length;
+        const n = cs.filter(c => S.reviewSel[c.file_name] === undefined
+          ? c.recommendation === 'remove' : S.reviewSel[c.file_name]).length;
         return n + ' of ' + cs.length; })(),
       reviewBack:() => this.setState({ reviewOpen:false }),
       reviewNone:() => { if (S.reviewOpen === 'roll') return this.installRoll();

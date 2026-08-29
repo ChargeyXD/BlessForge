@@ -100,7 +100,23 @@ async def set_enabled(server_id: str, filename: str, enabled: bool,
     else:
         return {"file": current, "enabled": enabled, "changed": False}
 
-    await crafty.rename_path(server_id, f"{directory}/{current}", new_name)
+    try:
+        await crafty.rename_path(server_id, f"{directory}/{current}", new_name)
+    except crafty.CraftyError:
+        # Callers name a mod by its enabled filename, because that is what the
+        # UI shows and what a finding's `files` list carries. If it is already
+        # in the state being asked for, the file under that exact name does not
+        # exist and the rename fails -- so "disable these twelve" would report
+        # nine errors the second time it ran. Asking what is actually on disk
+        # turns that back into the no-op it is.
+        try:
+            entries = await crafty.list_dir(server_id, directory)
+        except crafty.CraftyError:
+            raise
+        if new_name in entries and current not in entries:
+            return {"file": new_name, "enabled": enabled, "changed": False,
+                    "already": True}
+        raise
     return {"file": new_name, "previous": current, "enabled": enabled, "changed": True}
 
 

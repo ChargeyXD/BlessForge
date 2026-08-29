@@ -210,6 +210,17 @@ def effective_host() -> dict:
             specs["cpu_count"] = int(override_cpu)
         except ValueError:
             pass
+    # Load average is the one host number that says whether the machine is
+    # busy *right now*, which is exactly the question someone sizing a heap is
+    # asking. Reported per-core so it reads the same on any box.
+    try:
+        one, _five, _fifteen = os.getloadavg()
+        specs["load_1m"] = round(one, 2)
+        cpus = specs.get("cpu_count") or 1
+        specs["load_per_core"] = round(one / cpus, 2)
+    except (OSError, AttributeError):
+        specs["load_1m"] = None
+        specs["load_per_core"] = None
     return specs
 
 
