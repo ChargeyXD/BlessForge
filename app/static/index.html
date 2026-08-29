@@ -1137,7 +1137,8 @@
                 <h3 style="margin:0 0 4px; font-size:12.5px; font-weight:600;">Import your own export</h3>
                 <p style="margin:0 0 10px; font-size:11px; color:#8C8F96; line-height:1.55; text-wrap:pretty;">A pack you built in the CurseForge app was never published, so it cannot be searched for. Drop its .zip profile export here.</p>
                 <sc-if value="{{ notImporting }}" hint-placeholder-val="{{ true }}">
-                  <button onClick="{{ startImport }}" style="display:flex; flex-direction:column; align-items:center; gap:6px; width:100%; padding:18px 10px; background:rgba(255,255,255,.02); border:1px dashed rgba(255,255,255,.16); border-radius:3px; cursor:pointer; transition:all .18s;" style-hover="border-color:rgba(255,107,53,.55); background:rgba(255,107,53,.05);">
+                  <input id="bfUpload" type="file" accept=".zip" onChange="{{ onUpload }}" style="display:none" />
+                  <button onClick="{{ startImport }}" onDragOver="{{ onDragOver }}" onDrop="{{ onDrop }}" style="display:flex; flex-direction:column; align-items:center; gap:6px; width:100%; padding:18px 10px; background:rgba(255,255,255,.02); border:1px dashed rgba(255,255,255,.16); border-radius:3px; cursor:pointer; transition:all .18s;" style-hover="border-color:rgba(255,107,53,.55); background:rgba(255,107,53,.05);">
                     <span style="font-family:'JetBrains Mono',monospace; font-size:16px; color:#5F6269;">⇩</span>
                     <span style="font-size:11.5px; font-weight:500; color:#B3AFAB;">Drop a .zip, or click to browse</span>
                     <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#5F6269;">these run to hundreds of MB</span>
@@ -1146,7 +1147,7 @@
                 <sc-if value="{{ importing }}">
                   <div style="animation:bfFade .2s both;">
                     <div style="display:flex; align-items:baseline; gap:7px; font-family:'JetBrains Mono',monospace; font-size:10px;">
-                      <span style="color:#D5D3D0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">CottageWitch-1.5.0.zip</span>
+                      <span style="color:#D5D3D0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ upName }}</span>
                       <span style="margin-left:auto; color:var(--ember,#FF6B35); font-variant-numeric:tabular-nums;">{{ upPct }}%</span>
                     </div>
                     <div style="height:5px; margin-top:6px; background:#0E1013; border:1px solid rgba(255,255,255,.07); overflow:hidden;">
@@ -1162,10 +1163,12 @@
                             <dd style="margin:0; color:{{ z.c }}; text-align:right;">{{ z.v }}</dd>
                           </sc-for>
                         </dl>
-                        <div style="display:flex; gap:7px; margin-top:9px; padding:7px 8px; background:rgba(255,196,77,.07); border-left:2px solid #FFC44D;">
-                          <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#FFC44D;">▲</span>
-                          <span style="font-size:10.5px; color:#C6BC9E; line-height:1.5;">Requests 8 GB. This host can safely give 4.</span>
-                        </div>
+                        <sc-if value="{{ zipWarn }}">
+                          <div style="display:flex; gap:7px; margin-top:9px; padding:7px 8px; background:rgba(255,196,77,.07); border-left:2px solid #FFC44D;">
+                            <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#FFC44D;">▲</span>
+                            <span style="font-size:10.5px; color:#C6BC9E; line-height:1.5;">{{ zipWarn }}</span>
+                          </div>
+                        </sc-if>
                         <button onClick="{{ commitImport }}" style="width:100%; margin-top:9px; padding:8px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:700; cursor:pointer;">Continue with this archive</button>
                       </div>
                     </sc-if>
@@ -2503,7 +2506,10 @@ class Component extends DCLogic {
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         let rec = {}; try { rec = JSON.parse(xhr.responseText); } catch (e) {}
-        this.setState({ upPct:100, upload:rec, importing:false });
+        // `importing` means the import flow is open, not "bytes are moving".
+        // Clearing it here collapsed the panel at the exact moment it had
+        // something to show -- what the archive turned out to contain.
+        this.setState({ upPct:100, upload:rec, importing:true });
         this.load('uploads', '/api/uploads', r => r.items || []);
         this.toast(file.name + ' uploaded and read.', 'ok');
       } else {
@@ -2520,6 +2526,7 @@ class Component extends DCLogic {
   async commitImport() {
     const u = this.state.upload;
     if (!u) return;
+    this.setState({ importing:false });
     this.setState({ pendingInstall:{ ref:{ upload_id:u.upload_id },
       server_name:this.state.newName
         || ((u.summary && u.summary.name) || u.file_name || 'Imported pack').replace(/\.zip$/i, ''),
@@ -3755,10 +3762,20 @@ class Component extends DCLogic {
       startInstall:() => this.startInstall(),
 
       /* --- discover: import --- */
+      // A file picker has no markup-free existence, so the one hidden input
+      // above is the only element added to the canvas for its own sake. The
+      // dropzone the design drew now actually accepts a drop, too.
       startImport:() => { const el = document.getElementById('bfUpload'); if (el) el.click(); },
       onUpload:e => { const f = e.target.files && e.target.files[0]; if (f) this.uploadPack(f); },
+      onDragOver:e => { e.preventDefault(); },
+      onDrop:e => { e.preventDefault();
+        const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!f) return;
+        if (!/\.zip$/i.test(f.name)) { this.toast('That is not a .zip export.', 'warn'); return; }
+        this.uploadPack(f); },
       importing:S.importing, notImporting:!S.importing,
       upPct:S.upPct, upDone:S.upPct >= 100 && !!S.upload,
+      upName:S.upName || (S.upload && S.upload.file_name) || 'the archive',
       upBytes:S.importing
         ? (bytes(S.upLoaded || 0) + ' of ' + bytes(S.upTotal || 0))
         : (S.upload ? (S.upName || '') + ' · read' : ''),
@@ -3777,10 +3794,21 @@ class Component extends DCLogic {
           { k:'requested ram', v:z.recommended_ram_mb ? z.recommended_ram_mb + ' MB' : 'not stated',
             c:z.recommended_ram_mb ? '#FF3B5C' : '#9C9EA4' }
         ]; })(),
+      // The canvas asserted "Requests 8 GB. This host can safely give 4."
+      // whatever the archive said -- next to a row that read "not stated".
+      zipWarn:(() => { const z = S.upload && S.upload.summary;
+        if (!z) return '';
+        const want = z.recommended_ram_mb ? z.recommended_ram_mb / 1024 : 0;
+        const ceil = (mem.heap_gb || 0);
+        if (want && ceil && want > ceil)
+          return 'Requests ' + want.toFixed(0) + ' GB. This host can safely give '
+               + ceil.toFixed(0) + ', and the install will use the smaller number.';
+        return (z.warnings || []).join(' ') || ''; })(),
       commitImport:() => this.commitImport(),
       archives:(D.uploads || []).map(a => ({ n:a.file_name || a.upload_id,
         sz:bytes(a.size),
-        reuse:() => { this.setState({ upload:a, upPct:100, upName:a.file_name });
+        reuse:() => { this.setState({ upload:a, upPct:100, upName:a.file_name,
+                                      importing:true });
                       this.toast('Reusing ' + (a.file_name || 'that archive') + '.', 'info'); },
         del:async () => { try { await api('/api/uploads/' + a.upload_id, { method:'DELETE' });
             this.toast((a.file_name || 'archive') + ' deleted from the import cache.', 'ok');
