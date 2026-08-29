@@ -478,6 +478,21 @@ async def instance_action(server_id: str, action: str) -> dict:
     if action not in allowed:
         raise HTTPException(400, f"action must be one of {sorted(allowed)}")
 
+    # Crafty silently ignores a start for a server it already believes is
+    # running, and its `running` flag both lags a stop by a poll cycle and
+    # stays set for a process that died without it noticing. Either way a
+    # plain start is dropped on the floor while the UI says "Starting X".
+    #
+    # A restart is right in both cases -- it stops whatever is there, if
+    # anything, and starts it -- so that is what a start becomes.
+    upgraded = False
+    if action == "start_server":
+        try:
+            if (await crafty.get_stats(server_id)).get("running"):
+                action, upgraded = "restart_server", True
+        except Exception:
+            pass          # if stats are unreadable, let the start try anyway
+
     prepared: dict = {}
     if action in ("start_server", "restart_server"):
         # Crafty regenerates the launch command whenever its loader installer
@@ -487,7 +502,11 @@ async def instance_action(server_id: str, action: str) -> dict:
         prepared = await _prepare_for_start(server_id)
     try:
         await crafty.server_action(server_id, action)
-        return {"ok": True, "action": action, "prepared": prepared}
+        return {"ok": True, "action": action, "prepared": prepared,
+                "upgraded": upgraded,
+                "why": ("Crafty still had this marked as running, so it was "
+                        "restarted rather than started -- a plain start would "
+                        "have been ignored.") if upgraded else None}
     except Exception as e:
         raise _err(e)
 

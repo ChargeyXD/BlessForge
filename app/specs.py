@@ -67,6 +67,11 @@ AIKAR_FLAGS = [
      "Stops the JVM writing perf data to /tmp, which can stall on slow disks."),
     ("-XX:MaxTenuringThreshold=1", "Promote survivors quickly", "gc",
      "Anything that survives one collection is usually long-lived anyway."),
+    ("-Djava.awt.headless=true", "Run headless", "runtime",
+     "A dedicated server has no display, and this container has no X11 "
+     "libraries. Without it, any mod that touches java.awt during registration "
+     "-- Mahou Tsukai does, to build a colour -- dies on "
+     "UnsatisfiedLinkError: libawt_xawt.so, taking the whole boot with it."),
     ("-Dusing.aikars.flags=https://mcflags.emc.gs", "Tag the flag set", "meta",
      "Marks this server as using Aikar's flags; harmless, helps support."),
     ("-Daikars.new.flags=true", "Use the modern flag set", "meta",

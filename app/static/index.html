@@ -930,7 +930,7 @@
               <div id="bfGutter" style="flex:0 0 44px; padding:10px 0; background:#0C0D10; border-right:1px solid rgba(255,255,255,.06); font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75; color:#3A3E45; text-align:right; user-select:none; overflow:hidden;">
                 <sc-for list="{{ edLines }}" as="l" hint-placeholder-count="16"><div style="padding-right:9px;">{{ l.n }}</div></sc-for>
               </div>
-              <textarea id="bfEditor" onInput="{{ setEdText }}" onScroll="{{ edScroll }}" spellcheck="false" wrap="off" disabled="{{ edReadOnly }}" placeholder="{{ edPlaceholder }}" style="flex:1; min-width:0; padding:10px 12px; background:transparent; border:0; outline:none; resize:none; color:#C6C3BF; font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75; white-space:pre; overflow:auto;">{{ edText }}</textarea>
+              <textarea id="bfEditor" onInput="{{ setEdText }}" onScroll="{{ edScroll }}" spellcheck="false" wrap="off" disabled="{{ edReadOnly }}" placeholder="{{ edPlaceholder }}" value="{{ edText }}" style="flex:1; min-width:0; padding:10px 12px; background:transparent; border:0; outline:none; resize:none; color:#C6C3BF; font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75; white-space:pre; overflow:auto;"></textarea>
             </div>
             <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:8px 12px; background:#0E1013; border-top:1px solid rgba(255,255,255,.07); font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74;">
               <span>{{ edCursor }}</span>
@@ -1268,11 +1268,38 @@
                     <span style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-family:'JetBrains Mono',monospace; font-size:12px; color:#5F6269;">⌕</span>
                     <input value="{{ dQ }}" onInput="{{ setDQ }}" placeholder="Search modpacks…" style="width:100%; padding:9px 11px 9px 28px; background:#121417; border:1px solid rgba(255,255,255,.09); border-radius:2px; color:#ECEAE7; font-size:13px; outline:none; transition:border-color .16s;" style-focus="border-color:rgba(255,107,53,.6);" />
                   </div>
-                  <sc-for list="{{ dFilters }}" as="f" hint-placeholder-count="3">
-                    <button onClick="{{ f.act }}" style="display:flex; align-items:center; gap:6px; padding:8px 11px; background:#121417; border:1px solid rgba(255,255,255,.09); border-radius:2px; color:#B3AFAB; font-family:'JetBrains Mono',monospace; font-size:10.5px; cursor:pointer; white-space:nowrap; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">
-                      <span style="color:#6A6D74;">{{ f.k }}</span>{{ f.v }}<span style="font-size:8px; color:#6A6D74;">▾</span>
-                    </button>
-                  </sc-for>
+                  <span style="display:flex; align-items:center; gap:6px; padding:0 10px; background:#121417; border:1px solid {{ dVerBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:10.5px; white-space:nowrap;">
+                    <span style="color:#6A6D74;">mc</span>
+                    <select onChange="{{ setDVer }}" value="{{ dVer }}" style="padding:8px 2px; background:transparent; border:0; outline:none; color:{{ dVerCol }}; font-family:inherit; font-size:10.5px; cursor:pointer;">
+                      <sc-for list="{{ dVerOpts }}" as="o" hint-placeholder-count="4">
+                        <option value="{{ o.v }}">{{ o.t }}</option>
+                      </sc-for>
+                    </select>
+                  </span>
+                  <span style="display:flex; align-items:center; gap:6px; padding:0 10px; background:#121417; border:1px solid {{ dLoaderBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:10.5px; white-space:nowrap;">
+                    <span style="color:#6A6D74;">loader</span>
+                    <select onChange="{{ setDLoader }}" value="{{ dLoader }}" style="padding:8px 2px; background:transparent; border:0; outline:none; color:{{ dLoaderCol }}; font-family:inherit; font-size:10.5px; cursor:pointer;">
+                      <sc-for list="{{ dLoaderOpts }}" as="o" hint-placeholder-count="4">
+                        <option value="{{ o.v }}">{{ o.t }}</option>
+                      </sc-for>
+                    </select>
+                  </span>
+                  <span style="display:flex; align-items:center; gap:6px; padding:0 10px; background:#121417; border:1px solid {{ dCatBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:10.5px; white-space:nowrap;">
+                    <span style="color:#6A6D74;">category</span>
+                    <select onChange="{{ setDCat }}" value="{{ dCat }}" style="padding:8px 2px; background:transparent; border:0; outline:none; color:{{ dCatCol }}; font-family:inherit; font-size:10.5px; cursor:pointer;">
+                      <sc-for list="{{ dCatOpts }}" as="o" hint-placeholder-count="4">
+                        <option value="{{ o.v }}">{{ o.t }}</option>
+                      </sc-for>
+                    </select>
+                  </span>
+                  <span style="display:flex; align-items:center; gap:6px; padding:0 10px; background:#121417; border:1px solid {{ dSortBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:10.5px; white-space:nowrap;">
+                    <span style="color:#6A6D74;">sort</span>
+                    <select onChange="{{ setDSort }}" value="{{ dSort }}" style="padding:8px 2px; background:transparent; border:0; outline:none; color:{{ dSortCol }}; font-family:inherit; font-size:10.5px; cursor:pointer;">
+                      <sc-for list="{{ dSortOpts }}" as="o" hint-placeholder-count="4">
+                        <option value="{{ o.v }}">{{ o.t }}</option>
+                      </sc-for>
+                    </select>
+                  </span>
                 </div>
 
                 <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74;">
@@ -2248,7 +2275,7 @@ class Component extends DCLogic {
       // start, because Crafty silently undoes both. Saying so is the only way
       // anyone finds out it happened.
       const p = r.prepared || {};
-      const fixed = [p.java ? 'Java re-pinned' : null,
+      const fixed = [r.upgraded ? 'restarted instead, because Crafty still had it running' : null,p.java ? 'Java re-pinned' : null,
                      p.eula ? 'eula.txt rewritten to the byte form Crafty accepts' : null]
         .filter(Boolean);
       this.toast(verb + ' ' + srv.name + (fixed.length ? ' — ' + fixed.join('; ') + '.' : '.'), 'ok');
@@ -2626,6 +2653,20 @@ class Component extends DCLogic {
       }
       if (act === 'find_client_only') { this.setState({ view:'mods', modFilter:'client' }); return; }
       if (act === 'identify_mods') { this.setState({ view:'mods' }); return this.identify(); }
+      if (act === 'add_flag') {
+        const plan = this.state.d.optimize
+          || await api('/api/instances/' + id + '/optimize');
+        const want = f.fix.flag;
+        const flags = (plan.flags || [])
+          .filter(x => (x.applied != null ? x.applied : x.enabled))
+          .map(x => x.flag);
+        if (flags.indexOf(want) < 0) flags.push(want);
+        await api('/api/instances/' + id + '/optimize', { method:'POST',
+          body:{ heap_gb:((plan.memory || {}).heap_gb) || 4, flags,
+                 xms_equals_xmx:true } });
+        this.load('optimize', '/api/instances/' + id + '/optimize');
+        return done(want + ' added to the launch arguments. Restart to apply it.');
+      }
       if (act === 'fix_versions') {
         await api('/api/instances/' + id + '/fix/versions', { method:'POST', body:{} });
         return done('Version mismatches reconciled against what the publishers declare.');
@@ -3063,7 +3104,8 @@ class Component extends DCLogic {
              disable_mods:'Disable the named jars', find_client_only:'Review client mods',
              identify_mods:'Run identification', fix_versions:'Fix the versions',
              install_dependency:'Find the dependency', retry_mod:'Retry the download',
-             find_duplicates:'Show the duplicates', edit_file:'Open the file' }[a] || '';
+             find_duplicates:'Show the duplicates', edit_file:'Open the file',
+             add_flag:'Add the flag' }[a] || '';
   }
 
   renderVals() {
@@ -3323,7 +3365,20 @@ class Component extends DCLogic {
     /* --- configs --------------------------------------------------------- */
     const cq = S.cfgQ.trim().toLowerCase();
     const cfgAll = D.configs || [];
-    const cfgList = cfgAll.filter(c => !cq || c.path.toLowerCase().indexOf(cq) >= 0).slice(0, 400);
+    const ROOT_FIRST = ['server.properties', 'user_jvm_args.txt', 'eula.txt',
+                        'ops.json', 'whitelist.json', 'banned-players.json',
+                        'banned-ips.json'];
+    const cfgMatched = cfgAll.filter(c => !cq || c.path.toLowerCase().indexOf(cq) >= 0);
+    // The rail is capped, and on an 810-file pack that cut off exactly the
+    // files someone opens this screen to edit. They lead.
+    const cfgList = cfgMatched
+      .slice()
+      .sort((a, b) => {
+        const ai = ROOT_FIRST.indexOf(a.path), bi = ROOT_FIRST.indexOf(b.path);
+        if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+        return 0;
+      })
+      .slice(0, 400);
     const curBody = D.cfgBody[S.cfgPath] || null;
     const edBody = S.cfgDraft[S.cfgPath] != null ? S.cfgDraft[S.cfgPath]
                  : (curBody ? curBody.body : '');
@@ -4019,7 +4074,7 @@ class Component extends DCLogic {
           this.openConfig(c.path); } })),
       cfgFilterHint:'filter ' + cfgAll.length + ' files…',
       cfgEmpty:cfgList.length === 0,
-      cfgFooter:cfgList.length + ' of ' + cfgAll.length + ' shown · '
+      cfgFooter:cfgList.length + ' of ' + cfgMatched.length + ' shown · '
                 + Object.keys(S.cfgDirty).length + ' unsaved',
       edPath:S.cfgPath || 'nothing open',
       edMeta:curBody ? (curBody.meta || '') : (S.busy.cfg ? 'reading…' : ''),
@@ -4219,7 +4274,39 @@ class Component extends DCLogic {
       // The canvas drew these as buttons with a caret and no menu behind them,
       // and two of the three named things that are not filters. They are the
       // catalogue's real facets now, each a list it actually returns.
-      dFilters:(() => {
+      //
+      // Written out one per chip rather than looped: the runtime drops a
+      // <select> that sits inside an outer <sc-for>, so each one needs to own
+      // the only loop in its subtree.
+      dVer:S.dVer || '', dLoader:S.dLoader || '',
+      dCat:S.dCat == null ? '' : String(S.dCat), dSort:String(S.dSort || 2),
+      dVerOpts:[{ v:'', t:'any' }].concat(
+        (D.versions || []).slice(0, 40).map(v => ({ v, t:v }))),
+      dLoaderOpts:[{ v:'', t:'any' }, { v:'Forge', t:'Forge' },
+        { v:'NeoForge', t:'NeoForge' }, { v:'Fabric', t:'Fabric' },
+        { v:'Quilt', t:'Quilt' }],
+      dCatOpts:[{ v:'', t:'any' }].concat(
+        (D.cats || []).map(c => ({ v:String(c.id), t:c.name }))),
+      dSortOpts:[{ v:'2', t:'popularity' }, { v:'6', t:'downloads' },
+        { v:'3', t:'last updated' }, { v:'4', t:'name' },
+        { v:'12', t:'release date' }],
+      dVerBd:S.dVer ? 'rgba(255,107,53,.45)' : 'rgba(255,255,255,.09)',
+      dLoaderBd:S.dLoader ? 'rgba(255,107,53,.45)' : 'rgba(255,255,255,.09)',
+      dCatBd:S.dCat ? 'rgba(255,107,53,.45)' : 'rgba(255,255,255,.09)',
+      dSortBd:String(S.dSort) !== '2' ? 'rgba(255,107,53,.45)' : 'rgba(255,255,255,.09)',
+      dVerCol:S.dVer ? '#ECEAE7' : '#B3AFAB',
+      dLoaderCol:S.dLoader ? '#ECEAE7' : '#B3AFAB',
+      dCatCol:S.dCat ? '#ECEAE7' : '#B3AFAB',
+      dSortCol:String(S.dSort) !== '2' ? '#ECEAE7' : '#B3AFAB',
+      setDVer:e => this.setState({ dVer:e.target.value || null },
+                                 () => this.searchPacks(this.state.dQ)),
+      setDLoader:e => this.setState({ dLoader:e.target.value || null },
+                                    () => this.searchPacks(this.state.dQ)),
+      setDCat:e => this.setState({ dCat:e.target.value || null },
+                                 () => this.searchPacks(this.state.dQ)),
+      setDSort:e => this.setState({ dSort:Number(e.target.value) || 2 },
+                                  () => this.searchPacks(this.state.dQ)),
+      dFiltersUnused:(() => {
         const opt = (v, t) => ({ v:String(v), t });
         const mk = (k, key, opts, val) => ({
           k, opts, v:String(val || ''),

@@ -41,6 +41,10 @@ def _finding(severity, title, detail, fix=None, evidence=None, category="general
 # --- log patterns ------------------------------------------------------
 # Each entry: (compiled regex, builder(match, context) -> finding)
 
+_AWT_HEADLESS = re.compile(
+    r"UnsatisfiedLinkError: Can't load library: \S*libawt[\w.]*\.so", re.I
+)
+
 _MISSING_DEP_BLOCK = re.compile(
     r"Missing or unsupported mandatory dependencies:(.*?)(?:\n\s*\n|\Z)", re.S
 )
@@ -74,7 +78,37 @@ def _scan_missing_deps(text: str) -> list[dict]:
     return findings
 
 
+def _awt_mods(text: str) -> list[str]:
+    """Which mods the loader blamed for the AWT failure, in order."""
+    seen: list[str] = []
+    for m in re.finditer(r"dispatch for modid (\S+)", text or ""):
+        mid = m.group(1).strip()
+        if mid not in seen:
+            seen.append(mid)
+    return seen[:6]
+
+
 _PATTERNS = [
+    (
+        _AWT_HEADLESS,
+        lambda m, t: _finding(
+            "critical",
+            "A mod wants the full AWT, and this Java has only the headless one",
+            "Something touched java.awt while registering -- building a colour, "
+            "usually -- and the JVM went looking for libawt_xawt.so, which is "
+            "the X11 half of AWT. A headless JRE does not ship it, and the "
+            "Crafty image uses a headless JRE."
+            + (" The mods involved are: " + ", ".join(_awt_mods(t)) + "."
+               if _awt_mods(t) else "")
+            + " Setting -Djava.awt.headless=true is worth trying first and is "
+            "harmless, but it only helps if nothing turns headless back off at "
+            "runtime -- some mods do. If it does not, this pack needs a Java "
+            "with the full AWT on the Crafty host; there is no version of this "
+            "that BlessForge can fix from inside the server directory.",
+            fix={"action": "add_flag", "flag": "-Djava.awt.headless=true"},
+            evidence=m.group(0), category="runtime",
+        ),
+    ),
     (
         re.compile(r"You need to agree to the EULA", re.I),
         lambda m, t: _finding(
