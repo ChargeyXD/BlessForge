@@ -188,7 +188,7 @@ def _action_catalogue() -> str:
 # timeout. Which one is in use is a runtime choice, remembered across restarts,
 # because it depends on what is running on the box today.
 
-LOCAL_URL = os.environ.get("OLLAMA_LOCAL_URL", "http://127.0.0.1:11434").rstrip("/")
+LOCAL_URL = os.environ.get("OLLAMA_LOCAL_URL", "http://localhost:11434").rstrip("/")
 _ENDPOINT_FILE = config.DATA_DIR / "ai-endpoint.txt"
 _endpoint: str | None = None
 
@@ -201,14 +201,20 @@ def current_endpoint() -> str:
             saved = _ENDPOINT_FILE.read_text(encoding="utf-8").strip()
         except OSError:
             saved = ""
+        saved = _ALIASES.get(saved, saved)
         _endpoint = saved if saved in (OLLAMA_URL, LOCAL_URL) else OLLAMA_URL
     return _endpoint
+
+
+# 127.0.0.1 and localhost are the same endpoint; a choice saved under either
+# spelling has to keep working.
+_ALIASES = {"http://127.0.0.1:11434": "http://localhost:11434"}
 
 
 def set_endpoint(url: str) -> str:
     """Switch endpoints. Only the two known ones are accepted."""
     global _endpoint
-    url = (url or "").rstrip("/")
+    url = _ALIASES.get((url or "").rstrip("/"), (url or "").rstrip("/"))
     if url not in (OLLAMA_URL, LOCAL_URL):
         raise ValueError(
             f"unknown endpoint {url!r}; expected {OLLAMA_URL} or {LOCAL_URL}"
@@ -225,7 +231,7 @@ def set_endpoint(url: str) -> str:
 def endpoints() -> list[dict]:
     active = current_endpoint()
     return [
-        {"url": current_endpoint(), "label": "shared", "active": active == OLLAMA_URL,
+        {"url": OLLAMA_URL, "label": "shared", "active": active == OLLAMA_URL,
          "note": "The default. Behind a proxy that allows 120s to first byte, "
                  "so long crash reports are summarised rather than sent whole."},
         {"url": LOCAL_URL, "label": "local", "active": active == LOCAL_URL,

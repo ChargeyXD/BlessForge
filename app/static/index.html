@@ -217,7 +217,7 @@
 
     <main data-bf-canvas="" style="flex:1; overflow-y:auto; overflow-x:hidden; background:#0B0C0E;">
       <sc-if value="{{ isSituation }}">
-        <div data-screen-label="Situation" style="padding:16px 18px 40px; max-width:1180px; animation:bfRise var(--animdur) both;">
+        <div data-screen-label="Situation" style="padding:16px 18px 40px; max-width:1800px; animation:bfRise var(--animdur) both;">
 
           <div data-bf-2col="" style="display:grid; grid-template-columns:minmax(300px,1.15fr) minmax(280px,1fr); gap:12px;">
             <section style="position:relative; padding:14px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px; overflow:hidden;">
@@ -326,7 +326,7 @@
       </sc-if>
 
       <sc-if value="{{ isDiagnose }}">
-        <div data-screen-label="Diagnose" style="padding:16px 18px 40px; max-width:1180px; animation:bfRise var(--animdur) both;">
+        <div data-screen-label="Diagnose" style="padding:16px 18px 40px; max-width:1800px; animation:bfRise var(--animdur) both;">
 
           <section style="position:relative; padding:15px 16px; background:{{ rootBg }}; border:1px solid {{ rootBd }}; border-radius:3px; overflow:hidden; animation:{{ rootAnim }};">
             <div style="position:absolute; top:0; left:0; width:26%; height:1px; background:linear-gradient(90deg,transparent,{{ rootTone }},transparent); animation:bfScan 4.2s linear infinite;"></div>
@@ -502,9 +502,13 @@
                     <span style="font-size:12.5px; font-weight:600;">Assistant</span>
                     <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74;">{{ aiEndpoint }}</span>
                     <span style="margin-left:auto; display:flex; gap:2px; padding:2px; background:#0E1013; border:1px solid rgba(255,255,255,.07); border-radius:2px;">
-                      <sc-for list="{{ aiEndpointOpts }}" as="e" hint-placeholder-count="2">
-                        <button onClick="{{ e.pick }}" title="{{ e.note }}" style="padding:4px 9px; background:{{ e.bg }}; border:0; border-radius:1px; color:{{ e.col }}; font-family:'JetBrains Mono',monospace; font-size:9.5px; cursor:pointer; transition:all .16s;" style-hover="color:#ECEAE7;">{{ e.t }}</button>
-                      </sc-for>
+                      <!-- Written out rather than looped. Inside an <sc-for> every
+                           row's onClick resolved to the same item's handler, so
+                           clicking "shared" posted the local endpoint and it looked
+                           like the toggle would not switch back. Attribute bindings
+                           updated correctly; only the handlers were shared. -->
+                      <span style="padding:4px 9px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#C77DFF;">{{ aiActiveLabel }}</span>
+                      <button onClick="{{ aiSwap }}" title="{{ aiSwapNote }}" style="padding:4px 9px; background:transparent; border:0; border-left:1px solid rgba(255,255,255,.09); border-radius:0; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:9.5px; cursor:pointer; transition:all .16s;" style-hover="color:#ECEAE7;">{{ aiSwapLabel }}</button>
                     </span>
                     <span style="margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:{{ aiStatusCol }};">{{ aiStatus }}</span>
                   </div>
@@ -520,8 +524,11 @@
                 <section style="padding:13px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
                   <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px;">
                     <h3 style="margin:0; font-size:12.5px; font-weight:600;">Proposed plan</h3>
-                    <span style="font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.1em; color:#6A6D74;">6 ACTIONS</span>
+                    <span style="font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.1em; color:#6A6D74;">{{ aiActionCount }}</span>
                   </div>
+                  <sc-if value="{{ aiNoPlan }}">
+                    <div style="padding:16px 10px; text-align:center; font-size:11.5px; color:#8C8F96; line-height:1.6;">{{ aiNoPlan }}</div>
+                  </sc-if>
                   <sc-for list="{{ aiActions }}" as="a" hint-placeholder-count="6">
                     <div style="display:flex; align-items:flex-start; gap:8px; padding:8px 9px; margin-bottom:4px; background:{{ a.bg }}; border-left:2px solid {{ a.c }}; animation:bfRow var(--animdur) both; animation-delay:{{ a.d }};">
                       <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:{{ a.c }}; padding-top:1px;">{{ a.g }}</span>
@@ -534,10 +541,14 @@
                       </div>
                     </div>
                   </sc-for>
-                  <div style="display:flex; gap:6px; margin-top:10px;">
-                    <button onClick="{{ aiApplySafe }}" style="flex:1; padding:7px; background:rgba(86,217,163,.1); border:1px solid rgba(86,217,163,.4); border-radius:2px; color:#56D9A3; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:600; cursor:pointer; transition:all .16s;" style-hover="background:rgba(86,217,163,.18);">Apply the 4 safe ones</button>
-                    <button onClick="{{ aiConfirmDestructive }}" style="flex:0 0 auto; padding:7px 10px; background:transparent; border:1px solid rgba(255,59,92,.35); border-radius:2px; color:#FF8095; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:500; cursor:pointer; transition:all .16s;" style-hover="background:rgba(255,59,92,.12);">Destructive…</button>
-                  </div>
+                  <sc-if value="{{ aiHasSafe }}">
+                    <div style="display:flex; gap:6px; margin-top:10px;">
+                      <button onClick="{{ aiApplySafe }}" style="flex:1; padding:7px; background:rgba(86,217,163,.1); border:1px solid rgba(86,217,163,.4); border-radius:2px; color:#56D9A3; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:600; cursor:pointer; transition:all .16s;" style-hover="background:rgba(86,217,163,.18);">{{ aiApplyLabel }}</button>
+                      <sc-if value="{{ aiHasDestructive }}">
+                        <button onClick="{{ aiConfirmDestructive }}" style="flex:0 0 auto; padding:7px 10px; background:transparent; border:1px solid rgba(255,59,92,.35); border-radius:2px; color:#FF8095; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:500; cursor:pointer; transition:all .16s;" style-hover="background:rgba(255,59,92,.12);">Destructive…</button>
+                      </sc-if>
+                    </div>
+                  </sc-if>
                 </section>
               </div>
             </div>
@@ -666,7 +677,7 @@
       </sc-if>
 
       <sc-if value="{{ isTune }}">
-        <div data-screen-label="Tune" style="padding:16px 18px 40px; max-width:1180px; animation:bfRise var(--animdur) both;">
+        <div data-screen-label="Tune" style="padding:16px 18px 40px; max-width:1800px; animation:bfRise var(--animdur) both;">
           <div data-bf-hostgrid="" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(128px,1fr)); gap:1px; background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.07); border-radius:3px; overflow:hidden;">
             <sc-for list="{{ hostFacts }}" as="h" hint-placeholder-count="6">
               <div style="padding:9px 11px; background:#121417;">
@@ -716,7 +727,7 @@
                   <div style="position:absolute; top:-2px; bottom:-2px; left:{{ ceilPct }}%; width:2px; background:#FF3B5C;"></div>
                 </div>
                 <div style="display:flex; justify-content:space-between; margin-top:5px; font-family:'JetBrains Mono',monospace; font-size:9px; color:#5F6269;">
-                  <span>0</span><span style="color:#FF3B5C;">safe ceiling 4.0 GB</span><span>{{ ramTotalLabel }}</span>
+                  <span>0</span><span style="color:#FF3B5C;">{{ ceilLabel }}</span><span>{{ ramTotalLabel }}</span>
                 </div>
                 <p style="margin:13px 0 0; font-size:12.5px; color:#A8A5A1; line-height:1.65; text-wrap:pretty;">{{ heapReason }}</p>
                 <sc-if value="{{ heapWarn }}">
@@ -731,7 +742,7 @@
                 </div>
               </section>
               <section style="padding:14px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
-                <h3 style="margin:0 0 10px; font-size:12.5px; font-weight:600;">How BlessForge got to 4 GB</h3>
+                <h3 style="margin:0 0 10px; font-size:12.5px; font-weight:600;">{{ heapMathTitle }}</h3>
                 <sc-for list="{{ heapMath }}" as="h" hint-placeholder-count="5">
                   <div style="display:flex; align-items:baseline; gap:9px; padding:7px 0; border-bottom:1px solid rgba(255,255,255,.05); font-family:'JetBrains Mono',monospace; font-size:10.5px;">
                     <span style="color:{{ h.c }}; flex:0 0 auto;">{{ h.op }}</span>
@@ -787,10 +798,19 @@
                         <sc-if value="{{ p.diff }}"><span style="width:5px; height:5px; background:var(--ember,#FF6B35); border-radius:50%;" title="differs from default"></span></sc-if>
                         <sc-if value="{{ p.locked }}"><span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#6A6D74;">🔒</span></sc-if>
                       </div>
-                      <div style="font-size:10.5px; color:#8C8F96; margin-top:2px; line-height:1.4; text-wrap:pretty;">{{ p.d }}</div>
+                      <div style="font-size:10.5px; color:#8C8F96; margin-top:2px; line-height:1.4; text-wrap:pretty;">{{ p.desc }}</div>
                     </div>
-                    <div style="flex:0 0 130px;">
-                      <div style="padding:5px 8px; background:{{ p.valBg }}; border:1px solid {{ p.valBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:11px; color:{{ p.valCol }};">{{ p.vShown }}</div>
+                    <div style="flex:0 0 150px;">
+                      <sc-if value="{{ p.isChoice }}">
+                        <select onChange="{{ p.set }}" value="{{ p.v }}" disabled="{{ p.locked }}" title="{{ p.lockWhy }}" style="width:100%; padding:5px 6px; background:{{ p.valBg }}; border:1px solid {{ p.valBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:11px; color:{{ p.valCol }}; cursor:{{ p.cur }}; outline:none;">
+                          <sc-for list="{{ p.choices }}" as="c" hint-placeholder-count="3">
+                            <option value="{{ c.v }}">{{ c.t }}</option>
+                          </sc-for>
+                        </select>
+                      </sc-if>
+                      <sc-if value="{{ p.isText }}">
+                        <input value="{{ p.v }}" onInput="{{ p.set }}" disabled="{{ p.locked }}" title="{{ p.lockWhy }}" spellcheck="false" style="width:100%; padding:5px 8px; background:{{ p.valBg }}; border:1px solid {{ p.valBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:11px; color:{{ p.valCol }}; cursor:{{ p.cur }}; outline:none; transition:border-color .16s;" style-focus="border-color:rgba(255,107,53,.6);" />
+                      </sc-if>
                     </div>
                     <div style="flex:1; min-width:0; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269;">
                       <span>{{ p.t }}</span><sc-if value="{{ p.opts }}"><span style="color:#71747B;"> · {{ p.opts }}</span></sc-if>
@@ -816,7 +836,7 @@
                     <span style="font-family:'JetBrains Mono',monospace; font-size:15px; color:{{ p.c }}; font-variant-numeric:tabular-nums;">{{ p.v }}</span>
                   </div>
                 </sc-for>
-                <p style="margin:11px 0 0; font-size:11.5px; color:#A8A5A1; line-height:1.6; text-wrap:pretty;">Crafty will publish 25566, but the server will bind 25567, so nobody can join. BlessForge can write the controller's value into server.properties.</p>
+                <p style="margin:11px 0 0; font-size:11.5px; color:#A8A5A1; line-height:1.6; text-wrap:pretty;">{{ portExplain }}</p>
                 <button onClick="{{ portFix }}" style="margin-top:11px; padding:7px 12px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:700; cursor:pointer;">{{ portFixLabel }}</button>
               </section>
               <section style="padding:14px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
@@ -883,15 +903,15 @@
         </div>
       </sc-if>
       <sc-if value="{{ isConfigs }}">
-        <div data-screen-label="Configs" data-bf-2col="" style="display:grid; grid-template-columns:262px minmax(0,1fr); gap:12px; padding:16px 18px 24px; animation:bfRise var(--animdur) both;">
-          <aside style="align-self:start; display:flex; flex-direction:column; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px; overflow:hidden;">
+        <div data-screen-label="Configs" data-bf-2col="" style="display:grid; grid-template-columns:300px minmax(0,1fr); gap:12px; padding:16px 18px 18px; height:100%; min-height:0; align-items:stretch; animation:bfRise var(--animdur) both;">
+          <aside style="display:flex; flex-direction:column; min-height:0; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px; overflow:hidden;">
             <div style="padding:9px 10px; border-bottom:1px solid rgba(255,255,255,.07);">
               <div style="position:relative;">
                 <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); font-family:'JetBrains Mono',monospace; font-size:10px; color:#5F6269;">⌕</span>
                 <input value="{{ cfgQ }}" onInput="{{ setCfgQ }}" placeholder="{{ cfgFilterHint }}" style="width:100%; padding:6px 8px 6px 24px; background:#0E1013; border:1px solid rgba(255,255,255,.09); border-radius:2px; color:#ECEAE7; font-family:'JetBrains Mono',monospace; font-size:10.5px; outline:none;" style-focus="border-color:rgba(255,107,53,.6);" />
               </div>
             </div>
-            <div style="max-height:52vh; overflow-y:auto; overflow-x:hidden;">
+            <div style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;">
               <sc-for list="{{ cfgFiles }}" as="c" hint-placeholder-count="9">
                 <button onClick="{{ c.pick }}" style="display:flex; align-items:center; gap:7px; width:100%; text-align:left; padding:7px 10px; background:{{ c.bg }}; border:0; border-left:2px solid {{ c.edge }}; cursor:pointer; animation:bfRow .3s both; animation-delay:{{ c.d }}; transition:background .14s;" style-hover="background:#191C21;">
                   <span style="flex:0 0 auto; font-family:'JetBrains Mono',monospace; font-size:9px; color:{{ c.extCol }};">{{ c.ext }}</span>
@@ -912,7 +932,7 @@
             <div style="padding:8px 10px; border-top:1px solid rgba(255,255,255,.07); font-family:'JetBrains Mono',monospace; font-size:9px; color:#5F6269; line-height:1.6;">{{ cfgFooter }}</div>
           </aside>
 
-          <section style="display:flex; flex-direction:column; min-width:0; background:#101216; border:1px solid {{ edBd }}; border-radius:3px; overflow:hidden;">
+          <section style="display:flex; flex-direction:column; min-width:0; min-height:0; background:#101216; border:1px solid {{ edBd }}; border-radius:3px; overflow:hidden;">
             <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:9px 12px; background:#141719; border-bottom:1px solid rgba(255,255,255,.07);">
               <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#E4E2DF;">{{ edPath }}</span>
               <sc-if value="{{ edDirty }}">
@@ -926,7 +946,7 @@
                 <button onClick="{{ edSave }}" disabled="{{ edClean }}" style="padding:5px 12px; background:{{ edSaveBg }}; border:0; border-radius:2px; color:{{ edSaveCol }}; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:700; cursor:{{ edSaveCur }}; transition:all .16s;">Save</button>
               </span>
             </div>
-            <div style="display:flex; min-height:300px; height:56vh; overflow:hidden; background:#08090B;">
+            <div style="display:flex; flex:1; min-height:260px; overflow:hidden; background:#08090B;">
               <div id="bfGutter" style="flex:0 0 44px; padding:10px 0; background:#0C0D10; border-right:1px solid rgba(255,255,255,.06); font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75; color:#3A3E45; text-align:right; user-select:none; overflow:hidden;">
                 <sc-for list="{{ edLines }}" as="l" hint-placeholder-count="16"><div style="padding-right:9px;">{{ l.n }}</div></sc-for>
               </div>
@@ -943,7 +963,7 @@
       </sc-if>
 
       <sc-if value="{{ isActivity }}">
-        <div data-screen-label="Activity" style="padding:16px 18px 40px; max-width:1000px; animation:bfRise var(--animdur) both;">
+        <div data-screen-label="Activity" style="padding:16px 18px 40px; max-width:1400px; animation:bfRise var(--animdur) both;">
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
             <div style="display:flex; gap:2px; padding:2px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:2px;">
               <sc-for list="{{ actFilters }}" as="f" hint-placeholder-count="4">
@@ -1434,7 +1454,7 @@
             <span style="width:1px; height:9px; background:rgba(255,255,255,.14);"></span>
             <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96; font-variant-numeric:tabular-nums;">{{ jobClock }}</span>
           </div>
-          <h2 style="margin:5px 0 0; font-size:14.5px; font-weight:600; letter-spacing:-.02em;">Installing All the Mods 10 · 2.31</h2>
+          <h2 style="margin:5px 0 0; font-size:14.5px; font-weight:600; letter-spacing:-.02em;">{{ jobTitle }}</h2>
           <button onClick="{{ jobJump }}" style="margin-top:3px; padding:0; background:transparent; border:0; color:var(--ember,#FF6B35); font-family:'JetBrains Mono',monospace; font-size:9.5px; cursor:pointer; text-decoration:underline; text-underline-offset:3px;">{{ jobTarget }}</button>
         </div>
         <button onClick="{{ closeJobs }}" style="flex:0 0 auto; width:22px; height:22px; display:grid; place-items:center; background:transparent; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:11px; cursor:pointer; transition:all .16s;" style-hover="color:#fff; border-color:rgba(255,255,255,.28);">×</button>
@@ -1478,10 +1498,10 @@
       </div>
 
       <sc-if value="{{ jobDone }}">
-        <div style="padding:13px 14px; border-top:1px solid rgba(255,196,77,.28); background:rgba(255,196,77,.05); animation:bfFade .3s both;">
+        <div style="padding:13px 14px; border-top:1px solid {{ doneEdge }}; background:{{ doneBg }}; animation:bfFade .3s both;">
           <div style="display:flex; align-items:center; gap:8px;">
-            <span style="display:grid; place-items:center; width:20px; height:20px; background:rgba(255,196,77,.14); border:1px solid rgba(255,196,77,.45); font-family:'JetBrains Mono',monospace; font-size:10px; color:#FFC44D;">▲</span>
-            <span style="font-size:13px; font-weight:600; color:#FFD98A;">Finished with 3 warnings</span>
+            <span style="display:grid; place-items:center; width:20px; height:20px; background:{{ doneChipBg }}; border:1px solid {{ doneChipBd }}; font-family:'JetBrains Mono',monospace; font-size:10px; color:{{ doneTone }};">{{ doneGlyph }}</span>
+            <span style="font-size:13px; font-weight:600; color:{{ doneTextCol }};">{{ doneTitle }}</span>
           </div>
           <div style="display:flex; gap:14px; margin-top:9px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96;">
             <span>{{ jobSummaryMods }}</span><span>{{ jobSummarySize }}</span><span>{{ jobClock }}</span>
@@ -1514,7 +1534,7 @@
           <div style="display:flex; align-items:flex-start; gap:10px;">
             <div style="min-width:0; flex:1;">
               <div style="font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.14em; color:var(--ember,#FF6B35);">STEP 2 OF 3 · BEFORE ANYTHING IS WRITTEN</div>
-              <h2 style="margin:6px 0 0; font-size:19px; font-weight:700; letter-spacing:-.03em;">6 mods look like they belong on a client, not a server</h2>
+              <h2 style="margin:6px 0 0; font-size:19px; font-weight:700; letter-spacing:-.03em;">{{ reviewHeadline }}</h2>
             </div>
             <button onClick="{{ reviewBack }}" title="Back to install setup" style="flex:0 0 auto; width:24px; height:24px; display:grid; place-items:center; background:transparent; border:1px solid rgba(255,255,255,.11); border-radius:2px; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:12px; cursor:pointer; transition:all .16s;" style-hover="color:#fff; border-color:rgba(255,255,255,.3);">×</button>
           </div>
@@ -1527,10 +1547,12 @@
               </div>
             </sc-for>
           </div>
+          <sc-if value="{{ reviewHeapWarn }}">
           <div style="display:flex; gap:8px; margin-top:9px; padding:8px 10px; background:rgba(255,196,77,.07); border-left:2px solid #FFC44D;">
             <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#FFC44D;">▲</span>
-            <span style="font-size:11.5px; color:#C6BC9E; line-height:1.55;">This pack wants 8 GB and your machine can safely give 4. The heap has been set to 4 GB.</span>
+            <span style="font-size:11.5px; color:#C6BC9E; line-height:1.55;">{{ reviewHeapWarn }}</span>
           </div>
+          </sc-if>
         </div>
 
         <div style="flex:1 1 auto; min-height:110px; overflow-y:auto; padding:11px 14px;">
@@ -2052,7 +2074,8 @@ class Component extends DCLogic {
     if (view === 'diagnose') {
       this.load('diag', '/api/instances/' + id + '/diagnose');
     } else if (view === 'mods') {
-      this.load('mods', '/api/instances/' + id + '/mods');
+      this.load('mods', '/api/instances/' + id + '/mods')
+        .then(r => this.fillIcons(id, r));
       // Updates are NOT fetched here. check_updates asks the catalogue about
       // every identified mod, so opening the tab on a 200-mod pack was 200
       // requests and a visible stall -- for an answer nobody had asked for.
@@ -2247,6 +2270,7 @@ class Component extends DCLogic {
       this.setState({ sel:[], modOn:{}, flagOn:{}, propDraft:{}, cfgPath:'',
                       cfgDraft:{}, cfgDirty:{}, heap:null, checkedAt:null,
                       menu:null, picker:null });
+      this._icons = null;
       this.loadInstance(S.sid);
     }
     this.loadFor(S.view);
@@ -2347,6 +2371,24 @@ class Component extends DCLogic {
       }
     } catch (e) { this.toast(e.message, 'crit'); }
     this.setBusy('identify', false);
+  }
+
+  /** Fetch the icons an older instance never recorded.
+
+      Installs before 2026-08-29 stored the project id but not the logo, so
+      their rows fall back to initials. /mods/icons looks up only what is
+      missing and writes it into the manifest, so this costs one call once per
+      instance and nothing afterwards. */
+  async fillIcons(id, listing) {
+    const mods = (listing && listing.mods) || [];
+    const missing = mods.filter(m => m.identified && !m.logo).length;
+    if (!missing || this._icons === id) return;
+    this._icons = id;                       // once per instance per session
+    try {
+      const r = await api('/api/instances/' + id + '/mods/icons',
+                          { method:'POST', body:{} });
+      if (r && r.updated) this.load('mods', '/api/instances/' + id + '/mods');
+    } catch (e) { /* initials are a fine fallback */ }
   }
 
   /** Live search, debounced. Out-of-order responses are dropped, so a slow
@@ -2735,6 +2777,29 @@ class Component extends DCLogic {
       this.setState({ aiRunning:false });
       this.toast(e.message, 'crit');
     }
+  }
+
+  /** Switch to whichever endpoint is not in use.
+
+      Reads the live state rather than closing over a value from renderVals.
+      The runtime binds a *static* element's onClick once and does not rebind
+      it on later renders -- only its attribute bindings update -- so a handler
+      that captured "the other endpoint" at first render kept sending that same
+      one forever, and the toggle looked stuck. Handlers on static elements
+      must read this.state; only <sc-for> rows get fresh closures. */
+  async swapAiEndpoint() {
+    // Ask the server which one is live rather than trusting anything held
+    // here. The runtime binds a static element's onClick once and never
+    // rebinds it, so a handler that decided "the other endpoint" from a
+    // render-time value kept choosing the same one and the toggle looked
+    // stuck. One extra GET, and it cannot go stale.
+    try {
+      const now = await api('/api/ai/endpoints');
+      const off = (now.items || []).find(x => !x.active);
+      if (!off || !off.url) { this.toast('No other endpoint is configured.', 'warn'); return; }
+      this.setD({ aiEndpoints:now });
+      await this.setAiEndpoint(off.url);
+    } catch (e) { this.toast(e.message, 'crit'); }
   }
 
   async setAiEndpoint(url) {
@@ -3487,6 +3552,17 @@ class Component extends DCLogic {
     const jobPct = J ? J.pct : 0;
     const jobPhase = J ? J.phase : 0;
     const jobDone = J ? (J.status !== 'running') : false;
+    const jobWarns = J
+      ? (J.log || []).filter(l => l.s === 'warn').length
+        + ((J.result || {}).problems || []).length : 0;
+    const jobBad = !!(J && (J.status === 'error' || J.status === 'cancelled'));
+    // The endpoint that is NOT in use, plus the label of the one that is.
+    const aiOther = () => {
+      const items = (D.aiEndpoints || {}).items || [];
+      const on = items.find(x => x.active) || {};
+      const off = items.find(x => !x.active) || {};
+      return { ...off, active_label:on.label };
+    };
     const compact = (this.props.density ?? 'comfortable') === 'compact';
 
     return {
@@ -3726,12 +3802,27 @@ class Component extends DCLogic {
       // Which Ollama answers. The shared one is behind a proxy that gives up
       // after 120 seconds; a local one is not, so a long crash report can go
       // whole rather than being summarised down to fit.
-      aiEndpointOpts:((D.aiEndpoints || {}).items || []).map(e => ({
-        t:e.label, note:e.note,
-        bg:e.active ? 'rgba(199,125,255,.16)' : 'transparent',
-        col:e.active ? '#C77DFF' : '#8C8F96',
-        pick:() => this.setAiEndpoint(e.url) })),
+      // One control, not two. Two sibling buttons both resolved to the same
+      // onClick under this runtime, so "shared" posted the local endpoint and
+      // the toggle appeared to be stuck -- and a two-state switch reads better
+      // as "you are on X, switch to Y" anyway.
+      aiActiveLabel:aiOther().active_label || 'shared',
+      aiSwapLabel:'→ ' + (aiOther().label || 'local'),
+      aiSwapNote:aiOther().note || '',
+      aiSwap:() => this.swapAiEndpoint(),
       aiRun:() => this.askAi((D.diag && D.diag.crash) ? 'crash' : 'analyse'),
+      // The canvas showed six actions and an "Apply the 4 safe ones" button
+      // before the assistant had been asked anything.
+      aiActionCount:(D.aiActions || []).length
+        ? (D.aiActions || []).length + ' ACTIONS' : '',
+      aiNoPlan:(D.aiActions || []).length ? ''
+        : (S.aiRunning ? 'The assistant is reading the evidence…'
+           : D.aiText ? 'It had no changes to propose.'
+           : 'Nothing proposed yet. Ask it what is wrong and a plan appears here.'),
+      aiHasSafe:(D.aiActions || []).some(a => a.k === 'safe'),
+      aiHasDestructive:(D.aiActions || []).some(a => a.k === 'destructive'),
+      aiApplyLabel:(() => { const n = (D.aiActions || []).filter(a => a.k === 'safe').length;
+        return 'Apply the ' + n + ' reversible one' + (n === 1 ? '' : 's'); })(),
       aiFix:() => this.aiApply(false),
       aiApplySafe:() => this.aiApply(false),
       aiConfirmDestructive:() => this.setState({ confirmOpen:'world' }),
@@ -3891,6 +3982,16 @@ class Component extends DCLogic {
       ceilPct:totalMb ? (((otherMb + ceilMb) / totalMb) * 100).toFixed(1) : '0',
       ramBlocks:ram,
       ramTotalLabel:(host.total_ram_gb || 0) + ' GB total',
+      ceilLabel:'safe ceiling ' + (ceilMb / 1024).toFixed(1) + ' GB',
+      heapMathTitle:'How BlessForge got to ' + (ceilMb / 1024).toFixed(1) + ' GB',
+      portExplain:(() => { const pt = D.port;
+        if (!pt) return 'Reading what the two records say…';
+        if (!pt.mismatch)
+          return 'Crafty and server.properties agree on ' + pt.crafty_port
+               + '. Nothing to do.';
+        return 'Crafty will publish ' + pt.crafty_port + ', but the server will bind '
+             + pt.properties_port + ', so nobody can join. BlessForge can write the '
+             + "controller's value into server.properties."; })(),
       heapReason:mem.why || (host.total_ram_gb
         ? 'This host has ' + host.total_ram_gb + ' GB. BlessForge holds back a reserve for '
           + 'the operating system and leaves room outside the heap for chunk caching and '
@@ -3948,6 +4049,28 @@ class Component extends DCLogic {
         : (S.busy.configs ? 'Walking the config directories…'
                           : (S.err.configs || 'No config files on this instance yet.')),
       jobTitle:J ? J.title : 'Nothing running',
+      // The completion banner asserted "Finished with 3 warnings" in amber,
+      // whatever happened -- including for a job that failed. Everything about
+      // it now follows what the job actually did.
+      doneTitle:(() => {
+        if (!J) return '';
+        if (J.status === 'error') return 'Failed: ' + (J.error || 'see the log above');
+        if (J.status === 'cancelled') return 'Cancelled';
+        return jobWarns
+          ? 'Finished with ' + jobWarns + ' warning' + (jobWarns === 1 ? '' : 's')
+          : 'Finished cleanly';
+      })(),
+      doneTone:jobBad ? '#FF3B5C' : jobWarns ? '#FFC44D' : '#56D9A3',
+      doneGlyph:jobBad ? '\u2715' : jobWarns ? '\u25B2' : '\u2713',
+      doneTextCol:jobBad ? '#F5C3CC' : jobWarns ? '#FFD98A' : '#BEEBD8',
+      doneEdge:(jobBad ? 'rgba(255,59,92,.30)'
+               : jobWarns ? 'rgba(255,196,77,.28)' : 'rgba(86,217,163,.28)'),
+      doneBg:(jobBad ? 'rgba(255,59,92,.05)'
+             : jobWarns ? 'rgba(255,196,77,.05)' : 'rgba(86,217,163,.05)'),
+      doneChipBg:(jobBad ? 'rgba(255,59,92,.14)'
+                 : jobWarns ? 'rgba(255,196,77,.14)' : 'rgba(86,217,163,.14)'),
+      doneChipBd:(jobBad ? 'rgba(255,59,92,.45)'
+                 : jobWarns ? 'rgba(255,196,77,.45)' : 'rgba(86,217,163,.45)'),
       jobTarget:J && J.result && J.result.name ? '→ ' + J.result.name : '',
       // A finished install reports what it could not do. The canvas asserted
       // one specific mod had failed, on every job.
@@ -3977,10 +4100,21 @@ class Component extends DCLogic {
       propRows:shownProps.map((p, i) => {
         const v = S.propDraft[p.key] != null ? S.propDraft[p.key] : p.value;
         const changed = S.propDraft[p.key] != null;
-        return { k:p.key, v, def:p.default, t:p.type, d:p.description || '',
+        // A boolean is a two-option choice; anything with `choices` is a real
+        // one. Everything else takes free text, because server.properties
+        // holds seeds, MOTDs and resource-pack URLs as well as numbers.
+        const choices = p.type === 'boolean' ? ['true', 'false'] : (p.choices || []);
+        return { k:p.key, v:String(v == null ? '' : v), def:p.default, t:p.type,
+          desc:p.description || '',
+          // The canvas uses `d` for the row's animation delay; the description
+          // was overwriting it.
+          d:Math.min(i * 32, 400) + 'ms',
           opts:(p.choices || []).join(' / '), locked:!!p.guarded,
           diff:changed || p.modified,
-          d2:(i * 32) + 'ms',
+          isChoice:choices.length > 0,
+          isText:choices.length === 0,
+          choices:choices.map(c => ({ v:String(c), t:String(c) })),
+          cur:p.guarded ? 'not-allowed' : 'pointer',
           vShown:v === '' ? '(empty)' : String(v),
           defShown:p.default === '' ? '(empty)' : String(p.default),
           valBg:p.guarded ? 'rgba(255,255,255,.02)' : '#0E1013',
@@ -4465,10 +4599,9 @@ class Component extends DCLogic {
         if (J.status === 'running') return 'RUNNING';
         if (J.status === 'error') return 'FAILED';
         if (J.status === 'cancelled') return 'CANCELLED';
-        const warns = (J.log || []).filter(l => l.s === 'warn').length
-                    + ((J.result || {}).problems || []).length;
-        return warns ? 'COMPLETE · ' + warns + ' WARNING' + (warns === 1 ? '' : 'S')
-                     : 'COMPLETE';
+        return jobWarns
+          ? 'COMPLETE · ' + jobWarns + ' WARNING' + (jobWarns === 1 ? '' : 'S')
+          : 'COMPLETE';
       })(),
       jobTone:!J ? '#6A6D74'
         : J.status === 'error' ? TONE.crit.c
@@ -4543,6 +4676,21 @@ class Component extends DCLogic {
         const n = cs.filter(c => S.reviewSel[c.file_name] === undefined
           ? c.recommendation === 'remove' : S.reviewSel[c.file_name]).length;
         return n + ' of ' + cs.length; })(),
+      reviewHeadline:(() => {
+        if (S.reviewOpen === 'roll') return hand.length + ' mods rolled, ready to install';
+        const n = ((D.preflight || {}).candidates || []).length;
+        return n
+          ? n + ' mod' + (n === 1 ? '' : 's') + ' look' + (n === 1 ? 's' : '')
+            + ' like they belong on a client, not a server'
+          : 'Nothing in this pack looks client-only'; })(),
+      reviewHeapWarn:(() => {
+        const want = ((D.preflight || {}).recommended_ram_mb || 0) / 1024;
+        const mem2 = (D.preflight || {}).memory || {};
+        const ceil = mem2.heap_gb || 0;
+        if (!want || !ceil || want <= ceil) return '';
+        return 'This pack wants ' + want.toFixed(0) + ' GB and this machine can safely '
+             + 'give ' + ceil.toFixed(0) + '. The heap will be set to ' + ceil.toFixed(0)
+             + ' GB.'; })(),
       reviewBack:() => this.setState({ reviewOpen:false }),
       reviewNone:() => { if (S.reviewOpen === 'roll') return this.installRoll();
         this.commitInstall(null);
