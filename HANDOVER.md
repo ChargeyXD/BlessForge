@@ -28,7 +28,7 @@ export are all verified end to end against them (§5D).
 |---|---|
 | Deployed | `http://<host>:8710`, healthy |
 | Tests | **137 checks** — 98 offline Python, 39 in a real browser (§9) |
-| Servers in Crafty | **three**, §5D. `Perfect World` :25565 (NeoForge, 100 mods), `Cozy Experience` :25566 (Fabric, 191), `Lucky Dip` :25567 (NeoForge, 44, rolled) |
+| Servers in Crafty | **five**, §5D and §5F. `Perfect World` :25565 (NeoForge, 100), `Cozy Experience` :25566 (Fabric, 245), `Lucky Dip` :25567 (rolled, 44), `Roulette RB5-YR9-BC` :25568 (rolled, 72), `Tensura` :25569 (Forge 1.19.2, 223 — will not boot here, §5F) |
 
 **Committed on branch `rebuild/ui-and-mod-roulette`**, not merged and not
 pushed; `main` is untouched. The container runs the local tree, not GHCR, so
@@ -210,6 +210,10 @@ diffs the two and is the fastest way to catch one you forgot.
 - **The first SSE frame is a `snapshot`**, and for an already-finished job it
   reports a terminal status. Treat that as the end, or a view re-attached to a
   finished job sits at RUNNING forever.
+- **A `<textarea>` takes `value`, not children.** An interpolated child renders
+  as `[object Object]`.
+- **A `<select>` nested inside an outer `<sc-for>` is dropped entirely.** Each
+  one has to own the only loop in its subtree.
 
 **Offline by design.** This box is usually on a LAN with no route out, so
 `react@18.3.1` + `react-dom` and both Google fonts are vendored under
@@ -575,6 +579,79 @@ and cannot be treated as authoritative.
 **And one that is physics.** Cozy Experience would not boot while another
 server was running: two 4 GB heaps with `AlwaysPreTouch` on an 11.6 GB host.
 Alone, it boots. The heap ceiling the Tune screen computes was right.
+
+---
+
+## 5E. The reported bugs, and what fixing them found (2026-08-29, later)
+
+Eighteen faults reported after using the app for an evening. All fixed; the
+ones worth knowing about:
+
+**The deep dependency scan was wrong, not slow.** It reported 16 missing
+dependencies on a pack that boots. Modern packs ship dependencies *inside*
+other jars (`META-INF/jars`, `META-INF/jarjar`) and `jarmeta` read only the
+outer jar, so every bundled mod looked absent -- 52 of the 107 ids one test
+pack provides come from nested jars. It also ignored `provides`, treated
+NeoForge's `type = "optional"` as mandatory (only the older `mandatory = false`
+was honoured), called a `FMLModType: LIBRARY` jar unreadable, and let an inline
+TOML comment leak into a value, producing a dependency on the mod id
+`neoforge" #mandatory`. Same pack now: **1 missing, and it is real.**
+
+**Three shapes the canvas's runtime rejects.** Worth knowing before writing any
+more markup:
+
+- `componentDidUpdate(prevProps)` takes one argument and it is props (§4).
+- A `<textarea>` whose text is an interpolated *child* renders
+  `[object Object]`. React wants `value`.
+- A `<select>` nested inside an outer `<sc-for>` is dropped entirely. Each one
+  has to own the only loop in its subtree, which is why the four catalogue
+  filter chips are written out rather than looped.
+
+**Identification now happens at install.** The manifest path recorded the
+project id but not the logo the catalogue had already handed it, so every mod
+row fell back to two grey initials until someone ran Identify -- which then
+re-fetched what was already known. A server pack listed no project ids at all;
+its jars are matched from the local archive during the install instead, two
+bulk calls for the whole pack. And `/mods/updates` no longer runs on open: on a
+200-mod pack that was 200 catalogue requests for an answer nobody asked for.
+
+**`app/whitelist.py`.** Mods the operator has decided are safe on a server,
+whatever the review says -- `server_side: unsupported` often means "adds
+nothing on a server", not "breaks one". Global rather than per instance,
+matched on the jar's stem so a version bump does not undo the decision, and
+held in memory as well as on disk so a decision still applies when `/data`
+turns out not to be writable.
+
+---
+
+## 5F. The Tensura acceptance test (2026-08-29)
+
+`[Mega update] Akashic Records of Tensura` 2.0.1 -- 223 mods, Forge 1.19.2,
+**manifest only, no server build** -- installed to exercise the harder path.
+
+It worked: 232 mods inspected, 30 client-only candidates (21 confirmed, 5 for
+review, **4 held back because other mods depend on them**), 223 jars installed
+with 21 disabled and tagged, 1032 files uploaded, no problems. All 223 came out
+identified with real icons straight from the install.
+
+Three things it found:
+
+1. **A start for a server Crafty already thinks is running is silently
+   dropped.** Crafty's flag also lags a stop by a poll cycle and stays set for
+   a process that died without it noticing, so the UI reported "Starting X" for
+   a command that went nowhere. A start in that state is issued as a restart,
+   which is right either way, and says so.
+2. **The pack cannot run on this Crafty image.** Six of its mods -- including
+   the pack's own headline mod -- initialise `java.awt` while registering, and
+   the Crafty image ships a headless JRE with no `libawt_xawt.so`.
+   `-Djava.awt.headless=true` is now in the flag set and offered as a one-click
+   fix, and the finding names the mods and is honest that the flag only helps
+   if nothing turns headless back off at runtime. Here, something does. The
+   useful answer is "this pack needs a different Java on the Crafty host", and
+   BlessForge says exactly that.
+3. **The config rail was capped at 400 rows out of 810**, which cut off
+   `server.properties` and `user_jvm_args.txt` -- the files someone opens the
+   screen to edit. The server root leads the list now.
 
 ---
 
