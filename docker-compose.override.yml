@@ -10,6 +10,17 @@
 #     CurseForge key containing '$' is not mangled by Compose interpolation
 #     (needs Compose v2.24+).
 
+#   * restates the two per-machine Crafty values from .env. This looks
+#     redundant next to env_file, but is not: `environment:` in
+#     docker-compose.yml outranks `env_file:` here, so the CHANGE-ME
+#     placeholder the shareable file carries would win and a `docker compose
+#     up` from this checkout would silently deconfigure a working install.
+#
+# Note that both files name the same container, so running compose from this
+# checkout takes the CasaOS-installed container over. That is usually what you
+# want while developing; to hand it back, run
+#   docker compose -p blessforge -f /var/lib/casaos/apps/blessforge/docker-compose.yml up -d --force-recreate
+
 services:
   blessforge:
     build: .
@@ -18,3 +29,6 @@ services:
       - path: .env
         required: false
         format: raw
+    environment:
+      CRAFTY_URL: "${CRAFTY_URL:-https://CHANGE-ME:8443}"
+      CRAFTY_TOKEN: "${CRAFTY_TOKEN:-}"
