@@ -22,20 +22,20 @@ and `app/static/index.html` became that canvas with its markup untouched. See
 
 **Three real servers exist and all three have been watched booting.** The
 install pipeline, the client-only review, Mod Roulette and its CurseForge
-export are all verified end to end against them (§5F).
+export are all verified end to end against them (§5D).
 
 | | |
 |---|---|
 | Deployed | `http://<host>:8710`, healthy |
 | Tests | **137 checks** — 98 offline Python, 39 in a real browser (§9) |
-| Servers in Crafty | **three**, §5F. `Perfect World` :25565 (NeoForge, 100 mods), `Cozy Experience` :25566 (Fabric, 191), `Lucky Dip` :25567 (NeoForge, 42, rolled) |
+| Servers in Crafty | **three**, §5D. `Perfect World` :25565 (NeoForge, 100 mods), `Cozy Experience` :25566 (Fabric, 191), `Lucky Dip` :25567 (NeoForge, 44, rolled) |
 
 **Committed on branch `rebuild/ui-and-mod-roulette`**, not merged and not
 pushed; `main` is untouched. The container runs the local tree, not GHCR, so
 merging is a separate decision from deploying.
 
 **What to read first:** §4 for how the front end is built now (it is nothing
-like what §4 said before), §5F for what was verified and what it cost, and
+like what §4 said before), §5D for what was verified and what it cost, and
 `design/README.md` for the places the design asserted something untrue about
 this app. Those corrections are marked `DESIGN:` in the code.
 
