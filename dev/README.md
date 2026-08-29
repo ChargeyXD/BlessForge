@@ -57,6 +57,8 @@ No Crafty, no network, no filesystem writes.
 
 | file | what it covers |
 |---|---|
+| `check_bindings.py` | that every `{{ binding }}` the canvas reads is produced by `renderVals()`. A name it does not return renders as nothing at all — no error, no console message — which is the easiest way to break this front end. Needs Docker, no network. |
+| `audit_placeholders.py` | every literal in the canvas that reads like a *value* rather than chrome: a count, a size, a version, a path. The canvas was drawn against mock data, so each one is a number someone will eventually believe. No Docker, no network. |
 | `test_loader_detection.py` | the loader state machine, the `run.sh` → launch-command rewrite, which Java a launch command actually invokes (Crafty stores no `java_version`, so it has to be parsed back out), and that uptime is read from Crafty's UTC `started` rather than against the local clock — this host runs IST and the Crafty container runs UTC. 28 checks. |
 | `test_job_stream.py` | that a job's SSE frames carry its **result**. Regression test for the bug that made the client-only review silently do nothing: the browser closes its stream on the first frame reporting a terminal status, and there is more than one such frame. 10 checks. |
 | `test_roulette.py` | Mod Roulette: that the PRNG is a faithful port of the design's JavaScript (shared seeds are worthless otherwise), that a seed plus constraints reproduces a hand exactly, that a pool refresh barely disturbs one, that every constraint does what its label claims, and that the CurseForge export it writes can be re-imported by this app's own importer. Synthetic pool; no network. 34 checks. |
