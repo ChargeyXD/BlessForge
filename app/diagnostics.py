@@ -670,6 +670,15 @@ async def _version_mismatch_findings(mc: str, mod_files: list[str],
 # --- dependency graph --------------------------------------------------
 
 
+# Ids satisfied by the runtime rather than by a jar in the mods folder.
+PLATFORM_IDS = {
+    "minecraft", "java", "forge", "neoforge", "fabric", "fabricloader",
+    "fabric-api", "fabric_api", "quilt_loader", "quilt_base", "quilted_fabric_api",
+    "mixinextras", "mixinsquared", "connectormod", "sinytra_connector",
+    "forgified_fabric_api", "fabric_language_kotlin",
+}
+
+
 async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
     """Download every enabled jar and verify the dependency graph."""
     try:
@@ -712,10 +721,25 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
     await asyncio.gather(*(one(n) for n in jars))
 
     job.set_step("Building dependency graph", 90)
+    # What counts as satisfied. Three sources, and missing any one of them
+    # turns a working pack into a wall of "missing dependency":
+    #   * the jar's own mod id;
+    #   * anything it declares under `provides`;
+    #   * the mod ids of every jar nested inside it -- modern packs ship
+    #     dependencies jar-in-jar, and those are real installs.
     provided: dict[str, str] = {}
     for fname, info in parsed.items():
         if info.get("mod_id"):
             provided[info["mod_id"].lower()] = fname
+        for pid in info.get("provides") or []:
+            provided.setdefault(str(pid).lower(), fname)
+
+    # The loader and the game are not jars in the mods folder.
+    for pid in PLATFORM_IDS:
+        provided.setdefault(pid, "the loader")
+    # Fabric API is one jar that satisfies a hundred `fabric-*-v*` module ids.
+    if any(k.startswith("fabric-api") or k == "fabric" for k in provided):
+        provided.setdefault("__fabric_api__", "fabric-api")
 
     findings: list[dict] = []
 
@@ -740,17 +764,24 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
             if not dep.get("mandatory", True):
                 continue
             dep_id = (dep.get("id") or "").lower()
-            if dep_id and dep_id not in provided:
-                missing[dep_id].append(info.get("name") or fname)
+            if not dep_id or dep_id in provided:
+                continue
+            # fabric-api ships as a single jar declaring one id, while mods
+            # depend on its individual modules by name.
+            if dep_id.startswith("fabric-") and "__fabric_api__" in provided:
+                continue
+            missing[dep_id].append(info.get("name") or fname)
 
     for dep_id, requesters in sorted(missing.items()):
+        who = sorted(set(requesters))
         findings.append(_finding(
             "critical", f"Missing dependency: {dep_id}",
-            "Required by " + ", ".join(sorted(set(requesters))[:5])
-            + (" and others" if len(set(requesters)) > 5 else "")
-            + " but no installed mod provides it.",
+            "Required by " + ", ".join(who[:5])
+            + (f" and {len(who) - 5} more" if len(who) > 5 else "")
+            + ". Nothing installed declares that id, provides it, or bundles "
+              "it as a nested jar.",
             fix={"action": "install_dependency", "mod_id": dep_id,
-                 "required_by": sorted(set(requesters))[:5]},
+                 "required_by": who[:5]},
             category="dependency",
         ))
 
@@ -782,16 +813,27 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
             "loader": i.get("loader"),
             "side": i.get("side"),
             "dependencies": [d.get("id") for d in i.get("dependencies", [])],
+            "provides": i.get("provides") or [],
+            "nested": i.get("nested") or 0,
             "error": i.get("parse_error"),
         }
         for f, i in sorted(parsed.items())
     ]
+    nested_total = sum(i.get("nested") or 0 for i in parsed.values())
+    dupes = sum(1 for m in by_mod_id.values() if len(m) > 1)
     job.log_line(
-        f"Scanned {len(jars)} jars: {len(missing)} missing dependencies, "
-        f"{sum(1 for m in by_mod_id.values() if len(m) > 1)} duplicates"
+        f"Scanned {len(jars)} jars ({len(provided)} ids provided, including "
+        f"{nested_total} bundled inside other jars): {len(missing)} missing "
+        f"dependencies, {dupes} duplicates"
     )
     return {
         "scanned": len(jars),
+        "provided": len(provided),
+        "nested": nested_total,
+        "missing": len(missing),
+        "duplicates": dupes,
+        "unreadable": len(unreadable),
+        "client_only": sum(1 for i in parsed.values() if i.get("side") == "client"),
         "findings": sorted(findings, key=lambda f: SEVERITY_ORDER[f["severity"]]),
         "mods": mods_summary,
     }

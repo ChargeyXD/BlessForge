@@ -29,6 +29,9 @@ _CLIENT_ENTRYPOINTS = {
 }
 
 
+_QUOTED_VALUE = re.compile(r'^("[^"]*"|\'[^\']*\')\\s*(?:#.*)?$')
+
+
 def _toml_mods(text: str) -> dict:
     """Minimal TOML reader for mods.toml.
 
@@ -65,6 +68,14 @@ def _toml_mods(text: str) -> dict:
         if not kv:
             continue
         key, val = kv.group(1), kv.group(2).strip()
+        # Strip an inline comment. mods.toml files routinely carry
+        # `modId="neoforge" #mandatory`, and taking the whole tail as the
+        # value produced a dependency on a mod id with a comment stuck to it.
+        _q = _QUOTED_VALUE.match(val)
+        if _q:
+            val = _q.group(1)
+        elif not val.startswith(("'''", '"""')) and '#' in val:
+            val = val.split('#', 1)[0].strip()
         if val.startswith(("'''", '"""')):
             val = val.strip("'\"")
         else:
@@ -76,6 +87,61 @@ def _toml_mods(text: str) -> dict:
             current[key] = val
 
     return {"mods": mods, "dependencies": deps}
+
+
+# Where each loader puts the jars it embeds.
+_NESTED_DIRS = ("META-INF/jars/", "META-INF/jarjar/")
+
+
+def _add_nested(z, names, info: dict, depth: int = 0) -> None:
+    """Record the mod ids of jars bundled inside this one.
+
+    NeoForge and Fabric both let a mod ship its dependencies inside itself, and
+    most large packs rely on it. A scan that reads only the outer jar sees
+    those requirements as unsatisfied and reports a wall of missing
+    dependencies for a pack that starts perfectly well -- which is exactly what
+    it did.
+
+    Nesting can be two deep in practice (a library bundling a library), so this
+    recurses once and then stops: deeper than that costs more than it finds.
+    """
+    if depth > 1:
+        return
+    for name in names:
+        if not name.lower().endswith(".jar"):
+            continue
+        if not any(name.startswith(d) for d in _NESTED_DIRS):
+            continue
+        try:
+            blob = z.read(name)
+        except Exception:
+            continue
+        try:
+            inner = zipfile.ZipFile(io.BytesIO(blob))
+        except Exception:
+            continue
+        inner_names = set(inner.namelist())
+        found: list[str] = []
+        try:
+            if "fabric.mod.json" in inner_names:
+                fm = json.loads(re.sub(
+                    r"[\x00-\x1f]", " ",
+                    inner.read("fabric.mod.json").decode("utf-8", "replace")))
+                if fm.get("id"):
+                    found.append(fm["id"])
+                found += [p for p in (fm.get("provides") or []) if isinstance(p, str)]
+            for entry in ("META-INF/neoforge.mods.toml", "META-INF/mods.toml"):
+                if entry in inner_names:
+                    parsed = _toml_mods(
+                        inner.read(entry).decode("utf-8", "replace"))
+                    found += [m.get("modId") for m in parsed["mods"] if m.get("modId")]
+                    break
+        except Exception:
+            continue
+        info["provides"].extend(f for f in found if f)
+        info["nested"] += 1
+        # A bundled jar can itself bundle one.
+        _add_nested(inner, inner_names, info, depth + 1)
 
 
 def parse(data: bytes, filename: str = "") -> dict:
@@ -90,6 +156,14 @@ def parse(data: bytes, filename: str = "") -> dict:
         "side_reason": None,
         "entrypoints": [],
         "dependencies": [],    # [{id, version, mandatory}]
+        # Every id this jar satisfies: its own, anything it declares under
+        # `provides`, and the mod ids of every jar nested inside it. That last
+        # one is why this exists -- modern packs ship dependencies jar-in-jar,
+        # so a mod whose requirement is bundled inside another jar looks
+        # missing to anything that only reads top-level metadata.
+        "provides": [],
+        "nested": 0,
+        "fml_type": None,      # NeoForge: LIBRARY / GAMELIBRARY / MOD
         "description": None,
         "parse_error": None,
     }
@@ -120,6 +194,10 @@ def parse(data: bytes, filename: str = "") -> dict:
                 version=ql.get("version"),
                 loader="quilt",
             )
+            for d in ql.get("provides", []) or []:
+                pid = d.get("id") if isinstance(d, dict) else d
+                if pid:
+                    info["provides"].append(pid)
             for d in ql.get("depends", []) or []:
                 did = d.get("id") if isinstance(d, dict) else d
                 if did and did not in _NOT_A_MOD:
@@ -158,6 +236,10 @@ def parse(data: bytes, filename: str = "") -> dict:
                     info["dependencies"].append(
                         {"id": did, "version": ver, "mandatory": True}
                     )
+            for pid in (fm.get("provides") or []):
+                if isinstance(pid, str):
+                    info["provides"].append(pid)
+        _add_nested(z, names, info)
         return info
 
     # --- Forge / NeoForge ----------------------------------------------
@@ -193,10 +275,47 @@ def parse(data: bytes, filename: str = "") -> dict:
             did = dep.get("modId")
             if not did or did in _NOT_A_MOD:
                 continue
-            mandatory = str(dep.get("mandatory", "true")).lower() != "false"
+            # NeoForge 1.21 states optionality as `type = "optional"`;
+            # Forge used `mandatory = false`. Reading only the older key made
+            # every optional integration -- JEI, JourneyMap, EMI -- look like a
+            # hard requirement, so disabling one client mod produced a screen
+            # of "missing dependency" for a pack that starts fine.
+            dep_type = str(dep.get("type", "")).strip().lower()
+            if dep_type in ("optional", "discouraged", "incompatible"):
+                mandatory = False
+            elif dep_type == "required":
+                mandatory = True
+            else:
+                mandatory = str(dep.get("mandatory", "true")).lower() != "false"
             info["dependencies"].append(
                 {"id": did, "version": dep.get("versionRange"), "mandatory": mandatory}
             )
+        # A single jar can declare several [[mods]] blocks; all of them are ids
+        # it satisfies.
+        for m in mods:
+            mid = m.get("modId")
+            if mid and mid != mod_id:
+                info["provides"].append(mid)
+        _add_nested(z, names, info)
+        return info
+
+    # A jar with no mod metadata of its own is not necessarily unreadable.
+    # NeoForge lets a jar declare `FMLModType: LIBRARY` in its manifest and
+    # carry the actual mod nested inside -- kotlinforforge ships exactly that
+    # way -- so the nested scan has to run here too, or the mod it provides
+    # looks missing and its dependents look broken.
+    _add_nested(z, names, info)
+    if "META-INF/MANIFEST.MF" in names:
+        try:
+            mf = z.read("META-INF/MANIFEST.MF").decode("utf-8", "replace")
+            m = re.search(r"^FMLModType:\s*(\S+)", mf, re.M)
+            if m:
+                info["fml_type"] = m.group(1).strip()
+        except Exception:
+            pass
+    if info["provides"] or info.get("fml_type"):
+        info["loader"] = info["loader"] or "library"
+        info["name"] = info["name"] or filename
         return info
 
     info["parse_error"] = "no recognised mod metadata"
