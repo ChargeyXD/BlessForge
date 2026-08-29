@@ -23,7 +23,7 @@ import zipfile
 
 import httpx
 
-from app import config, curseforge, jarmeta, modrinth, packs
+from app import config, curseforge, jarmeta, modrinth, packs, whitelist
 from app.jobs import Job
 from app.packs import PackPlan
 
@@ -478,7 +478,19 @@ def decide_with_protection(candidates: list[dict], all_jars: list[dict]) -> None
         for dep_id in mod.get("dependencies") or []:
             needed.setdefault(str(dep_id).lower(), set()).add(mod["name"])
 
+    allowed = whitelist.allowed_set()
     for item in candidates:
+        # A decision the operator already made about this mod, on any server.
+        # "server_side: unsupported" often means "adds nothing on a server",
+        # not "breaks one", and there has to be a way to say so once.
+        if whitelist._key(item["file_name"]) in allowed:
+            item["recommendation"] = "keep"
+            item["whitelisted"] = True
+            item["reasons"].append(
+                "you marked this mod as safe on a server, so the review leaves "
+                "it enabled"
+            )
+            continue
         own_id = (item.get("mod_id") or "").lower()
         protectors = needed.get(own_id, set()) - {item["name"]}
         if protectors:

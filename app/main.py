@@ -30,6 +30,7 @@ from app import (
     roulette,
     specs,
     uploads,
+    whitelist,
 )
 from app.jobs import registry
 
@@ -1614,6 +1615,45 @@ async def _apply_actions(server_id: str, actions: list[dict], job=None
             if job:
                 job.log_line(f"{name} failed: {e}", "error")
     return applied, failed
+
+
+@app.get("/api/ai/endpoints")
+async def ai_endpoints() -> dict:
+    """Which Ollama endpoints exist and which one is in use."""
+    return {"items": ai.endpoints(), "active": ai.current_endpoint()}
+
+
+@app.post("/api/ai/endpoint")
+async def ai_set_endpoint(body: dict = Body(...)) -> dict:
+    """Switch endpoints. The choice is remembered across restarts."""
+    try:
+        url = ai.set_endpoint(body.get("url") or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"active": url, "items": ai.endpoints(), "status": await ai.status()}
+
+
+# --- the client-only whitelist -----------------------------------------
+
+
+@app.get("/api/whitelist")
+async def whitelist_list() -> dict:
+    """Mods the operator has said are safe on a server, whatever the check says."""
+    return {"items": whitelist.items()}
+
+
+@app.post("/api/whitelist")
+async def whitelist_add(body: dict = Body(...)) -> dict:
+    file_name = (body.get("file") or body.get("file_name") or "").strip()
+    if not file_name:
+        raise HTTPException(400, "file is required")
+    return whitelist.add(file_name, name=body.get("name") or "",
+                         reason=body.get("reason") or "")
+
+
+@app.delete("/api/whitelist/{key}")
+async def whitelist_remove(key: str) -> dict:
+    return {"removed": whitelist.remove(key)}
 
 
 @app.get("/api/ai/models")

@@ -32,6 +32,8 @@ import re
 
 import httpx
 
+from app import config
+
 OLLAMA_URL = (os.environ.get("OLLAMA_URL", "https://ai.shadowco.xyz")).rstrip("/")
 # Qwen3-4B-Instruct: small (2.5 GB, Q4_K_M) but a reliable JSON emitter with
 # a 256k context, which is what a full crash report needs.
@@ -178,12 +180,69 @@ def _action_catalogue() -> str:
     return "\n".join(lines)
 
 
+# --- which endpoint, and switching between them -------------------------
+#
+# The default is the shared server. A local Ollama is the better choice when
+# there is one: it is not behind a proxy that gives up after 120 seconds, so a
+# long crash report can be analysed without the evidence budget fighting a
+# timeout. Which one is in use is a runtime choice, remembered across restarts,
+# because it depends on what is running on the box today.
+
+LOCAL_URL = os.environ.get("OLLAMA_LOCAL_URL", "http://127.0.0.1:11434").rstrip("/")
+_ENDPOINT_FILE = config.DATA_DIR / "ai-endpoint.txt"
+_endpoint: str | None = None
+
+
+def current_endpoint() -> str:
+    """The endpoint in use, honouring a remembered choice."""
+    global _endpoint
+    if _endpoint is None:
+        try:
+            saved = _ENDPOINT_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            saved = ""
+        _endpoint = saved if saved in (OLLAMA_URL, LOCAL_URL) else OLLAMA_URL
+    return _endpoint
+
+
+def set_endpoint(url: str) -> str:
+    """Switch endpoints. Only the two known ones are accepted."""
+    global _endpoint
+    url = (url or "").rstrip("/")
+    if url not in (OLLAMA_URL, LOCAL_URL):
+        raise ValueError(
+            f"unknown endpoint {url!r}; expected {OLLAMA_URL} or {LOCAL_URL}"
+        )
+    _endpoint = url
+    try:
+        _ENDPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _ENDPOINT_FILE.write_text(url, encoding="utf-8")
+    except OSError:
+        pass          # the choice still applies for this run
+    return url
+
+
+def endpoints() -> list[dict]:
+    active = current_endpoint()
+    return [
+        {"url": current_endpoint(), "label": "shared", "active": active == OLLAMA_URL,
+         "note": "The default. Behind a proxy that allows 120s to first byte, "
+                 "so long crash reports are summarised rather than sent whole."},
+        {"url": LOCAL_URL, "label": "local", "active": active == LOCAL_URL,
+         "note": "An Ollama on this machine. No proxy timeout, so nothing has "
+                 "to be trimmed to fit -- but it has to actually be running."},
+    ]
+
+
 def _client(timeout: float | None = None) -> httpx.AsyncClient:
     headers = {"Accept": "application/json"}
-    if OLLAMA_API_KEY:
+    # The bearer token belongs to the shared endpoint; sending it to a local
+    # Ollama would leak it onto the network for no reason.
+    url = current_endpoint()
+    if OLLAMA_API_KEY and url == OLLAMA_URL:
         headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
     return httpx.AsyncClient(
-        base_url=OLLAMA_URL, timeout=timeout or AI_TIMEOUT, headers=headers,
+        base_url=url, timeout=timeout or AI_TIMEOUT, headers=headers,
         follow_redirects=True,
     )
 
@@ -237,10 +296,10 @@ async def status() -> dict:
     except Exception as e:
         return {
             "available": False,
-            "reason": f"cannot reach Ollama at {OLLAMA_URL} ({type(e).__name__})",
-            "url": OLLAMA_URL,
+            "reason": f"cannot reach Ollama at {current_endpoint()} ({type(e).__name__})",
+            "url": current_endpoint(),
             "hint": (
-                f"BlessForge talks to Ollama over HTTP at {OLLAMA_URL}. Check "
+                f"BlessForge talks to Ollama over HTTP at {current_endpoint()}. Check "
                 "that the host is reachable from this container and that "
                 "OLLAMA_URL is right; set OLLAMA_API_KEY as well if the "
                 "endpoint sits behind an authenticating proxy."
@@ -255,13 +314,13 @@ async def status() -> dict:
     fallback = next((m for m in models if m.split(":")[0] == base), None)
     if fallback:
         return {"available": True, "model": fallback, "models": models,
-                "url": OLLAMA_URL,
+                "url": current_endpoint(),
                 "note": f"{AI_MODEL} not found; using {fallback}"}
     return {
         "available": False,
         "reason": f"model '{AI_MODEL}' is not installed",
         "models": models,
-        "url": OLLAMA_URL,
+        "url": current_endpoint(),
         "hint": f"Install it on the Ollama host with: ollama pull {AI_MODEL} "
                 f"(or use the Pull button, which asks {OLLAMA_URL} to fetch it).",
     }

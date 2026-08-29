@@ -436,9 +436,16 @@ async def _download_manifest_mods(
                         "file_id": fid,
                         "name": project.get("name") or fname,
                         "version": meta.get("display_name"),
+                        # The catalogue already told us what this mod looks
+                        # like; not recording it meant every row in the Mods
+                        # list fell back to two grey initials until someone
+                        # ran Identify, which re-fetched what was already here.
+                        "logo": project.get("logo"),
+                        "summary": project.get("summary"),
                         "required": entry.get("required", True),
                         "client_only": client_only,
                         "client_only_reasons": why,
+                        "identified_at": time.time(),
                     })
                 except Exception as e:
                     problems.append({
@@ -1033,6 +1040,8 @@ async def install_modpack(
                 "file": target,
                 "source": "bundled" if plan.source == "manifest" else "server_pack",
                 "name": posixpath.basename(target),
+                # Dropped again by _identify_overlay once it has read the jar.
+                "member": entry["member"],
                 "client_only": client_only,
                 "client_only_reasons": why,
             })
@@ -1055,6 +1064,12 @@ async def install_modpack(
                 + ("..." if len(unmatched) > 5 else ""),
                 "warn",
             )
+
+    # Identify the overlay's jars now, while they are in a local archive.
+    # Doing it here rather than leaving it to a later Identify pass means the
+    # Mods list has real names and icons from the first time it is opened, and
+    # nothing has to be downloaded back out of Crafty to find that out.
+    await _identify_overlay(job, zf, records)
 
     total_mb = sum(e.size for e in payload) / 1048576
     uploaded_count = len(payload)
@@ -1210,6 +1225,88 @@ async def install_modpack(
            if summary["client_only_disabled"] else "")
     )
     return summary
+
+
+async def _identify_overlay(job: Job, zf, records: list[dict]) -> None:
+    """Match a server pack's jars to catalogue projects, from the archive.
+
+    A server pack lists no project ids, so without this every jar in it is
+    "unidentified" until somebody presses Identify -- which then downloads all
+    of them back out of Crafty to learn what the archive already knew.
+
+    Two bulk calls for the whole pack: CurseForge by its own fingerprint, then
+    Modrinth by SHA-1 for whatever is left.
+    """
+    todo = [r for r in records if not r.get("project_id") and r.get("member")]
+    if not todo:
+        return
+    job.set_step(f"Identifying {len(todo)} jars", 58)
+
+    by_fp: dict[int, dict] = {}
+    by_sha: dict[str, dict] = {}
+    for r in todo:
+        try:
+            blob = zf.read(r["member"])
+        except Exception:
+            continue
+        try:
+            by_fp[curseforge.fingerprint(blob)] = r
+        except Exception:
+            pass
+        try:
+            by_sha[modrinth.sha1(blob)] = r
+        except Exception:
+            pass
+        del blob
+
+    matched = 0
+    try:
+        for fp, match in (await curseforge.match_fingerprints(list(by_fp))).items():
+            r = by_fp.get(fp)
+            if not r:
+                continue
+            r.update(source="curseforge", project_id=match["mod_id"],
+                     file_id=(match.get("file") or {}).get("file_id"),
+                     version=(match.get("file") or {}).get("display_name"),
+                     identified_at=time.time())
+            matched += 1
+    except Exception as e:
+        job.log_line(f"CurseForge fingerprint lookup failed: {e}", "warn")
+
+    left = {h: r for h, r in by_sha.items() if not r.get("project_id")}
+    if left and config.MODRINTH_ENABLED:
+        try:
+            for h, version in (await modrinth.versions_from_hashes(list(left))).items():
+                r = left.get(h)
+                if not r:
+                    continue
+                r.update(source="modrinth", project_id=version.get("mod_id"),
+                         file_id=version.get("file_id"),
+                         version=version.get("version_number"),
+                         identified_at=time.time())
+                matched += 1
+        except Exception as e:
+            job.log_line(f"Modrinth hash lookup failed: {e}", "warn")
+
+    # Names and icons for whatever was matched.
+    cf_ids = [r["project_id"] for r in records
+              if r.get("source") == "curseforge" and r.get("project_id")]
+    mr_ids = [r["project_id"] for r in records
+              if r.get("source") == "modrinth" and r.get("project_id")]
+    try:
+        cf = await curseforge.get_mods(cf_ids) if cf_ids else {}
+        mr = await modrinth.get_projects(mr_ids) if mr_ids else {}
+    except Exception:
+        cf, mr = {}, {}
+    for r in records:
+        proj = (cf if r.get("source") == "curseforge" else mr).get(r.get("project_id"))
+        if proj:
+            r["name"] = proj.get("name") or r.get("name")
+            r["logo"] = proj.get("logo")
+            r.setdefault("summary", proj.get("summary"))
+        r.pop("member", None)
+
+    job.log_line(f"Identified {matched} of {len(todo)} pack jars against the catalogues")
 
 
 async def switch_pack_version(
