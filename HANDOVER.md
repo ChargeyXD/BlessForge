@@ -11,30 +11,33 @@ you want done."**
 
 ## 0. Where this is right now
 
-**The front end is mid-rebuild.** A new interface, designed from scratch in
-Claude Design, is replacing the old one. The shell and **two** screens are
-finished; eight screens are placeholders that say so on screen.
+**The front end is the design canvas itself, wired to the API.** Earlier
+sessions read `design/BlessForge.dc.html` as a *specification* and hand-wrote
+an approximation of it. That was the wrong reading: the zip the user supplied
+(`BlessForge Server New GUI.zip`) also contains **`support.js`**, the Claude
+Design runtime — so the canvas is not a mockup, it is a runnable app whose only
+missing piece was its data. On 2026-08-29 the hand-built front end was deleted
+and `app/static/index.html` became that canvas with its markup untouched. See
+§4, which is now about how that works.
 
-**Committed on branch `rebuild/ui-and-mod-roulette`**, two commits: `7f43f10`
-covering the first three sessions, and `71f4828` for Situation (§5E). The first
-one is one commit because the four bodies of change in it overlap too heavily in
-`main.py`, `installer.py` and `app.js` to split by hunk without producing
-commits that fail their own tests. **Not merged and not pushed**;
-`main` is untouched. The container runs the local tree, not GHCR, so merging
-is a separate decision from deploying.
-
-**The next job is §5D: finish the remaining screens.** Situation landed on
-2026-08-29 (§5E); **Mods is next**. Read §4 for how a screen is built, §5D for
-what each one needs, §5E for the shape Situation settled on, and
-`design/README.md` for the places the design guessed wrong about this app —
-those corrections are not optional, they are the difference between the UI
-telling the truth and inventing numbers.
+**Three real servers exist and all three have been watched booting.** The
+install pipeline, the client-only review, Mod Roulette and its CurseForge
+export are all verified end to end against them (§5F).
 
 | | |
 |---|---|
-| Deployed | `http://<host>:8710`, healthy, ~70 MB under a 1 GB cap |
-| Tests | **200 checks**, all passing (see §9) |
-| Servers in Crafty | **none** — the fleet is empty, so instance screens have nothing to render against. Roll one from Discover → Mod Roulette. |
+| Deployed | `http://<host>:8710`, healthy |
+| Tests | **137 checks** — 98 offline Python, 39 in a real browser (§9) |
+| Servers in Crafty | **three**, §5F. `Perfect World` :25565 (NeoForge, 100 mods), `Cozy Experience` :25566 (Fabric, 191), `Lucky Dip` :25567 (NeoForge, 42, rolled) |
+
+**Committed on branch `rebuild/ui-and-mod-roulette`**, not merged and not
+pushed; `main` is untouched. The container runs the local tree, not GHCR, so
+merging is a separate decision from deploying.
+
+**What to read first:** §4 for how the front end is built now (it is nothing
+like what §4 said before), §5F for what was verified and what it cost, and
+`design/README.md` for the places the design asserted something untrue about
+this app. Those corrections are marked `DESIGN:` in the code.
 
 ---
 
@@ -122,17 +125,17 @@ override.
 
 ```
 app/
-  main.py         1815  FastAPI: every route, static serving, cache-busting fingerprint
+  main.py         1838  FastAPI: every route, static serving, cache-busting fingerprint
   installer.py    1281  the install pipeline; loader wait + repair (§6.3)
   diagnostics.py  1165  health checks, crash-log parsing, findings
   crafty.py        850  Crafty API client — the only thing that talks to Crafty, and
                         the only place that interprets what it says back
-  mods.py          641  mod listing, toggle, delete, identify
+  mods.py          657  mod listing, toggle, delete, identify
   ai.py           1114  Ollama client, action vocabulary, re-validation
   packs.py         468  pack plans, archive shape detection, loader mapping
-  preflight.py     522  client-only mod review
+  preflight.py     569  client-only mod review + dependency protection
   properties.py    422  server.properties model
-  specs.py         430  host specs, heap sizing
+  specs.py         441  host specs, heap sizing
   curseforge.py    415  CurseForge API + download cache
   deps.py          332  recursive dependency resolution
   modrinth.py      232  Modrinth API
@@ -143,13 +146,23 @@ app/
   jobs.py          266  job model + SSE
   configs.py       168  config file tree
   config.py        164  env parsing, paths
-  static/         index.html (86) · app.js (1796) · style.css (804)
-  static/img/     the design's assets, downscaled — see design/README.md
+  static/
+    index.html    the Claude Design canvas, markup untouched, with its logic
+                  rewritten to read the API. THE front end -- see §4.
+    support.js    Claude Design's runtime, vendored from the zip. Never edit.
+    vendor/       react@18.3.1 + react-dom + both fonts, served from this box
+                  because a LAN install has no route to a CDN
+    img/          the design's assets, downscaled; mounted at /assets so the
+                  canvas keeps its own paths — see design/README.md
 dev/              test tooling — see dev/README.md
 design/           the Claude Design canvas the new UI is built from, and its
                   README — READ IT, it lists what the design got wrong about
                   this app. The previous front end is in git history, not here.
 design-prompt.md  the brief that produced that design  [2026-08-28]
+BlessForge Server New GUI.zip
+                  the design delivery: the canvas, support.js and the original
+                  full-size assets. Gitignored. It is the source of truth for
+                  the front end -- see §5C.
 design-brief.md   HISTORICAL. Described the front end replaced on 2026-08-29;
                   its §4.3 DOM contract no longer applies to anything. Kept
                   only because it explains why the old UI looked as it did.
@@ -161,44 +174,66 @@ Backend is FastAPI + httpx, no database. State lives in Crafty (a
 
 ---
 
-## 4. Front end — the rules that are not obvious
+## 4. Front end — how it actually works now
 
-**Three files, no build step.** `app/static/{index.html,style.css,app.js}` are
-served verbatim. No npm, no bundler, no framework — plain ES2020 in one IIFE,
-the web fonts loaded non-blocking (`media="print"` swap) so a LAN box with no
-route out still paints instantly and stays legible without them.
+**`app/static/index.html` IS the design canvas.** It is
+`design/BlessForge.dc.html` with the markup unchanged: every animation
+(`bfReel`, `bfCrit`, `bfBreathe`, `bfLever`, `bfPeek`, `bfDraw`, `bfStripe`…),
+every token, every piece of copy is the designer's. Do not rewrite it. If a
+screen needs to say something different, change what the binding *returns*,
+not the markup that renders it.
 
-**Do not add a fourth *code* file.** `main.py`'s cache-busting fingerprint only
-hashes and rewrites those three names; a fourth would be served stale forever.
-`static/img/` is fine — images are addressed by name and do not change.
+**The runtime is `app/static/support.js`**, shipped from the same zip. It is a
+generated build of Claude Design's own renderer — treat it as a vendored
+dependency and never edit it. It:
 
-**`index.html` is a frame, not the app.** It holds the spine, the topbar, the
-canvas and four empty hosts (`#drawerHost`, `#overlays`, `#toasts`, `#tabs`).
-Every screen is built in JavaScript and rendered into `#canvas`.
+- parses `<x-dc>…</x-dc>` into a template supporting `{{ expr }}`, `<sc-if>`
+  and `<sc-for list="{{ xs }}" as="x">`;
+- evaluates the `<script type="text/x-dc" data-dc-script>` body with
+  `new Function`, expecting it to define `class Component extends DCLogic`;
+- re-renders `renderVals()` against the template on every `setState`.
 
-**A screen is an entry in `RENDER`, keyed `view:tab`** (`instance:mods`,
-`discover:roulette`), returning a detached element. `go()` swaps it in.
-Screens that need to find themselves by id set `el.__mount`, which runs
-**after** the element is in the document — doing that work in a microtask
-finds nothing, because the element is still detached.
+**`renderVals()` is the whole contract.** The template reads **316 named
+bindings** out of it. Every one must exist and keep its shape; a missing one
+renders blank with no error and no console message. `dev/tools/check_bindings.py`
+diffs the two and is the fastest way to catch one you forgot.
 
-**Screens must clean up after themselves.** `onLeave(fn)` registers a
-teardown that `go()` runs on the way out. A console stream or an observer left
-running is invisible until it is polling Crafty forever.
+**Three traps in that runtime, each of which cost real time here:**
 
-**Everything interpolated goes through `esc()`.** Log lines, crash reports,
-mod names and config files are all attacker-adjacent text.
+- **`componentDidUpdate(prevProps)` takes ONE argument, and it is props.**
+  There is no `prevState`. Code that compared against a second argument
+  returned early every time, and *no screen ever fetched anything* — every tab
+  rendered its empty state and looked merely unfinished. Track what changed
+  yourself; `this._seen` does that now.
+- **Job frames carry `percent`, not `progress`.** Reading the wrong name
+  leaves every progress bar at 0% while the job runs perfectly well.
+- **The first SSE frame is a `snapshot`**, and for an already-finished job it
+  reports a terminal status. Treat that as the end, or a view re-attached to a
+  finished job sits at RUNNING forever.
 
-**A job owns its stream; a view onto it is disposable.** "Run in background"
-closes the drawer, not the `EventSource`. Only the explicit `end` frame ends a
-stream — a job also emits a final step whose status already reads `done`, and
-treating that as the end closes the connection one frame before the result
-arrives (§5.1).
+**Offline by design.** This box is usually on a LAN with no route out, so
+`react@18.3.1` + `react-dom` and both Google fonts are vendored under
+`app/static/vendor/`. `support.js` falls back to unpkg only when
+`window.React` is absent, and both vendored files match the SRI digests it
+carries. Do not "simplify" this back to a CDN.
 
-**The design system lives in `:root`.** Colours, type, spacing and radii are
-tokens; the two font families carry meaning (mono for anything a machine
-produced, Space Grotesk for prose) and that split is the visual system rather
-than a preference.
+**Assets keep the canvas's own paths.** The template says `assets/NAME`;
+`main.py` mounts `app/static/img` at `/assets`, so the markup never had to be
+rewritten. The images there are the design's, downscaled.
+
+**Cache busting** hashes `index.html`, `support.js` and the vendored files
+(`_VERSIONED` in `main.py`). Add a served file, add it there.
+
+**Where a screen's data comes from:** `loadFor(view)` fetches when a view is
+opened, into `state.d.<key>`; `renderVals()` only reads. Never fetch from
+`renderVals()` — it runs on every render.
+
+**Corrections of fact are marked `DESIGN:`** in the logic, and only where the
+canvas asserted something untrue (no TPS tile, Memory not Heap, the real
+remote Ollama endpoint, the real published port range, the real server paths).
+Layout, copy and motion are left alone — that was the whole point.
+
+---
 
 ## 5. What changed on 2026-08-27/28 — the nine reported faults
 
@@ -352,16 +387,16 @@ Jobs carry `server_id`/`server_name` (set at creation, or mid-flight by
 `job.set_instance` once Crafty has made the instance). Activity cards show a
 chip that opens the instance.
 
-### 5.10 Tests
+### 5.10 Tests  [superseded — see §5C/§5D]
 
 `dev/tools/test_job_stream.py` (10) and `dev/tools/test_install_decisions.py`
 (20, grown since). `dev/ui-tests/04-terminal-and-review.mjs` was written here
 and retired with the front end on 2026-08-29 — see §5C. The suite today is
-**200 checks**; §9 runs it.
+**137 checks**; §9 runs it.
 
-`app.js` exposes `window.__bf` — a deliberately small test seam for entry
-points with no clickable path that does not also depend on a live CurseForge
-search returning a particular pack. Nothing in the app reads it.
+(That `window.__bf` test seam went with the hand-built front end. The canvas
+has no equivalent and does not need one: `ui.mjs` drives it by clicking, the
+way a person does.)
 
 ---
 
@@ -453,204 +488,99 @@ The screen that drives all of this was built the next day; see §5C.
 
 ---
 
-## 5C. The UI rebuild (2026-08-29) — shell + roulette done
+## 5C. The front end, and the wrong turn that preceded it (2026-08-29)
 
-The front end is being replaced from `design/BlessForge.dc.html`. What exists:
+Two sessions built a front end *from* `design/BlessForge.dc.html`, reading it
+as a specification and hand-writing an approximation in plain ES2020. It was
+honest work and it is gone, because the reading was wrong.
 
-**A new shell.** A fleet spine on the left (a card per server, with a state
-rail, pack, loader/version/port and live CPU/memory bars), a topbar carrying
-the tab strip for whatever is open, a canvas, a job drawer, and a ⌘K command
-palette that reaches any server or any section of one.
+The zip the user supplied — `BlessForge Server New GUI.zip`, gitignored, still
+in the repo root — contains **`support.js`** alongside the canvas. That is
+Claude Design's own runtime. With it, the canvas is not a mockup that has to be
+reimplemented; it is a runnable application whose only missing piece was its
+data. Everything the hand-built version could not reproduce — the reel spin,
+the crash-card pulse, the lever, the fox peeking in on a failed job, the
+marquee bulbs — was already there.
 
-**Screens are rendered by JavaScript into `#canvas`**, not held in
-`index.html`. There are fourteen of them and most are entirely API-driven; as
-markup the shell would be two thousand unreadable lines. `index.html` is now
-86 lines and holds only the frame.
+So `app/static/index.html` is now that canvas, markup untouched, with only its
+`<script data-dc-script>` rewritten: the original drove itself from hard-coded
+arrays (`SERVERS`, `MODS`, `CHECKS`, `RPOOL`…), and those became API calls.
+`app/static/app.js` and `style.css` are deleted; git has them.
 
-A screen is a function in `RENDER` keyed `view:tab`, returning an element.
-If it needs to look itself up by id it sets `el.__mount`, which `go()` calls
-**after** attaching — doing that work in a microtask finds nothing, which cost
-an hour to spot.
+**The lesson worth keeping:** when a design hands you a runtime, the design is
+the app. Read the whole delivery before deciding what it is.
 
-**Done:** the shell, systems panel, palette, job drawer, toasts, sheets,
-**Mod Roulette** end to end (27 jsdom checks against the live backend), and
-**Situation** (§5E, 58 checks).
+Three changes were made to the markup itself, all of them things the design
+could not have known or that the user asked for:
 
-**Not done:** Mods, Diagnose, Console, Tune, Configs, Activity, Catalogue,
-Import. Each is a `soon()` placeholder that says so on screen.
-
-Corrections made to the design's guesswork are listed in `design/README.md`.
-The two that needed backend work: `/api/health` now measures Crafty's
-round-trip latency and free disk, and `/api/instances` returns a computed
-`state` (`running`/`stopped`/`crashed`/`orphan`/`incomplete`) so no surface
-has to infer one. `incomplete` is real: the installer now stamps a manifest
-with `complete: false` the moment Crafty creates the instance and sets it true
-only at the end, so a half-finished install is visible instead of looking like
-a healthy server with no mods.
-
-A roll is now a **job** rather than a plain response: dealing 120 mods means
-pinning 120 real builds, and fifteen seconds behind a bare spinner reads as a
-hang. It streams `Pinning builds (40/85)` instead.
+- Mod Roulette's Minecraft version was three hard-coded options; it is now a
+  select over every version the catalogue knows.
+- Add-a-mod results carry the real mod icon, and the catalogue the real pack
+  logo. The canvas drew a placeholder square in both slots because it had no
+  data behind it.
+- Roughly a dozen mock literals became bindings — the ROOT CAUSE hero, the
+  console's `websocket · 41 ms`, `/srv/minecraft/<id>`, `41.2 GB`, and the
+  hard-coded 387/241/371/34/61 counts on Mods, Configs and Tune.
 
 ---
 
-## 5D. What is left: eight screens
+## 5D. What was verified, and what it cost (2026-08-29)
 
-Situation (item 1 below) was built on 2026-08-29; see §5E. The rest are each a
-`soon()` placeholder in `app.js` today. Build them one at a time,
-deploy, and drive each with a jsdom harness before moving on — that loop is
-what caught every bug worth catching in the last three sessions.
+Everything below was watched happening, not inferred.
 
-The design source for all of them is `design/BlessForge.dc.html`; find a
-screen by its `data-screen-label`. **Read `design/README.md` first** — it lists
-what the design invented, and those inventions are copy-paste-ready mistakes.
+**Three servers installed and booted.**
 
-### The order I would take them in
+| server | port | loader | mods | how |
+|---|---|---|---|---|
+| Perfect World | 25565 | NeoForge 21.1.248 | 100 | catalogue → preflight → review → install |
+| Cozy Experience | 25566 | Fabric 0.19.2 | 191 | same, from a real server pack |
+| Lucky Dip | 25567 | NeoForge | 42 (25 rolled + 16 deps + 1 added) | Mod Roulette |
 
-**1. Situation** — ~~built 2026-08-29~~. See §5E for what it does and the two
-things §5D got wrong about it.
+**The client-only review is the feature that earns its keep.** Perfect World's
+preflight found 19 candidates in 100 mods — 15 confirmed client-only, 3 held
+back because other mods depend on them. Installed with none of them disabled
+(a bug in the *test script*, not the app), the server died on a client
+rendering library it could not resolve. With them off, it boots. Cozy's review
+found 5 in 191 and the one it marked "contradicted" rather than "remove" was
+exactly the one that later needed disabling.
 
-**2. Mods** (`"Mods"`) — the densest screen and the most used. `GET
-/mods`, `/mods/toggle`, `/bulk-toggle`, `/delete`, `/add`, `/identify`,
-`/updates`, `/dependencies`, and `/browse/mods` for the add-mod search.
-Carries over from the old UI, all of it still true and all of it in
-`retired/02-mod-list.mjs` and `retired/04-terminal-and-review.mjs`:
-virtualise above ~120 rows at `--row-h` (44 px in the new design), keep
-selection in a `Set` of filenames rather than in the DOM because a scrolled-out
-row is unmounted, bind events once on the container, and patch a toggled row in
-place rather than repainting the list. Client-only mods must show the
-**evidence** for the tag, not just the tag.
+**Mod Roulette, end to end.** A 3,035-mod pool for 1.21.1/NeoForge (cached),
+a 25-mod hand dealt in 9 s, the same seed re-dealing an identical hand, 25
+rolled mods resolving to 41 jars, and a **CurseForge export** that BlessForge
+re-imports as a valid manifest pack (40 files + 1 bundled override jar,
+63 MB). The export's README records the seed, so the pack is reproducible even
+when the roll is not.
 
-**3. Diagnose** (`"Diagnose"`) — `/diagnose`, `/crash-review`,
-`/ai/crash-review`, `/ai/analyse`, `/ai/autofix`, `/ai/apply`, `/deep-scan`,
-and the `/fix/*` family. The design's hero is a single ROOT CAUSE with a
-confidence bar, then the blame list, then the assistant. That maps cleanly onto
-what `crash_review` already returns. Two things it gets right and must survive:
-every claim carries its evidence line, and the model's proposals are split into
-what will be applied and what is held back for approval.
+**Two real faults found by doing this, both fixed:**
 
-**4. Console** (`"Console"`) — `/console`, `/console/stream` (SSE),
-`/command`. Straightforward, and `retired/04` has the assertions: severity
-colouring, a filter over everything received, follow that pauses when you
-scroll up, and a command box disabled with an explanation when the server is
-stopped. **The design's "websocket · 41 ms" is wrong** — say what the stream
-actually is.
+1. **The server-pack review had no dependency protection.** The rule that a mod
+   other mods depend on is never stripped ran on the manifest path only. Athena
+   is declared client-only by its own author and is a hard requirement of
+   Chipped, which is not — so the review removed it with confidence and the
+   pack stopped booting with *"requires version 4.0.0 or later of athena, which
+   is missing"*. Both paths now share `preflight.decide_with_protection`; six
+   offline checks pin it.
+2. **`set_enabled` was not idempotent.** Callers name a mod by its enabled
+   filename, so disabling something already disabled tried to rename a file
+   that no longer exists: "disable these twelve" reported nine errors the
+   second time it ran.
 
-**5. Tune** (`"Tune"`) — `/optimize` (GET plan, POST apply), `/properties`,
-`/port`, `/host/specs`. Sub-navigation down the left with live values. The
-port card is the good part: three sources that can disagree, named, with one
-button that makes them agree.
+**One thing that is a data gap, not a bug.** `corpsecurioscompat`'s 1.21.1
+NeoForge file declares no dependencies on CurseForge, though its 1.20.1 Forge
+file does and the jar's own metadata requires `corpse`. Nothing BlessForge asks
+before installing knows about it; the loader's error after installing does, and
+Diagnose named it precisely. Catalogue file-level relations are not complete
+and cannot be treated as authoritative.
 
-**6. Configs** (`"Configs"`) — `/configs`, `/configs/read`, `/configs/write`.
-The old editor's rules still hold: the gutter is a plain `<pre>` sharing the
-textarea's font metrics with `scrollTop` mirrored, and there is a guard against
-navigating away dirty. No highlighting overlay — it drifts on wrap.
-
-**7. Activity** (`"Activity"`) — `/jobs`, and re-attach through `follow()`.
-Small, and the job machinery is already built.
-
-**8. Catalogue** (`"Discover"`, the search half) — `/browse/modpacks`,
-`/modpacks/{id}/files`, `/install/preflight`, `/install/modpack`. This is where
-the **client-only review** overlay lives (`"Client-only review"`), and that
-overlay is the one screen the whole app is arguably for. `retired/04` asserts
-the contract: it sends `disable_files` and `client_reasons`, never
-`exclude_files`, because mods are installed disabled and tagged rather than
-stripped.
-
-**9. Import** (`"Discover"`, the import half) — `/uploads/modpack` with real
-byte progress via `XMLHttpRequest` (`fetch` still cannot report upload
-progress), `/uploads`, and re-import into an existing server through
-`/switch-pack-version`.
-
-### Then
-
-- Port each retired harness as its screen lands, and delete it from
-  `dev/ui-tests/retired/`.
-- The light theme has never been looked at (§7.1). Every colour is a token on
-  `:root`, so it is a `[data-theme="light"]` block, but it is real work.
-- 360 px has never been looked at either. The breakpoints exist in §8 of
-  `style.css`; nobody has opened them.
+**And one that is physics.** Cozy Experience would not boot while another
+server was running: two 4 GB heaps with `AlwaysPreTouch` on an 11.6 GB host.
+Alone, it boots. The heap ceiling the Tune screen computes was right.
 
 ---
 
-## 5E. Situation (2026-08-29) — the first instance screen
+## 6. Earlier sessions (8 commits, `23b38e7..c62d607`)
 
-`RENDER["instance:situation"]` in `app.js`, §12 of `style.css`,
-`dev/ui-tests/06-situation.mjs` (58 checks). The screen is the design's:
-a power card with a state rail and four tiles, "needs you" beside it, then
-pack / facts / removal across the bottom.
-
-**Two things §5D got wrong about it, found while building it:**
-
-- **It cannot clear an `orphan`.** `/api/instances/{id}` calls
-  `crafty.get_server`, and Crafty answers 500 forever for a server whose files
-  are gone — so `openInstance` never reaches this screen for an orphan, it
-  renders the "Crafty cannot open this server" card instead. If the UI is to
-  offer removing an orphaned record, the button belongs on **that** card.
-  Nothing was moved there; the state's copy is written and the code path is
-  reachable if the detail call ever starts succeeding, but the practical route
-  is still Crafty's own panel.
-- **`confirmSheet` never returned true.** `close()` runs `onClose`, which is
-  the dismissed answer, and it ran *before* `resolve(true)` — so the promise
-  settled `false` from **both** buttons. Cancelling a job, pulling the AI model
-  and (once this screen existed) deleting a server all silently did nothing.
-  Fixed by settling before closing, once, behind a guard. `smoke.mjs` asserts
-  all three answers, because a confirm that always says no looks exactly like
-  one that works. The roulette screen was unaffected: it builds its own
-  `sheet()` rather than using `confirmSheet`, which is why 27 passing checks
-  never caught it.
-
-**Corrections to the design, on top of `design/README.md`'s list:**
-
-| The design says | What is rendered |
-|---|---|
-| A `TPS` tile | Nothing in Crafty measures TPS. The fourth tile is the world size — which is also the number the delete button below is really asking about. |
-| `Heap 6.1 / 8.0 GB` | Crafty measures the JVM **process**, not the heap inside it. The tile is "Memory" and says `process, not heap`. |
-| `Crashed on boot · 3 attempts` | Nothing counts attempts. The crashed copy says Crafty flagged it and points at Diagnose. |
-| `files stay in /srv/minecraft/<id>` | `path` off the server record — `/crafty/servers/<id>` here. |
-| `TPS has sat at 18.4…` as the running blurb | Built from what Crafty actually returned: players, the version it reports, and its MOTD. |
-
-**Three backend gaps it exposed, all now closed:**
-
-- **The fleet's memory gauge was always empty.** Crafty returns `mem` as a
-  human string (`"1.2GB"`) and the percentage separately as `mem_percent`;
-  `/api/instances` was handing the string to a gauge that did
-  `width:${v}%`, so every card rendered `width:NaN%` and every tooltip read
-  `NaN%`. `mem` is now the number and `mem_text` the string.
-- **Nothing said which Java a server actually uses.** Crafty stores no
-  `java_version` — the runtime is baked into `execution_command`, which Crafty
-  *rewrites* whenever a loader install finishes (§8). `crafty.java_in_command`
-  parses it back out and `/api/instances/{id}` returns `java` with the major,
-  what the Minecraft version requires, and `ok`. `ok` is `null`, not `false`,
-  when the command just says `java`: "we cannot tell" and "it is wrong" are
-  different answers and must not share a colour.
-- **Uptime could not be computed in the browser.** Crafty writes `started` in
-  UTC with no offset in the string, and this host runs IST — parsing it against
-  the local clock reports a server started an hour ago as starting four and a
-  half hours from now. `crafty.uptime_seconds` does it server-side and returns
-  `None` rather than a negative on clock skew.
-
-Also added: `GET /api/instances/{id}/stats`, one Crafty call, because the
-screen refreshes its numbers every 6 s while the server is running and going
-through `/api/instances/{id}` for that would re-read the manifest off Crafty's
-disk each tick. The poll is registered with `onLeave` and the harness asserts
-it stops — an interval left behind polls Crafty for the life of the page.
-
-**Seen in a browser, finally.** `dev/ui-tests/screenshot.mjs` was rewritten
-(the old one still drove the front end replaced on 2026-08-29) and now shoots
-the shell and this screen at 1440, 1000, 560 and 360 px. No horizontal
-overflow at any width, nothing collapsed to zero height, console clean. That
-closes §7.1 for these two screens and §7.3 for the first time — 360 px works.
-
-**Not verified:** every number on this screen came from a fixture. The shapes
-are Crafty's own (`ServerStats` columns, read out of the running container),
-but no real server has been rendered, and no power button has been pressed
-against one. Set `BF_SERVER_ID` and re-run `06-situation.mjs` when there is a
-server; the read half will pass through to it.
-
----
-
-## 6. The session before that (8 commits, `23b38e7..c62d607`)
+History. Kept for the traps it records, which are all still live.
 
 ### 6.1 `22a2d70` — import modpacks exported from the CurseForge app
 
@@ -665,6 +595,9 @@ in `overrides/mods` have no project id so they can never be version-checked —
 surfaced as `bundled` in the review rather than treated as catalogue mods.
 
 ### 6.2 `6203473`, `5a5fb19`, `88b9535` — front-end rebuild + packaging
+
+**The front-end half of this is history**: that build, and the one that
+replaced it, are both gone (§5C). The packaging half still stands.
 
 Full replacement of `index.html` and `style.css` from the Claude Design export,
 with `app.js` rewritten to emit the new markup. **Every** §4.3 hook survives
@@ -748,41 +681,22 @@ missing from disk.
 
 ### Not verified (do this before trusting it)
 
-1. **Two screens have been seen in a browser; the rest have not.** The shell,
-   Mod Roulette and Situation were shot in headless Chrome on 2026-08-29 at
-   1440/1000/560/360 px — no sideways overflow, nothing collapsed, console
-   clean (§5E). Everything built from here still needs the same pass:
-   `dev/ui-tests/screenshot.mjs` is the fastest way, and jsdom will not tell
-   you. Still unseen at any width: whether the spine holds fourteen servers
-   gracefully, since the fleet has never had more than three.
-2. **Light theme does not exist yet.** Every colour is a token on `:root`, so
-   it is a `[data-theme="light"]` block and nothing more — but nobody has
-   written it, and the design only ever showed dark. There is also no toggle in
-   the new shell.
-3. **360 px works on the two screens that exist.** Verified 2026-08-29: the
-   spine stacks above the canvas, the power buttons go horizontal, the tiles go
-   2-up, and nothing overflows. The tab strip does wrap to a second row and
-   leaves the systems glyph alone on it, which is ugly but not broken. The
-   breakpoints are in §8 of `style.css`; every screen after this needs the same
-   look.
-4. **The terminal has only been driven against a stopped server** — and its
-   screen has not been rebuilt yet in any case. The console *read* path is
-   verified live (70 buffered lines came back from a real instance), and the
-   old stream/filter/echo logic was covered by jsdom against a fake
-   EventSource, but nobody has watched output scroll from a *running* server
-   and `POST /command` has been sent to one exactly once, successfully
-   (`list` → `There are 0 of a max of 20 players online:`).
-5. **Review & Fix has never actually applied anything.** The plan half is
-   verified end to end against a real crash; `_apply_actions` is the same code
-   path `/ai/apply` has always used, but the automatic route has not been
-   watched making a change.
-6. **A full modpack install is verified** (2026-08-28, "Enhanced Terrain",
-   Fabric 1.21.1, 91 mods: preflight → review → install → booted in 11.8 s →
-   `list` through the terminal → stopped; port 25571 written to all three
-   places and reachable over TCP; 32 client-only mods installed `.disabled`
-   with their evidence). **A rolled install is verified too** (§5B). Both test
-   servers were deleted on 2026-08-29 at the user's request, which is why the
-   fleet is empty.
+1. **Nobody has clicked a destructive button in the browser.** Start, stop,
+   restart, delete-the-record and delete-the-world are wired and their confirm
+   dialogs work, but every power and delete action here was driven through the
+   API, and `ui.mjs` deliberately never touches them. Someone should press
+   Stop, and press Delete on a server they do not want, once.
+2. **Review & Fix has never applied anything.** The plan half is verified end
+   to end against a real crash; `_apply_actions` is the same code path
+   `/ai/apply` has always used, but the automatic route has not been watched
+   making a change.
+3. **The light theme does not exist.** The canvas only ever showed dark, and
+   the toggle in the topbar says so rather than pretending.
+4. **Below 900px is unopened.** `ui.mjs` checks 1600 / 1280 / 900. The canvas
+   uses fixed pixel widths in places (a 298px spine, a 428px drawer) and will
+   need real work on a phone.
+5. **The assistant has been read, not exercised.** `/api/ai/status` is live and
+   the endpoint answers, but no analysis was run in this session.
 
 ### Mod Roulette — what is not done or not proven
 
@@ -809,28 +723,34 @@ missing from disk.
     export is already written and the instance already exists, same as any
     other failed install (§7.7).
 
-### The rebuilt front end — known gaps
+### The front end — known gaps
 
-24. **Eight screens are placeholders** (§5D). They render a card saying so
-    rather than pretending to work.
-25. **`app.js` is one 1,796-line file and growing.** It cannot be split — the
-    cache-busting fingerprint hashes exactly three names (§4) — so the only
-    lever is keeping sections marked and screens small. Situation added 430
-    lines; seven screens are left, and Mods is the densest of them.
-26. ~~**No screenshot has ever been taken of it.**~~ Taken 2026-08-29 (§5E).
+24. **A missing binding renders as nothing, silently.** No error, no console
+    message, just a blank where a number should be. `python3
+    dev/tools/check_bindings.py` diffs the 316 names the template reads against
+    what `renderVals()` returns; run it after touching either.
+25. **`index.html` is 3,955 lines** — about 1,500 of canvas markup and 2,400 of
+    logic. It cannot be split: the runtime wants the template and its script in
+    one document. Keep the section comments honest; they are the only
+    navigation there is.
+26. **`support.js` is a vendored build with no source here.** If it ever needs
+    a fix, the fix belongs upstream in Claude Design, not in that file.
+27. **Two servers cannot both hold 4 GB on this host.** The Tune screen's
+    ceiling is computed from what is free *now*, so it drops while another
+    server runs — which is correct, and does mean the same pack shows a
+    different ceiling depending on what else is up.
 
 ### Known rough edges
 
-5. **The `jobs` Map in `app.js` is never pruned.** Every job a tab has seen
-   keeps its full log buffer until reload. Harmless over an evening, unbounded
-   in principle. (Carried over from the old front end, which had the same
-   shape under the name `jobRegistry`.)
-6. **Selection state must not live in the DOM on the Mods screen.** The old
-   implementation kept it in a `Set` of filenames because a virtualised row
-   that scrolls out is unmounted and loses its checkbox, and pruned that Set
-   against the new instance's file list on load — which meant a mod with the
-   *same filename* in two instances could appear pre-selected. Narrow, but
-   real, and worth fixing rather than reproducing when §5D rebuilds it.
+5. **The UI follows one job at a time.** `follow()` replaces whatever stream
+   was open, so starting a second install while the first runs leaves the first
+   running (it is a server-side job) but stops showing it. Activity still lists
+   it and re-attaches. Fine for one operator; wrong if two things matter at
+   once.
+6. **The mod list is not virtualised.** The canvas renders every row, and a
+   400-mod instance is 400 rows of DOM. It is fast enough at 191; the previous
+   front end windowed at ~120 rows and that machinery is in git if it is ever
+   needed.
 7. **`_wait_for_loader` raises on timeout, leaving the created instance
    behind.** Deliberate (you may want to retry into it) but failed installs
    accumulate orphan instances. Consider offering deletion in the failure
@@ -904,13 +824,13 @@ breaks on them (`openInstance` failing leaves an explanation instead of an
 unhandled `TypeError` in a tab loader), but they can only be tidied up in
 Crafty itself.
 
-27. **The Situation screen polls `/stats` every 6 s while a server runs.** One
-    Crafty call per tick, torn down on leave and never started for a stopped
-    server, but it is a poll and two browser tabs on the same instance double
-    it — the same shape as the terminal's (§7.9).
-28. **`dev/ui-tests/screenshot-install-flow.mjs` is stale.** It drives the
-    front end replaced on 2026-08-29 and its selectors match nothing. Rewrite
-    it when the Catalogue screen lands.
+28. **The open instance polls `/stats` every 6 s while it is running.** One
+    Crafty call per tick, and it stops for a stopped server — but it is a poll,
+    and two browser tabs on the same instance double it (§7.9).
+29. **CurseForge file-level dependencies are not complete.** A file can declare
+    none while the jar's own metadata requires something; that is how Lucky Dip
+    installed without `corpse` (§5D). Nothing asked before installing knows;
+    the loader's error afterwards does.
 
 ### Environment hazards
 
@@ -989,43 +909,47 @@ Crafty itself.
 # state of everything
 docker ps --filter name=blessforge --format '{{.Names}} | {{.Image}} | {{.Status}}'
 curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
+curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 200 checks
+# the whole suite: 137 checks
 cd ~/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions test_roulette; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
-cd dev/ui-tests && for t in smoke 05-roulette 06-situation; do
-  docker run --rm --network host -v "$PWD":/w \
-    -v "$HOME/blessforge/app/static":/static:ro -w /w \
-    -e BF_URL=http://127.0.0.1:8710 node:20-alpine node "$t.mjs" | tail -1
-done
-# The jsdom harnesses drive the REAL backend. Writes are intercepted, but they
-# do read live CurseForge and Modrinth, so they need the network.
-# 06-situation uses fixtures for the instance payloads while the fleet is
-# empty; BF_SERVER_ID=<id> points its reads at a real server instead.
+python3 dev/tools/check_bindings.py | tail -1     # 316 template bindings
+cd dev/ui-tests && docker run --rm --network host -v "$PWD":/w -w /home/pptruser \
+  ghcr.io/puppeteer/puppeteer:latest sh -c "cp /w/ui.mjs . && node ui.mjs" | tail -1
+# ui.mjs drives a REAL browser against the REAL backend, and only reads.
 
-# what it actually looks like — headless Chrome, four widths (§5E)
+# what it looks like — screenshots at four widths
 mkdir -p /tmp/shots && chmod 777 /tmp/shots
 cd ~/blessforge/dev/ui-tests
 docker run --rm --network host -v "$PWD":/w:ro -v /tmp/shots:/out -w /home/pptruser \
   ghcr.io/puppeteer/puppeteer:latest \
   sh -c "cp /w/screenshot.mjs . && node screenshot.mjs && cp *.png /out/"
 
-# JS syntax check (there is no node on the host)
-docker run --rm -v "$PWD/app/static":/w:ro node:20-alpine node --check /w/app.js
-
 # build + redeploy (the container runs the LOCAL tree, not GHCR)
 cd ~/blessforge && docker compose build
 docker compose -f /var/lib/casaos/apps/blessforge/docker-compose.yml \
   -p blessforge up -d --force-recreate
+# NEVER redeploy while an install is running -- the job registry is in memory
+# and the container restart kills it mid-flight.
+
+# JS syntax check on the canvas's logic (there is no node on the host)
+docker run --rm -v "$PWD/app/static":/w:ro node:20-alpine node -e '
+const fs=require("fs");const s=fs.readFileSync("/w/index.html","utf8");
+const i=s.indexOf("data-dc-script");const j=s.indexOf(">",i)+1;
+new Function("DCLogic","StreamableLogic","React", s.slice(j,s.lastIndexOf("</script>")));
+console.log("ok");'
 
 # a dev server on 8719, without touching the deployed container.
 # NEVER `pkill -f uvicorn` -- it kills the container's process too (§8.17).
 cd ~/blessforge && set -a && . ./.env && set +a
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8719
 PID=$(ss -lptn 'sport = :8719' | grep -oP 'pid=\K[0-9]+' | head -1) && kill "$PID"
+# /data is not writable from the host, so the dev server's storage check fails.
+# That is an artifact of running outside the container, not a fault.
 
 # any instance with a missing launcher?
 cd ~/blessforge && set -a && . ./.env && set +a
@@ -1034,10 +958,11 @@ cd ~/blessforge && set -a && . ./.env && set +a
 # Crafty's side of a failed install
 docker exec big-bear-crafty sh -c "grep -n '<server-id>' /crafty/logs/commander.log"
 
-# roll a server to have something to build instance screens against
+# roll a server from the API rather than the screen
 curl -s -X POST http://127.0.0.1:8710/api/roulette/roll \
-  -H 'Content-Type: application/json' -d '{"constraints":{"count":25}}'
-# -> {"job_id": ...}; poll /api/jobs/<id>, then POST its result.hand to
+  -H 'Content-Type: application/json' \
+  -d '{"constraints":{"count":25,"minecraft":"1.21.1","loader":"NeoForge"}}'
+# -> {"job_id": ...}; poll /api/jobs/<id>, then POST its result to
 #    /api/roulette/install with a server_name and port.
 ```
 

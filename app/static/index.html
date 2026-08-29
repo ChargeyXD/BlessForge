@@ -1930,9 +1930,11 @@ class Component extends DCLogic {
       let e; try { e = JSON.parse(ev.data); } catch (err) { return; }
       this.setState(s => {
         if (!s.job || s.job.id !== jobId) return null;
+        // The first frame is a snapshot of a job that may already be over --
+        // re-attaching to a finished job has to settle, not sit at RUNNING.
         const j = { ...s.job };
         if (e.step != null) { j.step = e.step; j.phase = this.phaseOf(e.step); }
-        if (e.progress != null) j.pct = Math.round(e.progress);
+        if (e.percent != null) j.pct = Math.round(e.percent);
         if (e.status) j.status = e.status;
         if (e.message) {
           const lvl = e.level === 'warn' ? 'warn' : e.level === 'error' ? 'crit'
@@ -1949,7 +1951,8 @@ class Component extends DCLogic {
       // Only the explicit `end` closes the stream: a job also emits a final
       // step whose status already reads done, and treating that as the end
       // closes the connection one frame before the result arrives.
-      if (e.event === 'end') {
+      if (e.event === 'end'
+          || (e.event === 'snapshot' && e.status && e.status !== 'running')) {
         try { es.close(); } catch (err) {}
         if (this._es === es) this._es = null;
         this.setState(s => s.job && s.job.id === jobId

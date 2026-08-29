@@ -8,85 +8,34 @@ launcher. These are the checks that catch them.
 
 Everything runs in a container, so the host needs nothing installed but Docker.
 
-## ui-tests/ — jsdom harnesses
+## ui-tests/ — the front end, in a real browser
 
-**The four numbered harnesses were retired on 2026-08-29** when the front end
-was replaced; they live in `ui-tests/retired/` with a note on what each still
-specifies, to be ported as its screen is rebuilt.
+The four jsdom harnesses that used to live here are **retired**, and so are the
+three that replaced them. The UI is now the Claude Design canvas driven by its
+own React runtime (`app/static/support.js`), so a DOM-only fake can neither
+render it nor see a layout break. `ui.mjs` drives headless Chrome against a
+running BlessForge instead.
 
-They load the real `index.html` + `app.js` into jsdom and drive them against a
-**running BlessForge**, so they exercise the actual DOM wiring rather than a
-mock. Writes to Crafty are stubbed; nothing is installed or modified on a real
-server.
-
-One-time setup:
+It only **reads**. Nothing in it starts, stops, installs or deletes anything --
+a suite that might run unattended has no business touching someone's fleet.
 
 ```bash
 cd dev/ui-tests
-docker run --rm -v "$PWD":/w -w /w --network host node:20-alpine \
-  sh -c "npm init -y >/dev/null && npm i jsdom --silent"
-```
-
-Then:
-
-```bash
-docker run --rm --network host \
-  -v "$PWD":/w -v "$HOME/blessforge/app/static":/static:ro -w /w \
-  -e BF_URL=http://127.0.0.1:8710 \
-  -e BF_SERVER_ID=<a-crafty-instance-with-mods> \
-  node:20-alpine node 01-shell-and-views.mjs
+docker run --rm --network host -v "$PWD":/w -w /home/pptruser \
+  ghcr.io/puppeteer/puppeteer:latest sh -c "cp /w/ui.mjs . && node ui.mjs"
 ```
 
 | file | what it covers |
 |---|---|
-| `smoke.mjs` | the rebuilt shell: it boots, the systems panel reports real facts (Crafty latency, free disk, the actual AI endpoint — the design hard-coded a local Ollama and the wrong model), routing between views rebuilds the right tab strip, the command palette opens, filters and can be escaped, and `confirmSheet` returns the answer that was actually clicked. 23 checks. |
-| `05-roulette.mjs` | the Mod Roulette screen against the live backend: the seed, the three segmented controls, sliders, nine cycling categories, four toggles, the pool counter, a real deal, holds, a single-slot reroll, and that accepting a hand writes nothing until it is confirmed. 27 checks. |
-| `06-situation.mjs` | the Situation screen: the power card and its four tiles across running and stopped, the stat that is Crafty's own string versus the one that is a percentage, the java fact and when it is red, the “needs you” list and where each finding routes, the pack card managed and unmanaged, both removal buttons and the typed-name gate, that a declined confirm writes nothing, escaping, and that the live poll stops when you leave. 58 checks. |
-| ~~`01-shell-and-views.mjs`~~ (retired) | boot, health pill, every view and tab, all five tab panes, config editor gutter + dirty guard, add-mod and import modals, dropzone keyboard/drag states, theme toggle. 57 checks. |
-| ~~`02-mod-list.mjs`~~ (retired) | the windowed mod list: spacers, repaint on scroll, selection surviving unmount, in-place row patching, `.stale` marking. Needs `BF_SERVER_ID` pointing at an instance with >120 mods. 20 checks. |
-| ~~`04-terminal-and-review.mjs`~~ (retired) | the Terminal tab (stream, severity colouring, HTML escaping, filter, command echo + post, disabled-while-stopped, teardown on tab change), client-side mod tagging and filter, the dependency view, the install review sending `disable_files` + `client_reasons` + the typed port, and the Activity instance chip. Drives a fake `EventSource`; every write is intercepted. 37 checks. |
-| ~~`03-jobs.mjs`~~ (retired) | the job registry: phase strip, log levels and `×N` dedupe, stream pane, Run in Background → Watch re-attach with replay, completion summary, `result.problems[]` rendering. Drives a fake `EventSource`; starts no real job. 39 checks. |
+| `ui.mjs` | 39 checks: the canvas boots under its own runtime; React and the fonts are served from this box rather than a CDN (a LAN install has no route to unpkg); the systems panel reports Crafty's real latency and the real AI endpoint; the fleet spine; every instance tab loads its data; all four Tune sub-tabs, including that every JVM flag and every server.properties group is listed rather than a sample; the catalogue with real pack logos; Mod Roulette's seed, reels and full version list; import; the command palette; and no horizontal overflow at 1600 / 1280 / 900 px. |
 
-`06-situation.mjs` uses **fixtures** for the instance payloads, because Crafty
-has no servers on this machine. They are shaped from the real contract -- Crafty's
-own `ServerStats` columns, and the `state` / `java` / `uptime_s` blocks
-`/api/instances/{id}` computes -- and everything else in the page is the live
-backend. Set `BF_SERVER_ID` and the reads pass through to that instance instead.
-Writes are intercepted either way, so it never starts, stops or deletes anything.
+It asserts against the **corrections** as well as the features -- no TPS tile,
+no `/srv/minecraft`, the real published port range -- because those are the
+places the design asserted something untrue and a regression there would be
+silent.
 
-Cold-start timing matters: the first `/api/instances` against a freshly started
-container can take several seconds, and the harnesses assert after a fixed
-wait. If checks fail with "0 cards", raise the `sleep` at the top.
-
-## ui-tests/screenshot*.mjs — real Chrome
-
-jsdom applies no CSS, so it cannot see a layout break. These use headless
-Chrome for that.
-
-```bash
-docker run --rm --network host -v "$PWD":/w -w /home/pptruser \
-  ghcr.io/puppeteer/puppeteer:latest \
-  sh -c "cp /w/screenshot.mjs . && node screenshot.mjs && cp *.png /w/"
-```
-
-`screenshot.mjs` shoots the rebuilt shell and the Situation screen at 1440, 1000,
-560 and 360 px and reports what only a rendering engine knows: whether the page
-overflows sideways, whether any card collapsed to nothing, and what the tokens
-resolved to. It intercepts the instance payloads for the same reason
-`06-situation.mjs` does. The puppeteer image runs as its own user, so give it a
-world-writable directory for the PNGs rather than the repo:
-
-```bash
-mkdir -p /tmp/shots && chmod 777 /tmp/shots
-cd dev/ui-tests
-docker run --rm --network host -v "$PWD":/w:ro -v /tmp/shots:/out -w /home/pptruser \
-  ghcr.io/puppeteer/puppeteer:latest \
-  sh -c "cp /w/screenshot.mjs . && node screenshot.mjs && cp *.png /out/"
-```
-
-`screenshot-install-flow.mjs` is **stale**: it walks the Browse -> pack -> wizard
--> preflight flow of the front end replaced on 2026-08-29, and its selectors no
-longer match anything. Rewrite it when the Catalogue screen lands (§5D).
+Some checks need a server in the fleet. With an empty Crafty the instance-tab
+checks fail honestly rather than being skipped.
 
 ## tools/
 
@@ -111,7 +60,7 @@ No Crafty, no network, no filesystem writes.
 | `test_loader_detection.py` | the loader state machine, the `run.sh` → launch-command rewrite, which Java a launch command actually invokes (Crafty stores no `java_version`, so it has to be parsed back out), and that uptime is read from Crafty's UTC `started` rather than against the local clock — this host runs IST and the Crafty container runs UTC. 28 checks. |
 | `test_job_stream.py` | that a job's SSE frames carry its **result**. Regression test for the bug that made the client-only review silently do nothing: the browser closes its stream on the first frame reporting a terminal status, and there is more than one such frame. 10 checks. |
 | `test_roulette.py` | Mod Roulette: that the PRNG is a faithful port of the design's JavaScript (shared seeds are worthless otherwise), that a seed plus constraints reproduces a hand exactly, that a pool refresh barely disturbs one, that every constraint does what its label claims, and that the CurseForge export it writes can be re-imported by this app's own importer. Synthetic pool; no network. 34 checks. |
-| `test_install_decisions.py` | that the port typed at install is written *after* the pack overlay (every instance on this machine is on 25565 because it was not), that client-only mods are installed `.disabled` and recorded rather than deleted, that `skip_client_only=false` really installs them enabled, and that `exclude_files` still deletes. Stubs Crafty entirely. 16 checks. |
+| `test_install_decisions.py` | that a client-only jar another mod depends on is held back rather than stripped (the review had this on one code path and not the other, and the gap stopped a pack booting), that the port typed at install is written *after* the pack overlay (every instance on this machine is on 25565 because it was not), that client-only mods are installed `.disabled` and recorded rather than deleted, that `skip_client_only=false` really installs them enabled, and that `exclude_files` still deletes. Stubs Crafty entirely. 16 checks. |
 
 ```bash
 cd ~/blessforge
