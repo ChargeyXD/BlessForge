@@ -90,6 +90,12 @@ services:
       OLLAMA_URL: "https://ai.shadowco.xyz"
       # Only needed if that endpoint is behind an authenticating proxy.
       OLLAMA_API_KEY: ""
+      # The assistant can be switched to a local Ollama from its own panel.
+      # This has to be host.docker.internal, NOT localhost: inside a container
+      # localhost is the container itself, where nothing is listening, so the
+      # toggle would connect to nothing and report the endpoint as down. The
+      # host-gateway alias above is what makes this resolve.
+      OLLAMA_LOCAL_URL: "http://host.docker.internal:11434"
       AI_MODEL: "qwen3:4b-instruct"
       AI_ENABLED: "true"
       AI_TIMEOUT: "300"
@@ -179,6 +185,9 @@ services:
         - container: OLLAMA_API_KEY
           description:
             en_us: "Bearer token, if the Ollama endpoint requires one"
+        - container: OLLAMA_LOCAL_URL
+          description:
+            en_us: "The 'local' option in the assistant's endpoint switch. Use host.docker.internal, not localhost -- inside the container localhost is the container."
         - container: AI_MODEL
           description:
             en_us: "Model to use, e.g. qwen3:4b-instruct"
