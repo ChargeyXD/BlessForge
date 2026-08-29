@@ -1251,13 +1251,21 @@
                 <button onClick="{{ closePack }}" style="display:inline-flex; align-items:center; gap:7px; margin-bottom:11px; padding:5px 9px; background:transparent; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:10px; cursor:pointer; transition:all .16s;" style-hover="color:#fff; border-color:rgba(255,255,255,.24);">← back to results</button>
                 <div style="display:flex; gap:13px; padding:14px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
                   <div style="position:relative; width:70px; height:70px; flex:0 0 70px; display:grid; place-items:center; background:#1A1D22; border:1px solid rgba(255,255,255,.08);">
-                    <span style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:700; color:#41454C;">AT</span>
+                    <sc-if value="{{ dpHasLogo }}">
+                      <!-- loading="lazy" matters here: the browser's preload scanner reads the raw
+     <x-dc> template before the runtime swaps it, and without it the literal
+     "{{ dpLogo }}" is requested as a URL and 404s on every page load. -->
+                      <img src="{{ dpLogo }}" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover;" />
+                    </sc-if>
+                    <sc-if value="{{ dpNoLogo }}">
+                      <span style="font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:700; color:#41454C;">{{ dpInitials }}</span>
+                    </sc-if>
                     <span style="position:absolute; inset:auto 0 0 0; height:2px; background:var(--ember,#FF6B35);"></span>
                   </div>
                   <div style="min-width:0; flex:1;">
-                    <h1 style="margin:0; font-size:19px; font-weight:700; letter-spacing:-.03em;">All the Mods 10</h1>
-                    <div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#8C8F96; margin-top:4px;">ATMTeam · 41.2M downloads · updated 3 days ago</div>
-                    <p style="margin:8px 0 0; font-size:12.5px; color:#A8A5A1; line-height:1.6; max-width:70ch; text-wrap:pretty;">The kitchen-sink pack. 400+ mods, an official server build, and it expects six gigabytes and eight threads. This host has eight threads and can give four gigabytes, which is workable but not generous.</p>
+                    <h1 style="margin:0; font-size:19px; font-weight:700; letter-spacing:-.03em;">{{ dpName }}</h1>
+                    <div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#8C8F96; margin-top:4px;">{{ dpMeta }}</div>
+                    <p style="margin:8px 0 0; font-size:12.5px; color:#A8A5A1; line-height:1.6; max-width:70ch; text-wrap:pretty;">{{ dpSummary }}</p>
                   </div>
                 </div>
 
@@ -1326,7 +1334,7 @@
             <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96; font-variant-numeric:tabular-nums;">{{ jobClock }}</span>
           </div>
           <h2 style="margin:5px 0 0; font-size:14.5px; font-weight:600; letter-spacing:-.02em;">Installing All the Mods 10 · 2.31</h2>
-          <button onClick="{{ jobJump }}" style="margin-top:3px; padding:0; background:transparent; border:0; color:var(--ember,#FF6B35); font-family:'JetBrains Mono',monospace; font-size:9.5px; cursor:pointer; text-decoration:underline; text-underline-offset:3px;">→ Weekend ATM10</button>
+          <button onClick="{{ jobJump }}" style="margin-top:3px; padding:0; background:transparent; border:0; color:var(--ember,#FF6B35); font-family:'JetBrains Mono',monospace; font-size:9.5px; cursor:pointer; text-decoration:underline; text-underline-offset:3px;">{{ jobTarget }}</button>
         </div>
         <button onClick="{{ closeJobs }}" style="flex:0 0 auto; width:22px; height:22px; display:grid; place-items:center; background:transparent; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:11px; cursor:pointer; transition:all .16s;" style-hover="color:#fff; border-color:rgba(255,255,255,.28);">×</button>
       </div>
@@ -1377,11 +1385,13 @@
           <div style="display:flex; gap:14px; margin-top:9px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96;">
             <span>{{ jobSummaryMods }}</span><span>{{ jobSummarySize }}</span><span>{{ jobClock }}</span>
           </div>
+          <sc-if value="{{ jobProblemTitle }}">
           <div style="margin-top:9px; padding:9px 10px; background:rgba(255,59,92,.08); border-left:2px solid #FF3B5C;">
-            <div style="font-size:11.5px; font-weight:500; color:#E5A3AE;">ars_nouveau-4.12.1.jar could not be downloaded</div>
-            <div style="font-size:10.5px; color:#B08E95; margin-top:3px; line-height:1.5;">The author disabled third-party downloads. Without it the first boot will fail — 4 other mods depend on it.</div>
+            <div style="font-size:11.5px; font-weight:500; color:#E5A3AE;">{{ jobProblemTitle }}</div>
+            <div style="font-size:10.5px; color:#B08E95; margin-top:3px; line-height:1.5;">{{ jobProblemDetail }}</div>
             <button onClick="{{ addManual }}" style="margin-top:7px; padding:4px 9px; background:transparent; border:1px solid rgba(255,59,92,.4); border-radius:2px; color:#FF8095; font-family:'Space Grotesk',sans-serif; font-size:11px; font-weight:600; cursor:pointer;">Add it manually</button>
           </div>
+          </sc-if>
           <button onClick="{{ dismissJob }}" style="width:100%; margin-top:9px; padding:8px; background:#1A1D22; border:1px solid rgba(255,255,255,.12); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:500; cursor:pointer;">Dismiss</button>
         </div>
       </sc-if>
@@ -1534,8 +1544,8 @@
     <div style="position:absolute; right:16px; bottom:16px; z-index:88; width:300px; padding:12px 13px 13px; background:#15181C; border:1px solid rgba(255,59,92,.35); border-radius:3px; box-shadow:0 20px 48px -18px rgba(0,0,0,.85);">
       <img src="assets/chargey-failed.png" alt="" style="position:absolute; right:6px; top:-42px; width:78px; pointer-events:none;" />
       <div style="font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.13em; color:#FF3B5C;">JOB FAILED</div>
-      <div style="font-size:12.5px; font-weight:600; margin-top:5px;">Prominence II stopped at 41%</div>
-      <div style="font-size:11px; color:#8C8F96; margin-top:4px; line-height:1.5;">The half-finished server was left in place so you can retry into it.</div>
+      <div style="font-size:12.5px; font-weight:600; margin-top:5px;">{{ failTitle }}</div>
+      <div style="font-size:11px; color:#8C8F96; margin-top:4px; line-height:1.5;">{{ failDetail }}</div>
       <div style="display:flex; gap:6px; margin-top:9px;">
         <button onClick="{{ retryFailed }}" style="flex:1; padding:6px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:700; cursor:pointer;">Retry</button>
         <button onClick="{{ dismissFailed }}" style="flex:0 0 auto; padding:6px 10px; background:transparent; border:1px solid rgba(255,255,255,.12); border-radius:2px; color:#8C8F96; font-family:'Space Grotesk',sans-serif; font-size:11.5px; cursor:pointer;">Later</button>
@@ -3437,6 +3447,24 @@ class Component extends DCLogic {
                           : (S.err.configs || 'No config files on this instance yet.')),
       jobTitle:J ? J.title : 'Nothing running',
       jobTarget:J && J.result && J.result.name ? '→ ' + J.result.name : '',
+      // A finished install reports what it could not do. The canvas asserted
+      // one specific mod had failed, on every job.
+      jobProblemTitle:(() => { const ps = (J && J.result && J.result.problems) || [];
+        if (!ps.length) return '';
+        const first = ps[0];
+        return typeof first === 'string' ? first
+             : (first.title || first.file || first.mod || 'One step did not finish'); })(),
+      jobProblemDetail:(() => { const ps = (J && J.result && J.result.problems) || [];
+        if (!ps.length) return '';
+        const first = ps[0];
+        const rest = ps.length > 1 ? '  (+' + (ps.length - 1) + ' more)' : '';
+        return (typeof first === 'string' ? '' : (first.detail || first.why || first.error || ''))
+               + rest; })(),
+      failTitle:J && J.status === 'error'
+        ? (J.title || 'The job') + ' stopped' + (J.pct ? ' at ' + J.pct + '%' : '') : '',
+      failDetail:J && J.status === 'error'
+        ? (J.error || 'Anything already written was left in place so you can retry into it.')
+        : '',
       loadMoreLabel:'load more',
       propGroups:(propGroupNames.length ? propGroupNames
                   : ['Network', 'Performance', 'Players', 'World', 'Misc', 'Other']).map(t => ({ t,
@@ -3743,6 +3771,19 @@ class Component extends DCLogic {
         srvG:(r.is_server_pack || r.server_pack_file_id) ? '✓' : '▲',
         srvCol:(r.is_server_pack || r.server_pack_file_id) ? '#56D9A3' : '#FFC44D',
         pick:() => this.setState({ releaseIdx:i }) })),
+      // The canvas hard-coded ATM10's name, byline and blurb into the pack
+      // header, which looked correct only for as long as you opened ATM10.
+      dpName:(D.packDetail || {}).name || 'Pick a pack',
+      dpMeta:(() => { const d = D.packDetail; if (!d) return '';
+        return [(d.authors || [])[0], short(d.downloads) + ' downloads',
+                d.updated ? 'updated ' + ago(d.updated) : null]
+               .filter(Boolean).join(' · '); })(),
+      dpSummary:(D.packDetail || {}).summary || '',
+      dpLogo:(D.packDetail || {}).logo || '',
+      dpHasLogo:!!(D.packDetail || {}).logo,
+      dpNoLogo:!(D.packDetail || {}).logo,
+      dpInitials:((D.packDetail || {}).name || '?')
+        .replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || '?',
       setupBd:S.packOpen ? 'rgba(255,107,53,.4)' : 'rgba(255,255,255,.07)',
       newName:S.newName, setNewName:e => this.setState({ newName:e.target.value }),
       newPort:S.newPort, setNewPort:e => this.setState({ newPort:e.target.value }),
