@@ -30,9 +30,11 @@ export are all verified end to end against them (§5D).
 | Tests | **137 checks** — 98 offline Python, 39 in a real browser (§9) |
 | Servers in Crafty | **five**, §5D and §5F. `Perfect World` :25565 (NeoForge, 100), `Cozy Experience` :25566 (Fabric, 245), `Lucky Dip` :25567 (rolled, 44), `Roulette RB5-YR9-BC` :25568 (rolled, 72), `Tensura` :25569 (Forge 1.19.2, 223 — will not boot here, §5F) |
 
-**Committed on branch `rebuild/ui-and-mod-roulette`**, not merged and not
-pushed; `main` is untouched. The container runs the local tree, not GHCR, so
-merging is a separate decision from deploying.
+**Merged into `main`** on 2026-08-29 (fast-forward from
+`rebuild/ui-and-mod-roulette`, 20 commits). **Not pushed** — `origin/main` is
+still at `207d0ae`, and pushing is what triggers the GHCR build, so it is a
+deliberate separate step. The container here runs the local tree, not GHCR, so
+deploying and publishing remain independent.
 
 **What to read first:** `NEXT-SESSION.md` — a line-by-line review of what is
 finished, what is unproven, and what is worth tidying. Then §4 for how the
