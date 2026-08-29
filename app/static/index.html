@@ -320,21 +320,21 @@
       <sc-if value="{{ isDiagnose }}">
         <div data-screen-label="Diagnose" style="padding:16px 18px 40px; max-width:1180px; animation:bfRise var(--animdur) both;">
 
-          <section style="position:relative; padding:15px 16px; background:linear-gradient(180deg,rgba(255,59,92,.09),rgba(255,59,92,.02)); border:1px solid rgba(255,59,92,.3); border-radius:3px; overflow:hidden; animation:bfCrit 3.6s ease-in-out infinite;">
-            <div style="position:absolute; top:0; left:0; width:26%; height:1px; background:linear-gradient(90deg,transparent,#FF3B5C,transparent); animation:bfScan 4.2s linear infinite;"></div>
+          <section style="position:relative; padding:15px 16px; background:{{ rootBg }}; border:1px solid {{ rootBd }}; border-radius:3px; overflow:hidden; animation:{{ rootAnim }};">
+            <div style="position:absolute; top:0; left:0; width:26%; height:1px; background:linear-gradient(90deg,transparent,{{ rootTone }},transparent); animation:bfScan 4.2s linear infinite;"></div>
             <div style="display:flex; align-items:flex-start; gap:12px;">
-              <div style="flex:0 0 auto; display:grid; place-items:center; width:34px; height:34px; background:rgba(255,59,92,.14); border:1px solid rgba(255,59,92,.4);">
-                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; color:#FF3B5C;">{{ rootGlyph }}</span>
+              <div style="flex:0 0 auto; display:grid; place-items:center; width:34px; height:34px; background:{{ rootChipBg }}; border:1px solid {{ rootChipBd }};">
+                <span style="font-family:'JetBrains Mono',monospace; font-size:15px; color:{{ rootTone }};">{{ rootGlyph }}</span>
               </div>
               <div style="min-width:0; flex:1;">
                 <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                  <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.14em; color:#FF3B5C;">{{ rootLabel }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.14em; color:{{ rootTone }};">{{ rootLabel }}</span>
                   <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#8C8F96; letter-spacing:.06em;">{{ rootConfGlyph }}</span>
                 </div>
                 <h1 style="margin:6px 0 0; font-size:19px; font-weight:700; letter-spacing:-.03em; line-height:1.25; text-wrap:pretty;">{{ rootTitle }}</h1>
                 <p style="margin:7px 0 0; font-size:12.5px; color:#B3AFAB; line-height:1.6; max-width:78ch; text-wrap:pretty;">{{ rootDetail }}</p>
               </div>
-              <button onClick="{{ actFixRoot }}" style="flex:0 0 auto; padding:9px 14px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12.5px; font-weight:700; cursor:pointer; transition:filter .16s;" style-hover="filter:brightness(1.12);">{{ rootFix }}</button>
+              <sc-if value="{{ rootFix }}"><button onClick="{{ actFixRoot }}" style="flex:0 0 auto; padding:9px 14px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12.5px; font-weight:700; cursor:pointer; transition:filter .16s;" style-hover="filter:brightness(1.12);">{{ rootFix }}</button></sc-if>
             </div>
           </section>
 
@@ -2778,6 +2778,9 @@ class Component extends DCLogic {
     /* --- needs you ------------------------------------------------------ */
     const findings = ((D.diag && D.diag.findings) || []);
     const rootF = findings[0] || {};
+    const rootC = !findings.length ? '#56D9A3'
+      : rootF.severity === 'warning' ? '#FFC44D'
+      : rootF.severity === 'info' ? '#7AA7FF' : '#FF3B5C';
     const needs = [];
     D.fleet.forEach(s => {
       if (s.st === 'orphan') needs.push({ t:s.name + ' has no files on disk',
@@ -3204,8 +3207,16 @@ class Component extends DCLogic {
            + 'looked at.')
         : (rootF.detail || ''),
       rootFix:findings.length && this.fixLabel(rootF) ? this.fixLabel(rootF) : '',
-      rootTone:!findings.length ? '#56D9A3'
-        : (rootF.severity === 'warning' ? '#FFC44D' : '#FF3B5C'),
+      // The hero is the worst thing BlessForge knows. When that is nothing,
+      // it must stop looking like an emergency -- the canvas painted it red
+      // and pulsed it unconditionally.
+      rootTone:rootC,
+      rootBg:'linear-gradient(180deg,' + rootC + '17,' + rootC + '05)',
+      rootBd:rootC + '4D',
+      rootChipBg:rootC + '24',
+      rootChipBd:rootC + '66',
+      rootAnim:findings.length && rootF.severity !== 'info'
+        ? 'bfCrit 3.6s ease-in-out infinite' : 'none',
       actFixRoot:() => { if (!findings.length) return this.toast('Nothing needs fixing.', 'ok');
         if (rootF.fix) this.applyFix(rootF);
         else this.toast('This one has no one-click fix — open it for the evidence.', 'info'); },
