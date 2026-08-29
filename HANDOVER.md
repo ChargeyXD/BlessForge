@@ -34,8 +34,10 @@ export are all verified end to end against them (§5D).
 pushed; `main` is untouched. The container runs the local tree, not GHCR, so
 merging is a separate decision from deploying.
 
-**What to read first:** §4 for how the front end is built now (it is nothing
-like what §4 said before), §5D for what was verified and what it cost, and
+**What to read first:** `NEXT-SESSION.md` — a line-by-line review of what is
+finished, what is unproven, and what is worth tidying. Then §4 for how the
+front end is built (it is nothing like what §4 said before), §5D for what was
+verified and what it cost, and
 `design/README.md` for the places the design asserted something untrue about
 this app. Those corrections are marked `DESIGN:` in the code.
 
@@ -214,6 +216,13 @@ diffs the two and is the fastest way to catch one you forgot.
   as `[object Object]`.
 - **A `<select>` nested inside an outer `<sc-for>` is dropped entirely.** Each
   one has to own the only loop in its subtree.
+- **A static element's `onClick` is bound once and never rebound.** Attribute
+  bindings update on every render; handlers do not, so a handler that closes
+  over a render-time value keeps using the first one forever. Handlers on
+  static elements must read `this.state` or ask the server. `<sc-for>` rows do
+  get fresh closures. This one produced a bug that looked like a backend
+  fault — suspect it whenever a control does nothing, or does the same thing
+  twice.
 
 **Offline by design.** This box is usually on a LAN with no route out, so
 `react@18.3.1` + `react-dom` and both Google fonts are vendored under
