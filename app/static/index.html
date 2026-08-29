@@ -285,6 +285,14 @@
                 <button onClick="{{ actSwitchRelease }}" style="flex:1; padding:7px; background:#1A1D22; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:500; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">Switch release</button>
                 <button onClick="{{ actReimport }}" style="flex:1; padding:7px; background:#1A1D22; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:500; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">Re-import export</button>
               </div>
+              <sc-if value="{{ hasExport }}">
+                <a href="{{ exportUrl }}" download style="display:flex; align-items:center; gap:7px; margin-top:8px; padding:8px 10px; background:rgba(255,107,53,.10); border:1px solid rgba(255,107,53,.42); border-radius:2px; color:#FFD3C0; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:600; text-decoration:none; transition:all .16s;" style-hover="background:rgba(255,107,53,.18);">
+                  <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--ember,#FF6B35);">&#8681;</span>
+                  <span style="flex:1; min-width:0;">Download the CurseForge export
+                    <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:400; color:#C29A87; margin-top:2px;">{{ exportNote }}</span>
+                  </span>
+                </a>
+              </sc-if>
               <div style="display:flex; gap:6px; margin-top:8px; padding:7px 8px; background:rgba(255,196,77,.07); border-left:2px solid #FFC44D;">
                 <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#FFC44D;">▲</span>
                 <span style="font-size:11px; color:#C6BC9E; line-height:1.5;">Either one keeps the world and replaces every mod and config file.</span>
@@ -346,7 +354,10 @@
                 <span style="position:absolute; left:6px; right:6px; bottom:-1px; height:2px; background:var(--ember,#FF6B35); transform:scaleX({{ d.on }}); transform-origin:left; transition:transform .22s cubic-bezier(.2,.8,.2,1);"></span>
               </button>
             </sc-for>
-            <button onClick="{{ actDeepScan }}" style="margin-left:auto; margin-bottom:4px; padding:6px 11px; background:#1A1D22; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#D5D3D0; font-family:'JetBrains Mono',monospace; font-size:10px; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">Deep dependency scan</button>
+            <span style="margin-left:auto; margin-bottom:4px; display:flex; align-items:center; gap:7px;">
+              <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#5F6269;">{{ checksWhen }}</span>
+              <button onClick="{{ actRecheck }}" style="padding:6px 11px; background:#1A1D22; border:1px solid rgba(255,255,255,.12); border-radius:2px; color:#D5D3D0; font-family:'JetBrains Mono',monospace; font-size:10.5px; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">{{ recheckLabel }}</button>
+            </span>
           </nav>
 
           <sc-if value="{{ isChecks }}" hint-placeholder-val="{{ true }}">
@@ -433,6 +444,55 @@
             </div>
           </sc-if>
 
+          <sc-if value="{{ isScan }}">
+            <div style="animation:bfFade .25s both;">
+              <section style="padding:14px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
+                <div style="display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+                  <div style="min-width:0; flex:1;">
+                    <h2 style="margin:0; font-size:13px; font-weight:600;">Deep dependency scan</h2>
+                    <p style="margin:6px 0 0; font-size:12px; color:#9C9EA4; line-height:1.6; max-width:76ch; text-wrap:pretty;">Reads every enabled jar, including the ones bundled inside other jars, and checks that everything each mod requires is actually provided. Slower than the health checks because it downloads the jars; run it when the loader is complaining about dependencies.</p>
+                  </div>
+                  <button onClick="{{ actDeepScan }}" style="flex:0 0 auto; padding:8px 14px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12.5px; font-weight:700; cursor:pointer; transition:filter .16s;" style-hover="filter:brightness(1.12);">{{ scanLabel }}</button>
+                </div>
+                <sc-if value="{{ scanRan }}">
+                  <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:1px; margin-top:14px; background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.07);">
+                    <sc-for list="{{ scanStats }}" as="k" hint-placeholder-count="5">
+                      <div style="padding:9px 10px; background:#15181C;">
+                        <div style="font-family:'JetBrains Mono',monospace; font-size:8.5px; letter-spacing:.12em; color:#6A6D74; text-transform:uppercase;">{{ k.k }}</div>
+                        <div style="font-family:'JetBrains Mono',monospace; font-size:16px; font-weight:500; color:{{ k.c }}; margin-top:4px; font-variant-numeric:tabular-nums;">{{ k.v }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                  <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74; margin-top:9px; line-height:1.6;">{{ scanNote }}</div>
+                </sc-if>
+              </section>
+
+              <sc-if value="{{ scanClean }}">
+                <div style="display:flex; gap:8px; margin-top:12px; padding:11px 12px; background:rgba(86,217,163,.07); border-left:2px solid #56D9A3;">
+                  <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#56D9A3;">&#10003;</span>
+                  <span style="font-size:12px; color:#A7DCC6; line-height:1.55;">Every mandatory dependency is satisfied, nothing is loaded twice, and every jar was readable.</span>
+                </div>
+              </sc-if>
+
+              <div style="margin-top:12px;">
+                <sc-for list="{{ scanClaims }}" as="c" hint-placeholder-count="3">
+                  <section style="position:relative; margin-bottom:8px; padding:12px 13px; background:#121417; border:1px solid {{ c.bd }}; border-left:2px solid {{ c.tone }}; border-radius:3px; animation:bfRow var(--animdur) both; animation-delay:{{ c.d }};">
+                    <div style="display:flex; align-items:flex-start; gap:10px;">
+                      <span style="flex:0 0 auto; font-family:'JetBrains Mono',monospace; font-size:11px; color:{{ c.tone }};">{{ c.toneGlyph }}</span>
+                      <div style="min-width:0; flex:1;">
+                        <div style="font-size:12.5px; font-weight:600;">{{ c.title }}</div>
+                        <div style="font-size:11.5px; color:#9C9EA4; margin-top:4px; line-height:1.55;">{{ c.detail }}</div>
+                      </div>
+                      <sc-if value="{{ c.fix }}">
+                        <button onClick="{{ c.act }}" style="flex:0 0 auto; padding:5px 10px; background:{{ c.fixBg }}; border:1px solid {{ c.fixBd }}; border-radius:2px; color:{{ c.fixCol }}; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:600; cursor:pointer;">{{ c.fix }}</button>
+                      </sc-if>
+                    </div>
+                  </section>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
           <sc-if value="{{ isAi }}">
             <div style="animation:bfFade .25s both;">
               <div data-bf-2col="" style="display:grid; grid-template-columns:minmax(300px,1.25fr) minmax(280px,1fr); gap:12px;">
@@ -441,6 +501,11 @@
                     <span style="display:grid; place-items:center; width:20px; height:20px; background:rgba(199,125,255,.12); border:1px solid rgba(199,125,255,.4); font-family:'JetBrains Mono',monospace; font-size:10px; color:#C77DFF;">◆</span>
                     <span style="font-size:12.5px; font-weight:600;">Assistant</span>
                     <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74;">{{ aiEndpoint }}</span>
+                    <span style="margin-left:auto; display:flex; gap:2px; padding:2px; background:#0E1013; border:1px solid rgba(255,255,255,.07); border-radius:2px;">
+                      <sc-for list="{{ aiEndpointOpts }}" as="e" hint-placeholder-count="2">
+                        <button onClick="{{ e.pick }}" title="{{ e.note }}" style="padding:4px 9px; background:{{ e.bg }}; border:0; border-radius:1px; color:{{ e.col }}; font-family:'JetBrains Mono',monospace; font-size:9.5px; cursor:pointer; transition:all .16s;" style-hover="color:#ECEAE7;">{{ e.t }}</button>
+                      </sc-for>
+                    </span>
                     <span style="margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:{{ aiStatusCol }};">{{ aiStatus }}</span>
                   </div>
                   <div style="min-height:214px; padding:11px 2px 0;">
@@ -523,7 +588,7 @@
                   <button onClick="{{ m.toggleSel }}" style="width:13px; height:13px; flex:0 0 13px; display:grid; place-items:center; background:{{ m.cbBg }}; border:1px solid {{ m.cbBd }}; border-radius:1px; cursor:pointer; padding:0; transition:all .14s;">
                     <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#140A05; opacity:{{ m.cbOp }};">✓</span>
                   </button>
-                  <div style="width:24px; height:24px; flex:0 0 24px; display:grid; place-items:center; background:#1A1D22; border:1px solid rgba(255,255,255,.08); font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; color:{{ m.iconCol }}; overflow:hidden;">{{ m.initials }}</div>
+                  <div style="width:24px; height:24px; flex:0 0 24px; display:grid; place-items:center; background:#1A1D22; border:1px solid rgba(255,255,255,.08); font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; color:{{ m.iconCol }}; overflow:hidden;"><sc-if value="{{ m.hasLogo }}"><img src="{{ m.logo }}" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover;" /></sc-if><sc-if value="{{ m.noLogo }}">{{ m.initials }}</sc-if></div>
                   <div style="min-width:118px; flex:1 1 170px; display:flex; flex-direction:column; gap:1px; overflow:hidden;">
                     <span style="font-size:12.5px; font-weight:500; color:{{ m.nameCol }}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:-.005em;">{{ m.n }}</span>
                     <span style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#63666C; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ m.j }}</span>
@@ -540,7 +605,7 @@
                   <button onClick="{{ m.toggleOn }}" title="{{ m.onTip }}" style="flex:0 0 30px; width:30px; height:16px; position:relative; background:{{ m.swBg }}; border:1px solid {{ m.swBd }}; border-radius:9px; cursor:pointer; padding:0; transition:all .18s;">
                     <span style="position:absolute; top:1px; left:{{ m.swX }}; width:12px; height:12px; border-radius:50%; background:{{ m.swKnob }}; transition:left .18s cubic-bezier(.2,.8,.2,1);"></span>
                   </button>
-                  <button onClick="{{ m.act }}" style="flex:0 0 auto; padding:2px 5px; background:transparent; border:0; color:#5F6269; font-family:'JetBrains Mono',monospace; font-size:12px; cursor:pointer; transition:color .15s;" style-hover="color:#ECEAE7;">⋯</button>
+                  <button onClick="{{ m.act }}" title="More" style="flex:0 0 auto; padding:2px 5px; background:transparent; border:0; color:{{ m.menuCol }}; font-family:'JetBrains Mono',monospace; font-size:12px; cursor:pointer; transition:color .15s;" style-hover="color:#ECEAE7;">⋯</button>
                 </div>
               </sc-for>
               <sc-if value="{{ modsEmpty }}">
@@ -574,6 +639,7 @@
                 </button>
               </sc-for>
             </div>
+            <div data-bf-addscroll="" style="max-height:calc(100vh - 320px); overflow-y:auto; margin:0 -2px; padding:0 2px;">
             <sc-for list="{{ addResults }}" as="r" hint-placeholder-count="4">
               <div style="padding:8px 9px; margin-bottom:4px; background:#171A1F; border:1px solid rgba(255,255,255,.06); border-radius:2px; animation:bfRow .3s both; animation-delay:{{ r.d }};">
                 <div style="display:flex; align-items:center; gap:7px;">
@@ -593,6 +659,7 @@
                 </div>
               </div>
             </sc-for>
+            </div>
             <div style="font-family:'JetBrains Mono',monospace; font-size:9px; color:#5F6269; margin-top:8px; line-height:1.6;">Installing takes dependencies with it. Version pinning is one click in ⋯.</div>
           </aside>
         </div>
@@ -620,8 +687,14 @@
                 <span style="position:absolute; left:6px; right:6px; bottom:-1px; height:2px; background:var(--ember,#FF6B35); transform:scaleX({{ t.on }}); transform-origin:left; transition:transform .22s cubic-bezier(.2,.8,.2,1);"></span>
               </button>
             </sc-for>
-            <span style="margin-left:auto; align-self:center; padding-bottom:4px; display:flex; align-items:center; gap:6px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#FFC44D;">
-              <span style="width:5px; height:5px; background:#FFC44D; animation:bfBreathe 2s ease-in-out infinite;"></span>{{ dirtyLabel }}
+            <span style="margin-left:auto; align-self:center; padding-bottom:4px; display:flex; align-items:center; gap:9px;">
+              <span style="display:flex; align-items:center; gap:6px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:{{ dirtyCol }};">
+                <sc-if value="{{ isDirty }}"><span style="width:5px; height:5px; background:#FFC44D; animation:bfBreathe 2s ease-in-out infinite;"></span></sc-if>{{ dirtyLabel }}
+              </span>
+              <sc-if value="{{ isDirty }}">
+                <button onClick="{{ tuneRevert }}" style="padding:5px 10px; background:transparent; border:1px solid rgba(255,255,255,.12); border-radius:2px; color:#B3AFAB; font-family:'Space Grotesk',sans-serif; font-size:11.5px; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,255,255,.28); color:#fff;">Discard</button>
+                <button onClick="{{ tuneSave }}" style="padding:5px 12px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:700; cursor:pointer; transition:filter .16s;" style-hover="filter:brightness(1.12);">{{ tuneSaveLabel }}</button>
+              </sc-if>
             </span>
           </nav>
 
@@ -779,11 +852,11 @@
               </sc-for>
             </div>
             <span style="margin-left:auto; display:flex; align-items:center; gap:8px;">
-              <span style="display:flex; align-items:center; gap:5px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:var(--ember,#FF6B35);"><span style="font-size:8px;">▼</span>following</span>
+              <button onClick="{{ conFollowToggle }}" title="{{ conFollowTip }}" style="display:flex; align-items:center; gap:5px; padding:4px 8px; background:{{ conFollowBg }}; border:1px solid {{ conFollowBd }}; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:{{ conFollowCol }}; cursor:pointer; transition:all .16s;"><span style="font-size:8px;">▼</span>{{ conFollowLabel }}</button>
               <button onClick="{{ conClear }}" style="padding:4px 9px; background:transparent; border:1px solid rgba(255,255,255,.12); border-radius:2px; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:9.5px; cursor:pointer;">clear</button>
             </span>
           </div>
-          <div style="flex:1; min-height:280px; overflow-y:auto; padding:10px 12px; background:#08090B; border-left:1px solid rgba(255,255,255,.07); border-right:1px solid rgba(255,255,255,.07); font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.75;">
+          <div id="bfConsole" onScroll="{{ conScroll }}" style="flex:1; min-height:280px; overflow-y:auto; padding:10px 12px; background:#08090B; border-left:1px solid rgba(255,255,255,.07); border-right:1px solid rgba(255,255,255,.07); font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.75;">
             <sc-for list="{{ conLines }}" as="l" hint-placeholder-count="8">
               <div style="display:flex; gap:9px; animation:bfLog .3s both;">
                 <span style="flex:0 0 34px; text-align:right; color:#2E3238; user-select:none;">{{ l.i }}</span>
@@ -822,7 +895,10 @@
               <sc-for list="{{ cfgFiles }}" as="c" hint-placeholder-count="9">
                 <button onClick="{{ c.pick }}" style="display:flex; align-items:center; gap:7px; width:100%; text-align:left; padding:7px 10px; background:{{ c.bg }}; border:0; border-left:2px solid {{ c.edge }}; cursor:pointer; animation:bfRow .3s both; animation-delay:{{ c.d }}; transition:background .14s;" style-hover="background:#191C21;">
                   <span style="flex:0 0 auto; font-family:'JetBrains Mono',monospace; font-size:9px; color:{{ c.extCol }};">{{ c.ext }}</span>
-                  <span style="flex:1; min-width:0; font-family:'JetBrains Mono',monospace; font-size:10.5px; color:{{ c.col }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left;">{{ c.p }}</span>
+                  <span style="flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; overflow:hidden;" title="{{ c.p }}">
+                    <span style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:{{ c.col }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ c.name }}</span>
+                    <sc-if value="{{ c.dir }}"><span style="font-family:'JetBrains Mono',monospace; font-size:8.5px; color:#5F6269; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left;">{{ c.dir }}</span></sc-if>
+                  </span>
                   <sc-if value="{{ c.dirty }}"><span style="flex:0 0 auto; width:5px; height:5px; border-radius:50%; background:#FFC44D;"></span></sc-if>
                 </button>
               </sc-for>
@@ -850,15 +926,11 @@
                 <button onClick="{{ edSave }}" disabled="{{ edClean }}" style="padding:5px 12px; background:{{ edSaveBg }}; border:0; border-radius:2px; color:{{ edSaveCol }}; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:700; cursor:{{ edSaveCur }}; transition:all .16s;">Save</button>
               </span>
             </div>
-            <div style="display:flex; min-height:300px; max-height:56vh; overflow:auto; background:#08090B;">
-              <div style="flex:0 0 44px; padding:10px 0; background:#0C0D10; border-right:1px solid rgba(255,255,255,.06); font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75; color:#3A3E45; text-align:right; user-select:none;">
+            <div style="display:flex; min-height:300px; height:56vh; overflow:hidden; background:#08090B;">
+              <div id="bfGutter" style="flex:0 0 44px; padding:10px 0; background:#0C0D10; border-right:1px solid rgba(255,255,255,.06); font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75; color:#3A3E45; text-align:right; user-select:none; overflow:hidden;">
                 <sc-for list="{{ edLines }}" as="l" hint-placeholder-count="16"><div style="padding-right:9px;">{{ l.n }}</div></sc-for>
               </div>
-              <div style="flex:1; min-width:0; padding:10px 12px; font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75;">
-                <sc-for list="{{ edLines }}" as="l" hint-placeholder-count="16">
-                  <div style="white-space:pre; color:{{ l.c }}; background:{{ l.bg }};">{{ l.t }}</div>
-                </sc-for>
-              </div>
+              <textarea id="bfEditor" onInput="{{ setEdText }}" onScroll="{{ edScroll }}" spellcheck="false" wrap="off" disabled="{{ edReadOnly }}" placeholder="{{ edPlaceholder }}" style="flex:1; min-width:0; padding:10px 12px; background:transparent; border:0; outline:none; resize:none; color:#C6C3BF; font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.75; white-space:pre; overflow:auto;">{{ edText }}</textarea>
             </div>
             <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:8px 12px; background:#0E1013; border-top:1px solid rgba(255,255,255,.07); font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74;">
               <span>{{ edCursor }}</span>
@@ -1240,9 +1312,11 @@
                     </button>
                   </sc-for>
                 </div>
+                <sc-if value="{{ canLoadMore }}">
                 <button onClick="{{ loadMore }}" style="display:flex; align-items:center; justify-content:center; gap:8px; width:100%; margin-top:9px; padding:11px; background:transparent; border:1px dashed rgba(255,255,255,.14); border-radius:2px; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:10.5px; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:var(--ember,#FF6B35);">
                   <img src="assets/fox-loading.gif" alt="" style="height:16px; width:auto; opacity:.7;" />{{ loadMoreLabel }}
                 </button>
+                </sc-if>
               </div>
             </sc-if>
 
@@ -1360,7 +1434,7 @@
         </div>
       </div>
 
-      <div style="flex:1; min-height:120px; overflow-y:auto; padding:10px 12px; background:#08090B; font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.7;">
+      <div id="bfJobLog" style="flex:1; min-height:120px; overflow-y:auto; padding:10px 12px; background:#08090B; font-family:'JetBrains Mono',monospace; font-size:10.5px; line-height:1.7;">
         <sc-for list="{{ jobLog }}" as="l" hint-placeholder-count="6">
           <div style="display:flex; gap:8px; padding:1px 0; animation:bfLog .3s both;">
             <span style="flex:0 0 9px; color:{{ l.c }};">{{ l.g }}</span>
@@ -1537,6 +1611,53 @@
       <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:{{ tCol }}; line-height:1.4;">{{ tGlyph }}</span>
       <span style="flex:1; font-size:12px; color:#D5D3D0; line-height:1.5; text-wrap:pretty;">{{ tMsg }}</span>
       <button onClick="{{ tClose }}" style="flex:0 0 auto; background:transparent; border:0; color:#63666C; font-family:'JetBrains Mono',monospace; font-size:12px; cursor:pointer; padding:0;">×</button>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ menuOpen }}">
+    <div onClick="{{ menuClose }}" style="position:absolute; inset:0; z-index:75; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(6,7,8,.72); backdrop-filter:blur(3px); animation:bfFade .16s both;">
+      <div style="width:100%; max-width:430px; background:#121417; border:1px solid rgba(255,255,255,.13); border-radius:4px; overflow:hidden; box-shadow:0 30px 70px -22px rgba(0,0,0,.85); animation:bfRise .22s both;">
+        <div style="padding:12px 14px; border-bottom:1px solid rgba(255,255,255,.07);">
+          <div style="font-size:13.5px; font-weight:600;">{{ menuTitle }}</div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74; margin-top:3px; word-break:break-all;">{{ menuSub }}</div>
+        </div>
+        <sc-for list="{{ menuRows }}" as="o" hint-placeholder-count="5">
+          <button onClick="{{ o.act }}" style="display:block; width:100%; text-align:left; padding:10px 14px; background:transparent; border:0; border-bottom:1px solid rgba(255,255,255,.045); cursor:pointer; transition:background .14s;" style-hover="background:#191C21;">
+            <div style="font-size:12.5px; font-weight:500; color:{{ o.col }};">{{ o.t }}</div>
+            <div style="font-size:10.5px; color:#8C8F96; margin-top:2px; line-height:1.5;">{{ o.d }}</div>
+          </button>
+        </sc-for>
+        <button onClick="{{ menuClose }}" style="display:block; width:100%; padding:9px; background:#1A1D22; border:0; color:#8C8F96; font-family:'Space Grotesk',sans-serif; font-size:12px; cursor:pointer;">Close</button>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ pickerOpen }}">
+    <div onClick="{{ pickerClose }}" style="position:absolute; inset:0; z-index:76; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(6,7,8,.72); backdrop-filter:blur(3px); animation:bfFade .16s both;">
+      <div style="width:100%; max-width:560px; max-height:76vh; display:flex; flex-direction:column; background:#121417; border:1px solid rgba(255,255,255,.13); border-radius:4px; overflow:hidden; box-shadow:0 30px 70px -22px rgba(0,0,0,.85); animation:bfRise .22s both;">
+        <div style="padding:12px 14px; border-bottom:1px solid rgba(255,255,255,.07);">
+          <div style="font-size:13.5px; font-weight:600;">{{ pickerTitle }}</div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74; margin-top:3px;">{{ pickerSub }}</div>
+        </div>
+        <div style="flex:1; overflow-y:auto;">
+          <sc-if value="{{ pickerLoading }}">
+            <div style="padding:26px; text-align:center; font-family:'JetBrains Mono',monospace; font-size:10.5px; color:#8C8F96;">reading the catalogue&#8230;</div>
+          </sc-if>
+          <sc-for list="{{ pickerRows }}" as="v" hint-placeholder-count="6">
+            <button onClick="{{ v.act }}" style="display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:9px 14px; background:{{ v.bg }}; border:0; border-bottom:1px solid rgba(255,255,255,.045); cursor:pointer; transition:background .14s;" style-hover="background:#191C21;">
+              <span style="min-width:0; flex:1;">
+                <span style="display:block; font-size:12px; font-weight:500; color:#E4E2DF; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ v.n }}</span>
+                <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9px; color:#6A6D74; margin-top:2px;">{{ v.meta }}</span>
+              </span>
+              <span style="flex:0 0 auto; padding:1px 6px; background:{{ v.chBg }}; font-family:'JetBrains Mono',monospace; font-size:8.5px; letter-spacing:.06em; color:{{ v.chCol }};">{{ v.ch }}</span>
+            </button>
+          </sc-for>
+          <sc-if value="{{ pickerEmpty }}">
+            <div style="padding:26px; text-align:center; font-size:11.5px; color:#8C8F96;">No build of this mod matches this instance.</div>
+          </sc-if>
+        </div>
+        <button onClick="{{ pickerClose }}" style="padding:9px; background:#1A1D22; border:0; border-top:1px solid rgba(255,255,255,.07); color:#8C8F96; font-family:'Space Grotesk',sans-serif; font-size:12px; cursor:pointer;">Cancel</button>
+      </div>
     </div>
   </sc-if>
 
@@ -1751,6 +1872,8 @@ class Component extends DCLogic {
     releaseIdx:0, newName:'', newPort:'',
     setup:{ official:true, review:true, tune:true },
     reviewSel:{}, cfTyped:'', dSub:'catalogue',
+    menu:null, picker:null, checkedAt:null,
+    dVer:null, dLoader:null, dCat:null, dSort:2,
     cfgPath:'', cfgNext:'', cfgDraft:{}, cfgDirty:{},
     actFilter:'all', importing:false, upPct:0, upName:'',
     heap:null, propDraft:{}, follow:true,
@@ -1765,8 +1888,10 @@ class Component extends DCLogic {
         mods:null, configs:null, cfgBody:{}, jobs:[], optimize:null, props:null,
         port:null, packs:null, releases:null, host:null, preflight:null,
         console:[], addResults:null, updates:null, deps:null, uploads:[],
-        rmeta:null, pool:null, roll:null, versions:[], aiText:'', aiActions:[],
-        aiMeta:null, packDetail:null },
+        rmeta:null, pool:null, roll:null, versions:[], cats:null,
+        aiEndpoints:null,
+        aiText:'', aiActions:[],
+        aiMeta:null, packDetail:null, scan:null, whitelist:[] },
     busy:{},          // key -> true while a fetch or an action is in flight
     err:{},           // key -> the last error for that key
     job:null,         // the job the drawer is showing
@@ -1815,6 +1940,8 @@ class Component extends DCLogic {
       api('/api/ai/status').catch(() => ({ available:false, reason:'unreachable' }))
     ]);
     this.setD({ health:h, ai });
+    if (!this.state.d.aiEndpoints)
+      this.load('aiEndpoints', '/api/ai/endpoints');
   }
 
   async loadFleet() {
@@ -1871,7 +1998,16 @@ class Component extends DCLogic {
   loadFor(view, sid) {
     const id = sid || this.state.sid;
     if (view === 'discover') {
-      if (this.state.dSub === 'catalogue' && !this.state.d.packs) this.searchPacks('');
+      if (this.state.dSub === 'catalogue' && !this.state.d.packs) {
+        this.searchPacks('');
+        // The filter lists are the catalogue's own, not a guess.
+        if (!this.state.d.versions.length)
+          this.load('versions', '/api/meta/minecraft-versions',
+            r => (r.items || []).map(v => typeof v === 'string' ? v : (v.version || v.name))
+                                .filter(Boolean));
+        if (!this.state.d.cats)
+          this.load('cats', '/api/meta/categories?kind=modpacks', r => r.items || []);
+      }
       if (this.state.dSub === 'import') this.load('uploads', '/api/uploads', r => r.items || []);
       if (this.state.dSub === 'roulette') this.loadRouletteMeta();
       return;
@@ -1880,7 +2016,9 @@ class Component extends DCLogic {
     if (view === 'diagnose' || view === 'situation') {
       // Situation's "needs you" list is the same findings, ranked. It is the
       // landing screen, so this is the one call worth making eagerly.
-      if (!this.state.d.diag) this.load('diag', '/api/instances/' + id + '/diagnose');
+      if (!this.state.d.diag)
+        this.load('diag', '/api/instances/' + id + '/diagnose')
+          .then(() => this.setState({ checkedAt:Date.now() }));
       if (view === 'situation' && !this.state.d.port)
         this.load('port', '/api/instances/' + id + '/port');
     }
@@ -1888,7 +2026,10 @@ class Component extends DCLogic {
       this.load('diag', '/api/instances/' + id + '/diagnose');
     } else if (view === 'mods') {
       this.load('mods', '/api/instances/' + id + '/mods');
-      this.load('updates', '/api/instances/' + id + '/mods/updates');
+      // Updates are NOT fetched here. check_updates asks the catalogue about
+      // every identified mod, so opening the tab on a 200-mod pack was 200
+      // requests and a visible stall -- for an answer nobody had asked for.
+      // "check for updates" is a button.
     } else if (view === 'configs') {
       this.load('configs', '/api/instances/' + id + '/configs', r => r.files || [])
         .then(files => {
@@ -1960,7 +2101,7 @@ class Component extends DCLogic {
         if (e.result) j.result = e.result;
         if (e.error) j.error = e.error;
         return { job:j };
-      });
+      }, () => this.stickBottom('bfJobLog'));
       // Only the explicit `end` closes the stream: a job also emits a final
       // step whose status already reads done, and treating that as the end
       // closes the connection one frame before the result arrives.
@@ -1990,7 +2131,8 @@ class Component extends DCLogic {
     this.setD({ console:[] });
     api('/api/instances/' + id + '/console').then(r => {
       const lines = (r.lines || []).map(t => this.conLine(t));
-      this.setD({ console:lines });
+      this.setState(s => ({ d:{ ...s.d, console:lines } }),
+                    () => this.stickBottom('bfConsole'));
     }).catch(e => this.setState(s => ({ err:{ ...s.err, console:e.message } })));
     // DESIGN: the canvas labels this "websocket · 41 ms". Crafty exposes no
     // push channel at all -- the backend polls it and forwards new lines over
@@ -2002,9 +2144,21 @@ class Component extends DCLogic {
       const add = e.lines || (e.line ? [e.line] : []);
       if (!add.length) return;
       this.setState(s => ({ d:{ ...s.d,
-        console:s.d.console.concat(add.map(t => this.conLine(t))).slice(-2000) } }));
+        console:s.d.console.concat(add.map(t => this.conLine(t))).slice(-2000) } }),
+        () => { if (this.state.follow) this.stickBottom('bfConsole'); });
     };
   }
+  /** Pin a pane to its newest line.
+
+      Called after a render rather than during one: the DOM has to have the new
+      lines in it before scrollHeight means anything. */
+  stickBottom(id) {
+    requestAnimationFrame(() => {
+      const el = document.getElementById(id);
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }
+
   closeConsole() { if (this._ces) { try { this._ces.close(); } catch (e) {} this._ces = null; } }
 
   conLine(t) {
@@ -2022,7 +2176,8 @@ class Component extends DCLogic {
         e.preventDefault(); this.setState(s => ({ paletteOpen:!s.paletteOpen }));
       }
       if (e.key === 'Escape') this.setState({ paletteOpen:false, reviewOpen:false,
-                                              confirmOpen:false, packOpen:false });
+                                              confirmOpen:false, packOpen:false,
+                                              menu:null, picker:null });
     };
     window.addEventListener('keydown', this._key);
 
@@ -2061,9 +2216,10 @@ class Component extends DCLogic {
     if (was.sid !== S.sid && S.sid) {
       this.setD({ inst:null, diag:null, crash:null, mods:null, configs:null,
                   optimize:null, props:null, port:null, console:[], updates:null,
-                  aiText:'', aiActions:[] });
+                  aiText:'', aiActions:[], scan:null });
       this.setState({ sel:[], modOn:{}, flagOn:{}, propDraft:{}, cfgPath:'',
-                      cfgDraft:{}, cfgDirty:{}, heap:null });
+                      cfgDraft:{}, cfgDirty:{}, heap:null, checkedAt:null,
+                      menu:null, picker:null });
       this.loadInstance(S.sid);
     }
     this.loadFor(S.view);
@@ -2231,6 +2387,105 @@ class Component extends DCLogic {
     this.setBusy('add:' + m.id, false);
   }
 
+  /** The row menu. The canvas drew the button; this is what it opens. */
+  modMenu(m) {
+    const raw = m.raw || {};
+    const id = this.state.sid;
+    const rows = [];
+
+    rows.push({ t:m.on ? 'Disable this mod' : 'Enable this mod',
+      d:m.on ? 'Renamed to .jar.disabled. The jar stays on disk.'
+             : 'Renamed back. Takes effect on the next start.',
+      act:() => this.modToggle(m.j, !m.on) });
+
+    if (raw.project_id) rows.push({ t:'Change version',
+      d:'Pick a different build of this mod for ' + ((this.state.d.inst || {}).manifest || {}).minecraft + '.',
+      act:() => this.versionPicker(m) });
+    else rows.push({ t:'Identify this jar', d:'Hash it against CurseForge and Modrinth.',
+      act:() => this.identify() });
+
+    if (raw.project_id) rows.push({ t:'Check for a newer build',
+      d:'Asks the catalogue about this one mod.',
+      act:() => this.checkOne(m) });
+
+    if (m.reasons && m.reasons.length) rows.push({
+      t:'Always allow this mod on servers',
+      d:'The review flagged it: ' + m.reasons.join('; ')
+        + '. Whitelisting it applies to every instance, now and in future.',
+      act:() => this.whitelistMod(m) });
+
+    rows.push({ t:'Copy the jar name', d:m.j, act:() => {
+      if (navigator.clipboard) navigator.clipboard.writeText(m.j).catch(() => {});
+      this.toast('Copied ' + m.j, 'ok'); } });
+
+    rows.push({ t:'Delete from disk', danger:true,
+      d:'Disabling is almost always the better move. A deleted jar does not come back.',
+      act:() => this.setState({ sel:[m.j], confirmOpen:'mods' }) });
+
+    this.setState({ menu:{ title:m.n, sub:m.j, rows } });
+  }
+
+  async checkOne(m) {
+    const id = this.state.sid;
+    this.setState({ menu:null });
+    try {
+      const r = await api('/api/instances/' + id + '/mods/updates');
+      this.setD({ updates:r });
+      const list = (r.updates || r.items || []);
+      const mine = list.find(u => (u.file || u.filename) === m.j);
+      this.toast(mine
+        ? m.n + ': a newer build is available (' + (mine.latest || mine.version || 'newer') + ').'
+        : m.n + ' is on the newest build for this pack.', mine ? 'info' : 'ok');
+    } catch (e) { this.toast(e.message, 'crit'); }
+  }
+
+  async whitelistMod(m) {
+    this.setState({ menu:null });
+    try {
+      const r = await api('/api/whitelist', { method:'POST',
+        body:{ file:m.j, name:m.n, reason:'allowed from the Mods screen' } });
+      this.toast(m.n + ' will not be flagged as client-only again'
+        + (r.persisted === false ? ' — but the list could not be written to disk.' : '.'),
+        r.persisted === false ? 'warn' : 'ok');
+      this.load('whitelist', '/api/whitelist', x => x.items || []);
+    } catch (e) { this.toast(e.message, 'crit'); }
+  }
+
+  /** Every build of a mod that fits this instance, newest first. */
+  async versionPicker(m) {
+    const id = this.state.sid, raw = m.raw || {};
+    const mf = ((this.state.d.inst || {}).manifest) || {};
+    this.setState({ menu:null, picker:{ mod:m, loading:true, items:[] } });
+    const qs = new URLSearchParams();
+    if (mf.minecraft) qs.set('game_version', mf.minecraft);
+    if (mf.loader) qs.set('loader', mf.loader);
+    try {
+      const r = await api('/api/mods/' + (raw.source || 'curseforge') + '/'
+                          + raw.project_id + '/versions?' + qs.toString());
+      this.setState({ picker:{ mod:m, loading:false, items:r.items || [] } });
+    } catch (e) {
+      this.setState({ picker:null });
+      this.toast(e.message, 'crit');
+    }
+  }
+
+  async installVersion(m, build) {
+    const id = this.state.sid, raw = m.raw || {};
+    this.setState({ picker:null });
+    try {
+      const r = await api('/api/instances/' + id + '/mods/add', { method:'POST',
+        body:{ project_id:raw.project_id, file_id:build.file_id || build.id,
+               name:m.n, source:raw.source || 'curseforge',
+               replace_file:m.j, with_dependencies:true } });
+      if (r.job_id) this.follow(r.job_id, 'Changing ' + m.n,
+        () => this.load('mods', '/api/instances/' + id + '/mods'));
+      else {
+        this.toast(m.n + ' switched to ' + (build.display_name || build.file_name) + '.', 'ok');
+        this.load('mods', '/api/instances/' + id + '/mods');
+      }
+    } catch (e) { this.toast(e.message, 'crit'); }
+  }
+
   /* --- configs ----------------------------------------------------------- */
 
   async openConfig(path) {
@@ -2242,7 +2497,10 @@ class Component extends DCLogic {
       const r = await api('/api/instances/' + id + '/configs/read?path=' + encodeURIComponent(path));
       this.setState(s => ({ d:{ ...s.d, cfgBody:{ ...s.d.cfgBody,
         [path]:{ body:r.content != null ? r.content : (r.body || ''),
-                 size:r.size, meta:(r.size != null ? bytes(r.size) : '') } } },
+                 size:r.size, editable:r.editable !== false,
+                 meta:[r.lines ? r.lines + ' lines' : null,
+                       r.editable === false ? 'read-only' : null]
+                      .filter(Boolean).join(' · ') } } },
         busy:{ ...s.busy, cfg:false } }));
     } catch (e) {
       this.setState(s => ({ busy:{ ...s.busy, cfg:false }, err:{ ...s.err, cfg:e.message } }));
@@ -2276,6 +2534,40 @@ class Component extends DCLogic {
       this.load('optimize', '/api/instances/' + id + '/optimize');
       this.setState({ flagOn:{} });
     } catch (e) { this.toast(e.message, 'crit'); }
+  }
+
+  /** Write the heap and the flag set together.
+
+      They live in the same place -- user_jvm_args.txt on Forge/NeoForge, the
+      Crafty launch command on Fabric and vanilla -- so writing one without the
+      other would drop the other. The optimizer's apply() takes both, and the
+      result is read back so the screen shows what is actually on disk rather
+      than what was asked for. */
+  async applyHeapAndFlags() {
+    const id = this.state.sid;
+    const OPT = this.state.d.optimize || {};
+    const mem = OPT.memory || {};
+    const heapMb = this.state.heap != null ? this.state.heap
+      : ((OPT.current && OPT.current.xmx_mb) || (mem.heap_gb ? mem.heap_gb * 1024 : 4096));
+    const flags = (OPT.flags || []).filter(f => this.state.flagOn[f.flag] === undefined
+      ? (f.applied != null ? f.applied : f.enabled)
+      : this.state.flagOn[f.flag]).map(f => f.flag);
+    this.setBusy('tune', true);
+    try {
+      const r = await api('/api/instances/' + id + '/optimize', { method:'POST',
+        body:{ heap_gb:Math.round(heapMb / 1024 * 10) / 10, flags,
+               xms_equals_xmx:true } });
+      const applied = (r.applied || []);
+      const skipped = (r.skipped || []);
+      this.toast(applied.length
+        ? applied.join('; ') + '. Takes effect on the next restart.'
+        : 'Nothing needed changing.', skipped.length ? 'warn' : 'ok');
+      if (skipped.length)
+        this.toast(skipped.map(x => x.why || x.what).join('; '), 'warn');
+      this.setState({ flagOn:{}, heap:null });
+      await this.load('optimize', '/api/instances/' + id + '/optimize');
+    } catch (e) { this.toast(e.message, 'crit'); }
+    this.setBusy('tune', false);
   }
 
   async saveProps() {
@@ -2344,11 +2636,26 @@ class Component extends DCLogic {
 
   async deepScan() {
     const id = this.state.sid;
+    this.setBusy('scan', true);
+    this.setState({ diagTab:'scan' });
     try {
       const r = await api('/api/instances/' + id + '/deep-scan', { method:'POST', body:{} });
-      this.follow(r.job_id, 'Deep dependency scan',
-        () => this.load('diag', '/api/instances/' + id + '/diagnose'));
-    } catch (e) { this.toast(e.message, 'crit'); }
+      // The scan's result is the point of running it. Sending it nowhere is
+      // what made the job end at "Building dependency graph" with nothing
+      // after it.
+      this.follow(r.job_id, 'Deep dependency scan', (j) => {
+        this.setBusy('scan', false);
+        this.setState({ jobsOpen:false });
+        if (j && j.result) {
+          this.setD({ scan:j.result });
+          const n = (j.result.findings || []).length;
+          this.toast(n ? 'Scan finished: ' + n + ' thing'
+                         + (n === 1 ? '' : 's') + ' to look at.'
+                       : 'Scan finished: every dependency is satisfied.',
+                     n ? 'warn' : 'ok');
+        } else if (j && j.error) this.toast(j.error, 'crit');
+      });
+    } catch (e) { this.setBusy('scan', false); this.toast(e.message, 'crit'); }
   }
 
   async crashReview() {
@@ -2389,6 +2696,19 @@ class Component extends DCLogic {
     }
   }
 
+  async setAiEndpoint(url) {
+    try {
+      const r = await api('/api/ai/endpoint', { method:'POST', body:{ url } });
+      this.setD({ aiEndpoints:r, ai:r.status || this.state.d.ai });
+      const ok = (r.status || {}).available;
+      this.toast('Assistant now using ' + hostOf(url)
+        + (ok ? '.' : ' — but it is not answering: '
+                    + ((r.status || {}).reason || 'unreachable')),
+        ok ? 'ok' : 'warn');
+      this.loadSystems();
+    } catch (e) { this.toast(e.message, 'crit'); }
+  }
+
   async aiApply(destructive) {
     const id = this.state.sid;
     const acts = this.state.d.aiActions
@@ -2407,24 +2727,34 @@ class Component extends DCLogic {
 
   /* --- discover: catalogue, import, roulette ------------------------------ */
 
-  searchPacks(q) {
+  /** Search the catalogue. `more` appends the next page instead of replacing. */
+  searchPacks(q, more) {
     clearTimeout(this._dT);
     const my = (this._dN = (this._dN || 0) + 1);
+    const index = more ? (this.state.d.packs || []).length : 0;
     this._dT = setTimeout(async () => {
       this.setBusy('packs', true);
-      const qs = new URLSearchParams({ page_size:'20' });
+      const S = this.state;
+      const qs = new URLSearchParams({ page_size:'20', index:String(index) });
       if (q) qs.set('q', q);
-      if (this.state.dVer) qs.set('game_version', this.state.dVer);
+      if (S.dVer) qs.set('game_version', S.dVer);
+      if (S.dLoader) qs.set('loader', S.dLoader);
+      if (S.dCat) qs.set('category_id', String(S.dCat));
+      if (S.dSort) qs.set('sort', String(S.dSort));
       try {
         const r = await api('/api/browse/modpacks?' + qs.toString());
         if (my !== this._dN) return;
-        this.setState(s => ({ d:{ ...s.d, packs:r.items || [],
-          packTotal:(r.pagination || {}).totalCount }, busy:{ ...s.busy, packs:false } }));
+        const page = r.items || [];
+        const total = (r.pagination || {}).totalCount;
+        this.setState(s => ({
+          d:{ ...s.d, packs:more ? (s.d.packs || []).concat(page) : page,
+              packTotal:total },
+          busy:{ ...s.busy, packs:false } }));
       } catch (e) {
         if (my === this._dN) this.setState(s => ({ busy:{ ...s.busy, packs:false },
                                                    err:{ ...s.err, packs:e.message } }));
       }
-    }, q ? 260 : 0);
+    }, q && !more ? 260 : 0);
   }
 
   async openPack(p) {
@@ -2434,9 +2764,15 @@ class Component extends DCLogic {
     await this.load('releases', '/api/modpacks/' + p.id + '/files', r => r.items || []);
   }
 
-  /** The next free port inside the range Crafty publishes. */
+  /** The port to offer for a new server.
+
+      25565 unless something already has it. Minecraft's default is what people
+      expect in the box and what their router is already forwarding; picking
+      25568 because three test servers exist is technically tidier and
+      practically wrong. */
   nextPort() {
     const used = new Set(this.state.d.fleet.map(s => Number(s.port)));
+    if (!used.has(25565)) return 25565;
     for (let p = 25565; p <= 25600; p++) if (!used.has(p)) return p;
     return 25565;
   }
@@ -2966,6 +3302,13 @@ class Component extends DCLogic {
     const propGroupNames = ((D.props && D.props.groups) || []).map(g => g.name);
     const shownProps = propItems.filter(p => (p.group || 'Other') === S.propGroup);
     const propDirty = Object.keys(S.propDraft).length;
+    const flagDirty = (OPT.flags || []).filter(f => {
+      const want = S.flagOn[f.flag];
+      return want !== undefined
+        && want !== (f.applied != null ? f.applied : f.enabled);
+    }).length;
+    const heapDirty = S.heap != null && Math.round(S.heap) !== Math.round(
+      (OPT.current && OPT.current.xmx_mb) || (mem.heap_gb ? mem.heap_gb * 1024 : 0));
 
     /* --- console --------------------------------------------------------- */
     const conLines = (D.console || [])
@@ -3181,6 +3524,17 @@ class Component extends DCLogic {
         { k:'created', v:inst && inst.server && inst.server.created ? String(inst.server.created).slice(0, 10) : '—', c:'#9C9EA4' },
         { k:'data dir', v:(inst && inst.server && inst.server.path) || '—', c:'#9C9EA4' }
       ],
+      // A rolled server produces a CurseForge pack, and the only place it made
+      // sense to offer it was here -- the job that made it is long gone by the
+      // time anyone wants the file.
+      hasExport:!!(mf.roll && mf.roll.roll_id),
+      exportUrl:mf.roll && mf.roll.roll_id
+        ? '/api/roulette/export/' + encodeURIComponent(mf.roll.roll_id) : '',
+      exportNote:mf.roll
+        ? 'seed ' + (mf.roll.seed || '?') + ' · '
+          + (mf.roll.installed || (mf.mods || []).length || 0)
+          + ' jars · import it, or open it in the CurseForge app'
+        : '',
       sidRaw:srv.id,
       srvPath:(inst && inst.server && inst.server.path) || 'the server directory',
       worldSize:stats.world_size || 'size unknown until it has run',
@@ -3224,12 +3578,59 @@ class Component extends DCLogic {
       diagTabs:[
         { key:'checks', label:'Health checks', count:String(findings.length || '') },
         { key:'crash', label:'Crash review', count:String(((D.diag && D.diag.crash && D.diag.crash.culprits) || []).length || '') },
+        { key:'scan', label:'Dependency scan',
+          count:String(((D.scan || {}).findings || []).length || '') },
         { key:'ai', label:'Assistant' },
         { key:'logs', label:'Raw logs' }
       ].map(d => ({ ...d, on:S.diagTab === d.key ? 1 : 0,
         col:S.diagTab === d.key ? '#FFFFFF' : '#8C8F96', fw:S.diagTab === d.key ? 600 : 500,
         pick:() => d.key === 'logs' ? this.go('console') : this.setState({ diagTab:d.key }) })),
-      isChecks:S.diagTab === 'checks', isCrash:S.diagTab === 'crash', isAi:S.diagTab === 'ai',
+      isChecks:S.diagTab === 'checks', isCrash:S.diagTab === 'crash',
+      isAi:S.diagTab === 'ai', isScan:S.diagTab === 'scan',
+
+      // The health checks run when the screen opens; the canvas offered no
+      // way to run them again, which reads as "these numbers are live" when
+      // they are a snapshot.
+      checksWhen:S.busy.diag ? 'running…'
+        : (S.checkedAt ? 'checked ' + ago(S.checkedAt / 1000) : ''),
+      recheckLabel:S.busy.diag ? 'Checking…' : 'Run the checks again',
+      actRecheck:() => { if (S.busy.diag) return;
+        this.setState({ checkedAt:null });
+        this.load('diag', '/api/instances/' + S.sid + '/diagnose')
+          .then(() => this.setState({ checkedAt:Date.now() })); },
+
+      /* --- the dependency scan --- */
+      scanLabel:S.busy.scan ? 'Scanning…'
+        : ((D.scan) ? 'Scan again' : 'Run the scan'),
+      scanRan:!!D.scan,
+      scanClean:!!(D.scan && !((D.scan.findings || []).length)),
+      scanNote:D.scan
+        ? 'Counted every id the pack provides, including ' + (D.scan.nested || 0)
+          + ' bundled inside other jars. A mod is only reported missing when '
+          + 'nothing declares its id, provides it, or ships it nested.'
+        : '',
+      scanStats:D.scan ? [
+        { k:'jars read', v:String(D.scan.scanned || 0), c:'#ECEAE7' },
+        { k:'ids provided', v:String(D.scan.provided || 0), c:'#7AA7FF' },
+        { k:'bundled', v:String(D.scan.nested || 0), c:'#C77DFF' },
+        { k:'missing', v:String(D.scan.missing || 0),
+          c:(D.scan.missing || 0) ? '#FF3B5C' : '#56D9A3' },
+        { k:'duplicates', v:String(D.scan.duplicates || 0),
+          c:(D.scan.duplicates || 0) ? '#FFC44D' : '#56D9A3' },
+        { k:'unreadable', v:String(D.scan.unreadable || 0),
+          c:(D.scan.unreadable || 0) ? '#FFC44D' : '#56D9A3' }
+      ] : [],
+      scanClaims:((D.scan || {}).findings || []).map((f, i) => {
+        const tone = (f.severity === 'critical' || f.severity === 'error') ? '#FF3B5C'
+                   : f.severity === 'warning' ? '#FFC44D' : '#7AA7FF';
+        return { title:f.title, detail:f.detail || '', d:(i * 55) + 'ms', tone,
+          toneGlyph:f.severity === 'warning' ? '\u25B2'
+                  : f.severity === 'info' ? '\u24D8' : '\u2715',
+          bd:tone + '33',
+          fix:this.fixLabel(f),
+          fixBg:'#1A1D22', fixBd:'rgba(255,255,255,.12)', fixCol:'#D5D3D0',
+          act:() => this.applyFix(f) };
+      }),
       crashFile:((D.diag && D.diag.crash_path) || '').split('/').pop() || 'no crash report on disk',
       crashMeta:(() => { const c = (D.diag && D.diag.crash) || null;
         if (!c) return (D.diag && D.diag.crash_path) ? 'reading…' : 'nothing to attribute';
@@ -3267,6 +3668,14 @@ class Component extends DCLogic {
       aiTokens:D.aiMeta ? (Math.round(D.aiMeta.ms / 100) / 10) + 's round trip'
                           + (D.aiMeta.model ? ' · ' + D.aiMeta.model : '')
                         : ((D.ai || {}).available ? 'not run yet' : ((D.ai || {}).reason || 'unavailable')),
+      // Which Ollama answers. The shared one is behind a proxy that gives up
+      // after 120 seconds; a local one is not, so a long crash report can go
+      // whole rather than being summarised down to fit.
+      aiEndpointOpts:((D.aiEndpoints || {}).items || []).map(e => ({
+        t:e.label, note:e.note,
+        bg:e.active ? 'rgba(199,125,255,.16)' : 'transparent',
+        col:e.active ? '#C77DFF' : '#8C8F96',
+        pick:() => this.setAiEndpoint(e.url) })),
       aiRun:() => this.askAi((D.diag && D.diag.crash) ? 'crash' : 'analyse'),
       aiFix:() => this.aiApply(false),
       aiApplySafe:() => this.aiApply(false),
@@ -3314,6 +3723,8 @@ class Component extends DCLogic {
           cbBg:picked ? EMBER : 'transparent', cbBd:picked ? EMBER : 'rgba(255,255,255,.2)', cbOp:picked ? 1 : 0,
           initials:m.unknown ? '?' : (m.n.replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || '?'),
           iconCol:m.unknown ? '#C77DFF' : '#5F6269',
+          hasLogo:!!m.logo, noLogo:!m.logo,
+          menuCol:'#5F6269',
           nameCol:on ? '#E4E2DF' : '#7A7D84',
           badgeList:m.badges.filter(b => BADGE[b]).map(b => ({ t:BADGE[b].t, c:BADGE[b].c, g:BADGE[b].g,
             tip:BADGE[b].ev && m.reasons.length ? m.reasons.join(' · ') : BADGE[b].t })),
@@ -3324,7 +3735,7 @@ class Component extends DCLogic {
           toggleSel:() => this.setState(s => ({ sel:s.sel.indexOf(m.j) >= 0
             ? s.sel.filter(x => x !== m.j) : s.sel.concat([m.j]) })),
           toggleOn:() => this.modToggle(m.j, !on),
-          act:() => this.toast(m.j + (m.reasons.length ? ' — ' + m.reasons.join('; ') : ''), 'info') };
+          act:() => this.modMenu(m) };
       }),
       modsEmpty:modRows.length === 0,
       modShownN:modRows.length,
@@ -3389,8 +3800,35 @@ class Component extends DCLogic {
       ].map(t => ({ ...t, on:S.tuneTab === t.k ? 1 : 0,
         col:S.tuneTab === t.k ? '#FFFFFF' : '#8C8F96', fw:S.tuneTab === t.k ? 600 : 500,
         pick:() => this.setState({ tuneTab:t.k }) })),
-      dirtyLabel:propDirty ? propDirty + ' unsaved change' + (propDirty === 1 ? '' : 's')
-                             + ' · apply on next restart' : 'no unsaved changes',
+      // The canvas showed a permanent "3 unsaved changes" and no way to save
+      // them. What is unsaved depends on which sub-tab you are on, so the
+      // label and the button follow the tab.
+      dirtyLabel:(() => {
+        if (S.tuneTab === 'props') return propDirty
+          ? propDirty + ' unsaved change' + (propDirty === 1 ? '' : 's')
+            + ' · applies on the next restart' : 'no unsaved changes';
+        if (S.tuneTab === 'flags') return flagDirty
+          ? flagDirty + ' flag' + (flagDirty === 1 ? '' : 's') + ' changed'
+          : 'no unsaved changes';
+        if (S.tuneTab === 'heap') return heapDirty
+          ? 'heap changed to ' + (heapMb / 1024).toFixed(1) + ' GB'
+          : 'no unsaved changes';
+        return D.port && D.port.mismatch ? 'the two records disagree' : 'in step';
+      })(),
+      dirtyCol:(S.tuneTab === 'props' ? propDirty
+               : S.tuneTab === 'flags' ? flagDirty
+               : S.tuneTab === 'heap' ? heapDirty : 0) ? '#FFC44D' : '#5F6269',
+      isDirty:!!(S.tuneTab === 'props' ? propDirty
+                : S.tuneTab === 'flags' ? flagDirty
+                : S.tuneTab === 'heap' ? heapDirty : 0),
+      tuneSaveLabel:S.tuneTab === 'props' ? 'Write server.properties'
+                  : S.tuneTab === 'flags' ? 'Write the flags'
+                  : 'Apply the heap',
+      tuneSave:() => {
+        if (S.tuneTab === 'props') return this.saveProps();
+        return this.applyHeapAndFlags();
+      },
+      tuneRevert:() => this.setState({ propDraft:{}, flagOn:{}, heap:null }),
       isHeap:S.tuneTab === 'heap', isFlags:S.tuneTab === 'flags',
       isProps:S.tuneTab === 'props', isPorts:S.tuneTab === 'ports',
       heap:heapMb, heapGb:(heapMb / 1024).toFixed(1),
@@ -3406,9 +3844,7 @@ class Component extends DCLogic {
       heapWarn:heapMb > ceilMb
         ? 'At ' + (heapMb / 1024).toFixed(1) + ' GB this server exceeds what the host can '
           + 'safely hold. Expect swap, missed ticks and eventually an OOM kill.' : '',
-      heapApply:() => this.applyOptimize({ heap_gb:Math.round(heapMb / 1024 * 10) / 10,
-        flags:(OPT.flags || []).filter(f => S.flagOn[f.flag] === undefined
-          ? (f.applied != null ? f.applied : f.enabled) : S.flagOn[f.flag]).map(f => f.flag) }),
+      heapApply:() => this.applyHeapAndFlags(),
       heapReset:() => this.setState({ heap:ceilMb }),
       heapMath:[
         { op:'', k:'total RAM on this host', v:(host.total_ram_gb || 0) + ' GB', c:'#ECEAE7' },
@@ -3526,6 +3962,23 @@ class Component extends DCLogic {
       conSource:live ? 'live · polled from Crafty every 1.5s'
                      : (D.console || []).length ? 'latest.log · the server is stopped'
                                                 : 'nothing to read yet',
+      // Following was a label, not a control -- it always said "following" and
+      // nothing ever scrolled. It is a real toggle now, and it gives itself up
+      // when you scroll away from the bottom, the way a log viewer should.
+      conFollowLabel:S.follow ? 'following' : 'paused',
+      conFollowTip:S.follow
+        ? 'Scrolling up pauses this automatically.'
+        : 'Click to jump to the newest line and keep up with it.',
+      conFollowCol:S.follow ? EMBER : '#8C8F96',
+      conFollowBg:S.follow ? 'rgba(255,107,53,.10)' : 'transparent',
+      conFollowBd:S.follow ? 'rgba(255,107,53,.40)' : 'rgba(255,255,255,.12)',
+      conFollowToggle:() => this.setState(s => ({ follow:!s.follow }),
+        () => { if (this.state.follow) this.stickBottom('bfConsole'); }),
+      conScroll:e => {
+        const el = e.target;
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        if (atBottom !== this.state.follow) this.setState({ follow:atBottom });
+      },
       conClear:() => this.setD({ console:[] }),
       conLines,
       cmd:S.cmd, setCmd:e => this.setState({ cmd:e.target.value }),
@@ -3547,7 +4000,14 @@ class Component extends DCLogic {
 
       /* --- configs --- */
       cfgQ:S.cfgQ, setCfgQ:e => this.setState({ cfgQ:e.target.value }),
-      cfgFiles:cfgList.map((c, i) => ({ p:c.path, d:Math.min(i * 26, 300) + 'ms',
+      // The rail showed the whole path, which for `config/atm10/general.toml`
+      // fills a 262px column with the part that is the same on every row. The
+      // name leads; the directory sits under it, dimmer.
+      cfgFiles:cfgList.map((c, i) => ({ p:c.path,
+        name:c.path.split('/').pop(),
+        dir:c.path.indexOf('/') >= 0
+          ? c.path.slice(0, c.path.lastIndexOf('/')) : '',
+        d:Math.min(i * 26, 300) + 'ms',
         bg:c.path === S.cfgPath ? '#191C21' : 'transparent',
         edge:c.path === S.cfgPath ? EMBER : 'transparent',
         col:c.path === S.cfgPath ? '#FFFFFF' : '#9C9EA4',
@@ -3574,12 +4034,23 @@ class Component extends DCLogic {
         bg:'transparent' })),
       edCursor:String(edBody).split('\n').length + ' lines',
       edEncoding:'utf-8 · lf · ' + String(edBody).split('\n').length + ' lines',
-      edGuard:edDirty ? 'navigating away will ask first' : (curBody ? 'saved' : ''),
+      edGuard:edDirty ? 'navigating away will ask first'
+        : (curBody ? (curBody.editable === false ? 'read-only: BlessForge will not write this type'
+                                                 : 'saved') : ''),
       edGuardCol:edDirty ? '#FFC44D' : '#5F6269',
       edText:edBody,
+      edReadOnly:!S.cfgPath || !!S.busy.cfg,
+      edPlaceholder:!S.cfgPath ? 'Pick a file on the left.'
+                    : S.busy.cfg ? 'reading…' : '',
       setEdText:e => { const v = e.target.value;
         this.setState(s => ({ cfgDraft:{ ...s.cfgDraft, [s.cfgPath]:v },
                               cfgDirty:{ ...s.cfgDirty, [s.cfgPath]:true } })); },
+      // The gutter is a separate element sharing the textarea's font metrics,
+      // so it has to be scrolled in step. An overlay that tried to colour the
+      // text instead would drift the moment a line wrapped, which is why the
+      // editor is plain while you are typing in it.
+      edScroll:e => { const g = document.getElementById('bfGutter');
+        if (g) g.scrollTop = e.target.scrollTop; },
       edSave:() => this.saveConfig(),
       edRevert:() => this.setState(s => {
         const d = { ...s.cfgDirty }; delete d[s.cfgPath];
@@ -3745,11 +4216,35 @@ class Component extends DCLogic {
       /* --- discover: catalogue --- */
       dQ:S.dQ,
       setDQ:e => this.setState({ dQ:e.target.value }, () => this.searchPacks(this.state.dQ)),
-      dFilters:[
-        { k:'mc', v:S.dVer || 'any', act:() => this.toast('Type a version into the search to narrow it.', 'info') },
-        { k:'source', v:'curseforge', act:() => this.toast('CurseForge is the catalogue BlessForge installs from.', 'info') },
-        { k:'sort', v:'popularity', act:() => this.toast('Sorted by popularity.', 'info') }
-      ],
+      // The canvas drew these as buttons with a caret and no menu behind them,
+      // and two of the three named things that are not filters. They are the
+      // catalogue's real facets now, each a list it actually returns.
+      dFilters:(() => {
+        const opt = (v, t) => ({ v:String(v), t });
+        const mk = (k, key, opts, val) => ({
+          k, opts, v:String(val || ''),
+          col:val ? '#ECEAE7' : '#B3AFAB',
+          bd:val ? 'rgba(255,107,53,.45)' : 'rgba(255,255,255,.09)',
+          set:e => { const v = e.target.value;
+            this.setState({ [key]:v || null }, () => this.searchPacks(this.state.dQ)); }
+        });
+        return [
+          mk('mc', 'dVer',
+             [opt('', 'any')].concat((D.versions || []).slice(0, 40).map(v => opt(v, v))),
+             S.dVer),
+          mk('loader', 'dLoader',
+             [opt('', 'any'), opt('Forge', 'Forge'), opt('NeoForge', 'NeoForge'),
+              opt('Fabric', 'Fabric'), opt('Quilt', 'Quilt')],
+             S.dLoader),
+          mk('category', 'dCat',
+             [opt('', 'any')].concat((D.cats || []).map(c => opt(c.id, c.name))),
+             S.dCat),
+          mk('sort', 'dSort',
+             [opt(2, 'popularity'), opt(6, 'downloads'), opt(3, 'last updated'),
+              opt(4, 'name'), opt(12, 'release date')],
+             S.dSort)
+        ];
+      })(),
       dCount:S.busy.packs ? 'searching…'
         : ((D.packs || []).length + ' of ' + (D.packTotal ? num(D.packTotal) : 'many') + ' packs'),
       packs:(D.packs || []).map((p, i) => ({ n:p.name, a:(p.authors || [])[0] || '—',
@@ -3764,7 +4259,9 @@ class Component extends DCLogic {
         srvBg:(p.latest_files || []).some(f => f.is_server_pack || f.server_pack_file_id) ? 'rgba(86,217,163,.12)' : 'rgba(255,196,77,.12)',
         srvCol:(p.latest_files || []).some(f => f.is_server_pack || f.server_pack_file_id) ? '#56D9A3' : '#FFC44D',
         act:() => this.openPack(p) })),
-      loadMore:() => this.toast('Refine the search to narrow the list.', 'info'),
+      canLoadMore:!!((D.packs || []).length && D.packTotal
+                     && (D.packs || []).length < D.packTotal),
+      loadMore:() => this.searchPacks(S.dQ, true),
       packOpen:!!S.packOpen, packClosed:!S.packOpen,
       closePack:() => this.setState({ packOpen:false }),
       releases:(D.releases || []).map((r, i) => ({
@@ -3873,10 +4370,19 @@ class Component extends DCLogic {
       jobPct:jobPct,
       jobRunning:!!J && J.status === 'running',
       jobDone:!!J && jobDone,
-      jobState:!J ? 'IDLE'
-        : J.status === 'running' ? 'RUNNING'
-        : J.status === 'error' ? 'FAILED'
-        : J.status === 'cancelled' ? 'CANCELLED' : 'COMPLETE',
+      // The canvas said "COMPLETE · 3 WARNINGS" whatever happened. What a job
+      // finished with is in its result, and if it finished with nothing to
+      // report the honest answer is just COMPLETE.
+      jobState:(() => {
+        if (!J) return 'IDLE';
+        if (J.status === 'running') return 'RUNNING';
+        if (J.status === 'error') return 'FAILED';
+        if (J.status === 'cancelled') return 'CANCELLED';
+        const warns = (J.log || []).filter(l => l.s === 'warn').length
+                    + ((J.result || {}).problems || []).length;
+        return warns ? 'COMPLETE · ' + warns + ' WARNING' + (warns === 1 ? '' : 'S')
+                     : 'COMPLETE';
+      })(),
       jobTone:!J ? '#6A6D74'
         : J.status === 'error' ? TONE.crit.c
         : J.status === 'running' ? EMBER : TONE.ok.c,
@@ -4004,6 +4510,36 @@ class Component extends DCLogic {
       tBd:S.toast ? 'rgba(255,255,255,.1)' : 'transparent',
       tGlyph:S.toast ? TONE[S.toast.tone].glyph : '',
       tClose:() => this.setState({ toast:null }),
+
+      /* --- the row menu and the version picker --- */
+      menuOpen:!!S.menu,
+      menuTitle:(S.menu || {}).title || '',
+      menuSub:(S.menu || {}).sub || '',
+      menuClose:() => this.setState({ menu:null }),
+      menuRows:((S.menu || {}).rows || []).map(o => ({
+        t:o.t, d:o.d, col:o.danger ? '#FF8095' : '#E4E2DF',
+        act:() => { this.setState({ menu:null }); o.act(); } })),
+
+      pickerOpen:!!S.picker,
+      pickerTitle:S.picker ? 'Change version — ' + S.picker.mod.n : '',
+      pickerSub:S.picker
+        ? 'builds for ' + [mf.minecraft, loaderLabel(mf.loader)].filter(Boolean).join(' ')
+          + ' · currently ' + S.picker.mod.v : '',
+      pickerLoading:!!(S.picker && S.picker.loading),
+      pickerEmpty:!!(S.picker && !S.picker.loading && !(S.picker.items || []).length),
+      pickerClose:() => this.setState({ picker:null }),
+      pickerRows:((S.picker || {}).items || []).map(v => {
+        const cur = S.picker.mod.j === v.file_name;
+        return { n:v.display_name || v.file_name,
+          meta:[bytes(v.size), ago(v.date), (v.loaders || []).join('/')]
+               .filter(Boolean).join(' · '),
+          ch:(v.release_type || 'release').toUpperCase(),
+          chBg:v.release_type === 'release' ? 'rgba(86,217,163,.12)' : 'rgba(255,196,77,.12)',
+          chCol:v.release_type === 'release' ? '#56D9A3' : '#FFC44D',
+          bg:cur ? 'rgba(255,107,53,.07)' : 'transparent',
+          current:cur,
+          act:() => this.installVersion(S.picker.mod, v) };
+      }),
 
       /* --- the failure card --- */
       jobFailedDemo:!!J && J.status === 'error' && S.view === 'situation',

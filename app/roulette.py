@@ -1011,18 +1011,30 @@ async def install_roll(
         motd=motd,
         optimize=optimize,
     )
-    result.update({
-        "roll": {
-            "seed": seed,
-            "roll_id": roll_id,
-            "export_available": bool(roll_id),
-            "hand": len(hand),
-            "installed": len(full),
-            "dependencies": len(full) - len(resolved),
-            "dropped": problems,
-            "constraints": {k: v for k, v in c.items() if k != "seed"},
-        }
-    })
+    roll_info = {
+        "seed": seed,
+        "roll_id": roll_id,
+        "export_available": bool(roll_id),
+        "hand": len(hand),
+        "installed": len(full),
+        "dependencies": len(full) - len(resolved),
+        "dropped": problems,
+        "constraints": {k: v for k, v in c.items() if k != "seed"},
+    }
+    result.update({"roll": roll_info})
+
+    # Record it on the instance as well as in the job result. The job is gone
+    # by the time anyone wants the export -- the registry is in memory and does
+    # not outlive a restart -- and the server's own screen is where someone
+    # goes looking for the pack it was built from.
+    sid = result.get("server_id")
+    if sid:
+        try:
+            manifest = await crafty.read_studio_manifest(sid)
+            manifest["roll"] = roll_info
+            await crafty.write_studio_manifest(sid, manifest)
+        except Exception as e:
+            job.log_line(f"Could not record the roll on the instance: {e}", "warn")
     job.log_line(
         f"Roulette {seed}: {len(hand)} rolled, {len(full)} jars installed"
         + (", export ready to download" if roll_id else "")
