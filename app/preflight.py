@@ -456,6 +456,46 @@ async def _dependency_targets(file_meta: dict) -> dict[int, set[str]]:
     return targets
 
 
+def decide_with_protection(candidates: list[dict], all_jars: list[dict]) -> None:
+    """Turn flags into recommendations, sparing anything depended on.
+
+    A mod other mods depend on must never be stripped, however client it
+    looks -- that is exactly how a "tidy up the client mods" pass turns a
+    working pack into a missing-dependency crash. The manifest path had this
+    and the server-pack path did not, and the gap is not theoretical: Athena
+    is declared client-only by its own author and is a hard requirement of
+    Chipped, which is not, so a confident "remove" took a working pack to
+    "requires version 4.0.0 or later of athena, which is missing".
+
+    Only jars that are staying get a vote. One client-only mod requiring
+    another is not a reason to keep either of them.
+    """
+    flagged = {c["file_name"] for c in candidates}
+    needed: dict[str, set[str]] = {}
+    for mod in all_jars:
+        if mod["file_name"] in flagged:
+            continue
+        for dep_id in mod.get("dependencies") or []:
+            needed.setdefault(str(dep_id).lower(), set()).add(mod["name"])
+
+    for item in candidates:
+        own_id = (item.get("mod_id") or "").lower()
+        protectors = needed.get(own_id, set()) - {item["name"]}
+        if protectors:
+            item["required_by_others"] = sorted(protectors)[:5]
+            item["reasons"].append(
+                "another mod in this pack requires it, so removing it would "
+                "break that mod"
+            )
+            item["recommendation"] = "keep"
+        elif item["confidence"] == "contradicted":
+            item["recommendation"] = "review"
+        else:
+            item["recommendation"] = (
+                "remove" if item["confidence"] in ("declared", "jar") else "review"
+            )
+
+
 async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile, plan: PackPlan
                                    ) -> dict:
     """Same idea for a server pack, where the jars are already in hand."""
@@ -493,6 +533,13 @@ async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile, plan: PackPlan
             "reasons": reasons,
             "confidence": confidence,
             "size": None,
+            # The ids this jar says it needs, straight out of fabric.mod.json
+            # or neoforge.mods.toml. A server pack has no CurseForge relations
+            # to consult, so the jars' own statements are the only source.
+            "dependencies": [
+                d.get("id") for d in (info.get("dependencies") or [])
+                if d.get("mandatory", True) and d.get("id")
+            ],
         })
 
     matched = await _augment_with_modrinth_by_hash(job, all_jars)
@@ -500,23 +547,23 @@ async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile, plan: PackPlan
         job.log_line(f"Modrinth identified {matched} of {total} jars by file "
                      "hash and stated which side each one runs on")
 
-    candidates = []
-    for item in all_jars:
-        if not item["reasons"] or item["confidence"] == "cleared":
-            continue
-        item["recommendation"] = (
-            "remove" if item["confidence"] in ("declared", "jar") else "review"
-        )
-        candidates.append(item)
+    candidates = [
+        item for item in all_jars
+        if item["reasons"] and item["confidence"] != "cleared"
+    ]
 
+    decide_with_protection(candidates, all_jars)
+
+    protected = sum(1 for c in candidates if c["recommendation"] == "keep")
     job.log_line(
         f"{len(candidates)} possible client-only jars in the server pack"
+        + (f" ({protected} held back as dependencies)" if protected else "")
     )
     return {
         "total_mods": total,
         "candidates": candidates,
         "confirmed": sum(1 for c in candidates if c["recommendation"] == "remove"),
         "uncertain": sum(1 for c in candidates if c["recommendation"] == "review"),
-        "protected": 0,
+        "protected": protected,
         "server_mods": total - len(candidates),
     }

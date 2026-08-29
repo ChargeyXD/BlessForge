@@ -398,8 +398,8 @@
             <div style="animation:bfFade .25s both;">
               <div style="display:flex; align-items:center; gap:9px; padding:9px 11px; margin-bottom:10px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
                 <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#6A6D74; letter-spacing:.1em;">READING</span>
-                <span style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:#D5D3D0;">crash-2026-08-27_19.04.31-server.txt</span>
-                <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#6A6D74; margin-left:auto;">1,204 lines · 3 jars implicated</span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:#D5D3D0;">{{ crashFile }}</span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#6A6D74; margin-left:auto;">{{ crashMeta }}</span>
               </div>
               <sc-for list="{{ culprits }}" as="k" hint-placeholder-count="3">
                 <article style="margin-bottom:8px; padding:12px 13px; background:#121417; border:1px solid {{ k.bd }}; border-radius:3px; animation:bfRow var(--animdur) both; animation-delay:{{ k.d }};">
@@ -440,7 +440,7 @@
                   <div style="display:flex; align-items:center; gap:8px; padding-bottom:10px; border-bottom:1px solid rgba(255,255,255,.07);">
                     <span style="display:grid; place-items:center; width:20px; height:20px; background:rgba(199,125,255,.12); border:1px solid rgba(199,125,255,.4); font-family:'JetBrains Mono',monospace; font-size:10px; color:#C77DFF;">◆</span>
                     <span style="font-size:12.5px; font-weight:600;">Assistant</span>
-                    <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74;">qwen2.5:14b · ollama @ 127.0.0.1:11434</span>
+                    <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74;">{{ aiEndpoint }}</span>
                     <span style="margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:{{ aiStatusCol }};">{{ aiStatus }}</span>
                   </div>
                   <div style="min-height:214px; padding:11px 2px 0;">
@@ -643,7 +643,7 @@
                   <div style="position:absolute; top:-2px; bottom:-2px; left:{{ ceilPct }}%; width:2px; background:#FF3B5C;"></div>
                 </div>
                 <div style="display:flex; justify-content:space-between; margin-top:5px; font-family:'JetBrains Mono',monospace; font-size:9px; color:#5F6269;">
-                  <span>0</span><span style="color:#FF3B5C;">safe ceiling 4.0 GB</span><span>11.6 GB total</span>
+                  <span>0</span><span style="color:#FF3B5C;">safe ceiling 4.0 GB</span><span>{{ ramTotalLabel }}</span>
                 </div>
                 <p style="margin:13px 0 0; font-size:12.5px; color:#A8A5A1; line-height:1.65; text-wrap:pretty;">{{ heapReason }}</p>
                 <sc-if value="{{ heapWarn }}">
@@ -694,7 +694,7 @@
                   </sc-for>
                 </section>
               </sc-for>
-              <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269;">8 of 34 flags shown · the rest sit under Security and Metadata</div>
+              <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269;">{{ flagsFooter }}</div>
             </div>
           </sc-if>
 
@@ -726,7 +726,7 @@
                   </div>
                 </sc-for>
               </div>
-              <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269; margin-top:8px;">9 of 61 keys shown · 6 differ from default · server-port is locked because BlessForge keeps it in step with the controller</div>
+              <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#5F6269; margin-top:8px;">{{ propsFooter }}</div>
             </div>
           </sc-if>
 
@@ -744,7 +744,7 @@
                   </div>
                 </sc-for>
                 <p style="margin:11px 0 0; font-size:11.5px; color:#A8A5A1; line-height:1.6; text-wrap:pretty;">Crafty will publish 25566, but the server will bind 25567, so nobody can join. BlessForge can write the controller's value into server.properties.</p>
-                <button onClick="{{ portFix }}" style="margin-top:11px; padding:7px 12px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:700; cursor:pointer;">Make them agree on 25566</button>
+                <button onClick="{{ portFix }}" style="margin-top:11px; padding:7px 12px; background:var(--ember,#FF6B35); border:0; border-radius:2px; color:#140A05; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:700; cursor:pointer;">{{ portFixLabel }}</button>
               </section>
               <section style="padding:14px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
                 <h3 style="margin:0 0 10px; font-size:12.5px; font-weight:600;">Ports in use across the fleet</h3>
@@ -757,7 +757,7 @@
                 </sc-for>
                 <div style="display:flex; gap:7px; margin-top:11px; padding:8px 9px; background:rgba(122,167,255,.06); border-left:2px solid #7AA7FF;">
                   <span style="font-family:'JetBrains Mono',monospace; font-size:10px; color:#7AA7FF;">ⓘ</span>
-                  <span style="font-size:11px; color:#9FB4D8; line-height:1.5;">Crafty publishes 25565–25575. Anything outside that range will not be reachable even when the server starts cleanly.</span>
+                  <span style="font-size:11px; color:#9FB4D8; line-height:1.5;">{{ portRangeNote }}</span>
                 </div>
               </section>
             </div>
@@ -829,7 +829,7 @@
               <sc-if value="{{ cfgEmpty }}">
                 <div style="padding:22px 12px; text-align:center;">
                   <div style="font-size:11.5px; font-weight:600; color:#B3AFAB;">No file matches</div>
-                  <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74; margin-top:4px; line-height:1.6;">241 files live under /config. Try a mod id.</div>
+                  <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74; margin-top:4px; line-height:1.6;">{{ cfgEmptyHint }}</div>
                 </div>
               </sc-if>
             </div>
@@ -886,8 +886,8 @@
               <div style="position:absolute; top:0; left:0; width:22%; height:1px; background:linear-gradient(90deg,transparent,var(--ember,#FF6B35),transparent); animation:bfScan 4s linear infinite;"></div>
               <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap;">
                 <span style="font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.13em; color:var(--ember,#FF6B35);">IN PROGRESS</span>
-                <span style="font-size:13px; font-weight:600;">Installing All the Mods 10 · 2.31</span>
-                <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96;">→ Weekend ATM10</span>
+                <span style="font-size:13px; font-weight:600;">{{ jobTitle }}</span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96;">{{ jobTarget }}</span>
                 <span style="margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--ember,#FF6B35); font-variant-numeric:tabular-nums;">{{ jobPct }}%</span>
               </div>
               <div style="height:4px; margin-top:9px; background:#08090B; border:1px solid rgba(255,255,255,.07); overflow:hidden;">
@@ -1238,7 +1238,7 @@
                   </sc-for>
                 </div>
                 <button onClick="{{ loadMore }}" style="display:flex; align-items:center; justify-content:center; gap:8px; width:100%; margin-top:9px; padding:11px; background:transparent; border:1px dashed rgba(255,255,255,.14); border-radius:2px; color:#8C8F96; font-family:'JetBrains Mono',monospace; font-size:10.5px; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:var(--ember,#FF6B35);">
-                  <img src="assets/fox-loading.gif" alt="" style="height:16px; width:auto; opacity:.7;" />load 20 more
+                  <img src="assets/fox-loading.gif" alt="" style="height:16px; width:auto; opacity:.7;" />{{ loadMoreLabel }}
                 </button>
               </div>
             </sc-if>
@@ -2518,7 +2518,8 @@ class Component extends DCLogic {
     const u = this.state.upload;
     if (!u) return;
     this.setState({ pendingInstall:{ ref:{ upload_id:u.upload_id },
-      server_name:this.state.newName || (u.name || 'Imported pack').replace(/\.zip$/i, ''),
+      server_name:this.state.newName
+        || ((u.summary && u.summary.name) || u.file_name || 'Imported pack').replace(/\.zip$/i, ''),
       port:Number(this.state.newPort) || this.nextPort(),
       prefer_server_pack:true, optimize:true },
       upload:u });
@@ -3198,6 +3199,16 @@ class Component extends DCLogic {
         col:S.diagTab === d.key ? '#FFFFFF' : '#8C8F96', fw:S.diagTab === d.key ? 600 : 500,
         pick:() => d.key === 'logs' ? this.go('console') : this.setState({ diagTab:d.key }) })),
       isChecks:S.diagTab === 'checks', isCrash:S.diagTab === 'crash', isAi:S.diagTab === 'ai',
+      crashFile:((D.diag && D.diag.crash_path) || '').split('/').pop() || 'no crash report on disk',
+      crashMeta:(() => { const c = (D.diag && D.diag.crash) || null;
+        if (!c) return (D.diag && D.diag.crash_path) ? 'reading…' : 'nothing to attribute';
+        const n = (c.culprits || []).length;
+        return (c.lines != null ? num(c.lines) + ' lines · ' : '')
+             + n + ' jar' + (n === 1 ? '' : 's') + ' implicated'; })(),
+      // DESIGN: the canvas hard-coded a local ollama and the wrong model.
+      aiEndpoint:(D.ai || {}).available
+        ? ((D.ai.model || 'model') + ' · ' + hostOf(D.ai.url))
+        : ((D.ai || {}).reason || 'the assistant is not configured'),
       claims:findings.map((f, i) => this.claimVals(this.findingToClaim(f, i), i)),
       culprits:(((D.diag && D.diag.crash) || {}).culprits || []).map((k, i) => {
         const conf = k.confidence === 'high' ? 'confirmed' : k.confidence === 'low' ? 'uncertain' : 'likely';
@@ -3355,6 +3366,7 @@ class Component extends DCLogic {
       setHeap:e => this.setState({ heap:Number(e.target.value) }),
       ceilPct:totalMb ? (((otherMb + ceilMb) / totalMb) * 100).toFixed(1) : '0',
       ramBlocks:ram,
+      ramTotalLabel:(host.total_ram_gb || 0) + ' GB total',
       heapReason:mem.why || (host.total_ram_gb
         ? 'This host has ' + host.total_ram_gb + ' GB. BlessForge holds back a reserve for '
           + 'the operating system and leaves room outside the heap for chunk caching and '
@@ -3389,6 +3401,33 @@ class Component extends DCLogic {
             swKnob:on ? EMBER : '#63666C', swX:on ? '15px' : '1px',
             toggle:() => this.setState(s => ({ flagOn:{ ...s.flagOn, [f.f]:!on } })) };
         }) })),
+      // DESIGN: "8 of 34 flags shown · the rest sit under Security and
+      // Metadata". There are 25 and every one is listed -- a tuning screen
+      // that hides two thirds of what it tunes is worse than none.
+      flagsFooter:(() => { const all = OPT.flags || [];
+        const on = all.filter(f => S.flagOn[f.flag] === undefined
+          ? (f.applied != null ? f.applied : f.enabled) : S.flagOn[f.flag]).length;
+        return all.length ? all.length + ' flags · ' + on + ' on · every one is listed'
+                          : 'reading the launch command…'; })(),
+      propsFooter:propItems.length
+        ? shownProps.length + ' of ' + propItems.length + ' keys shown · '
+          + propItems.filter(x => x.modified).length + ' differ from default · '
+          + 'server-port is locked because BlessForge keeps it in step with the controller'
+        : 'reading server.properties…',
+      portFixLabel:D.port && D.port.crafty_port != null
+        ? 'Make them agree on ' + D.port.crafty_port : 'Make them agree',
+      portRangeNote:(() => { const r = (D.port && D.port.published_range) || null;
+        return r ? 'Crafty publishes ' + r[0] + '–' + r[1] + '. Anything outside that range '
+                 + 'will not be reachable even when the server starts cleanly.'
+                 : 'Ports outside the range Crafty publishes are not reachable from '
+                 + 'outside this machine.'; })(),
+      cfgEmptyHint:cfgAll.length
+        ? cfgAll.length + ' files live under /config. Try a mod id.'
+        : (S.busy.configs ? 'Walking the config directories…'
+                          : (S.err.configs || 'No config files on this instance yet.')),
+      jobTitle:J ? J.title : 'Nothing running',
+      jobTarget:J && J.result && J.result.name ? '→ ' + J.result.name : '',
+      loadMoreLabel:'load more',
       propGroups:(propGroupNames.length ? propGroupNames
                   : ['Network', 'Performance', 'Players', 'World', 'Misc', 'Other']).map(t => ({ t,
         bg:S.propGroup === t ? 'rgba(255,107,53,.12)' : '#121417',
@@ -3720,22 +3759,28 @@ class Component extends DCLogic {
       upBytes:S.importing
         ? (bytes(S.upLoaded || 0) + ' of ' + bytes(S.upTotal || 0))
         : (S.upload ? (S.upName || '') + ' · read' : ''),
-      zipFacts:S.upload ? [
-        { k:'runtime', v:S.upload.minecraft || '—', c:'#D5D3D0' },
-        { k:'loader', v:[loaderLabel(S.upload.loader), S.upload.loader_version].filter(Boolean).join(' ') || '—', c:'#D5D3D0' },
-        { k:'mods', v:String(S.upload.mod_count != null ? S.upload.mod_count : '—'), c:'#D5D3D0' },
-        { k:'bundled jars', v:String(S.upload.bundled != null ? S.upload.bundled : 0), c:'#FFC44D' },
-        { k:'override files', v:String(S.upload.override_count != null ? S.upload.override_count : '—'), c:'#D5D3D0' },
-        { k:'requested ram', v:S.upload.recommended_ram_mb ? S.upload.recommended_ram_mb + ' MB' : 'not stated',
-          c:'#FF3B5C' }
-      ] : [],
+      // The archive's facts are read offline, from the zip itself, before any
+      // catalogue call -- so this panel is what BlessForge knows about the
+      // file rather than what it hopes to find out later.
+      zipFacts:(() => { const u = S.upload, z = u && u.summary;
+        if (!z) return [];
+        return [
+          { k:'runtime', v:z.minecraft || '—', c:'#D5D3D0' },
+          { k:'loader', v:[loaderLabel(z.loader), z.loader_version].filter(Boolean).join(' ') || '—', c:'#D5D3D0' },
+          { k:'mods', v:String(z.manifest_mods != null ? z.manifest_mods : '—'), c:'#D5D3D0' },
+          { k:'bundled jars', v:String(z.override_jars || 0),
+            c:z.override_jars ? '#FFC44D' : '#D5D3D0' },
+          { k:'override files', v:String(z.override_files != null ? z.override_files : '—'), c:'#D5D3D0' },
+          { k:'requested ram', v:z.recommended_ram_mb ? z.recommended_ram_mb + ' MB' : 'not stated',
+            c:z.recommended_ram_mb ? '#FF3B5C' : '#9C9EA4' }
+        ]; })(),
       commitImport:() => this.commitImport(),
-      archives:(D.uploads || []).map(a => ({ n:a.name || a.filename || a.upload_id,
+      archives:(D.uploads || []).map(a => ({ n:a.file_name || a.upload_id,
         sz:bytes(a.size),
-        reuse:() => { this.setState({ upload:a, upPct:100, upName:a.name });
-                      this.toast('Reusing ' + (a.name || 'that archive') + '.', 'info'); },
+        reuse:() => { this.setState({ upload:a, upPct:100, upName:a.file_name });
+                      this.toast('Reusing ' + (a.file_name || 'that archive') + '.', 'info'); },
         del:async () => { try { await api('/api/uploads/' + a.upload_id, { method:'DELETE' });
-            this.toast((a.name || 'archive') + ' deleted from the import cache.', 'ok');
+            this.toast((a.file_name || 'archive') + ' deleted from the import cache.', 'ok');
             this.load('uploads', '/api/uploads', r => r.items || []); }
           catch (e) { this.toast(e.message, 'crit'); } } })),
 

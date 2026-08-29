@@ -26,7 +26,7 @@ import zipfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from app import installer, optimizer, packs, properties  # noqa: E402
+from app import installer, optimizer, packs, preflight, properties  # noqa: E402
 from app.jobs import Job  # noqa: E402
 
 results = []
@@ -238,6 +238,50 @@ async def main():
     check("exclude_files still removes a mod entirely",
           not any("clientmod" in u for u in fake4.uploaded),
           ", ".join(u for u in fake4.uploaded if u.startswith("mods/")))
+
+    # --- the client-only review must not strip a dependency --------------------
+    # This is the failure the protection exists to prevent, and it was live: the
+    # server-pack path had no protection pass at all, so Athena -- declared
+    # client-only by its own author, and a hard requirement of Chipped, which is
+    # not -- was a confident "remove". The pack installed and then refused to
+    # boot with "requires version 4.0.0 or later of athena, which is missing".
+    jars = [
+        {"file_name": "chipped.jar", "name": "Chipped", "mod_id": "chipped",
+         "dependencies": ["athena"]},
+        {"file_name": "athena.jar", "name": "Athena", "mod_id": "athena",
+         "dependencies": []},
+        {"file_name": "iris.jar", "name": "Iris", "mod_id": "iris", "dependencies": []},
+        {"file_name": "zoom.jar", "name": "Zoomer", "mod_id": "zoom",
+         "dependencies": ["iris"]},
+    ]
+    cands = [
+        {"file_name": "athena.jar", "name": "Athena", "mod_id": "athena",
+         "reasons": ["the author declares it client-only"], "confidence": "declared"},
+        {"file_name": "iris.jar", "name": "Iris", "mod_id": "iris",
+         "reasons": ["the author declares it client-only"], "confidence": "declared"},
+        {"file_name": "zoom.jar", "name": "Zoomer", "mod_id": "zoom",
+         "reasons": ["name matches a known client-only mod"], "confidence": "name"},
+    ]
+    preflight.decide_with_protection(cands, jars)
+    by = {c["file_name"]: c for c in cands}
+    check("a dependency of a server mod is held back, not removed",
+          by["athena.jar"]["recommendation"] == "keep", by["athena.jar"]["recommendation"])
+    check("and it names who needs it",
+          by["athena.jar"].get("required_by_others") == ["Chipped"],
+          by["athena.jar"].get("required_by_others"))
+    check("a client mod nothing depends on is still removed",
+          by["iris.jar"]["recommendation"] == "remove", by["iris.jar"]["recommendation"])
+    check("a client mod required only by ANOTHER client mod is not protected",
+          by["iris.jar"].get("required_by_others") is None,
+          "Zoomer needs Iris, but Zoomer is going too")
+    check("a name-only match is offered for review, never removed outright",
+          by["zoom.jar"]["recommendation"] == "review", by["zoom.jar"]["recommendation"])
+
+    cands2 = [{"file_name": "sound.jar", "name": "Sound Physics", "mod_id": "sp",
+               "reasons": ["mixed signals"], "confidence": "contradicted"}]
+    preflight.decide_with_protection(cands2, [])
+    check("contradicted evidence is a review, not a removal",
+          cands2[0]["recommendation"] == "review", cands2[0]["recommendation"])
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
