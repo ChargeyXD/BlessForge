@@ -39,8 +39,8 @@ from typing import Any
 
 import httpx
 
-from app import (config, crafty, curseforge, jarmeta, modrinth, optimizer,
-                 packs, properties, uploads)
+from app import (cache, config, crafty, curseforge, jarmeta, modrinth,
+                 optimizer, packs, properties, uploads)
 from app import preflight as preflight_mod
 from app import specs
 from app.jobs import Job
@@ -352,6 +352,7 @@ async def _download_manifest_mods(
     problems: list[dict] = []
     matched_names: list[str] = []
     disabled_client: list[str] = []
+    wrong_loader_mods: list[str] = []
     reasons = client_reasons or {}
 
     sem = asyncio.Semaphore(config.DOWNLOAD_CONCURRENCY)
@@ -420,8 +421,29 @@ async def _download_manifest_mods(
                             client_only = True
                             why = ["name matches a known client-only mod"]
 
-                    target = fname + (".disabled" if client_only else "")
+                    # A jar built for another loader is not a judgement call:
+                    # Forge cannot read neoforge.mods.toml and will silently
+                    # ignore the file, so the mod is absent with nothing said.
+                    # Installing it disabled keeps the pack honest and says
+                    # why, instead of leaving dead weight in mods/.
+                    wrong_loader = False
+                    if plan.loader:
+                        markers = jarmeta.loader_markers(cached if cached else blob)
+                        if not jarmeta.fits_loader(plan.loader, markers,
+                                                   plan.mc_version or ""):
+                            wrong_loader = True
+                            why = [f"built for {'/'.join(sorted(markers))}, "
+                                   f"but this server runs {plan.loader}"]
+
+                    target = fname + (
+                        ".disabled" if client_only or wrong_loader else "")
                     if client_only:
+                        disabled_client.append(fname)
+                    if wrong_loader:
+                        wrong_loader_mods.append(fname)
+                        # Rides the same "installed but disabled" list so the
+                        # Mods tab, the manifest and the summary all already
+                        # know how to show it.
                         disabled_client.append(fname)
                     results.append(PackEntry(
                         target, path=cached, blob=blob,
@@ -444,7 +466,9 @@ async def _download_manifest_mods(
                         "summary": project.get("summary"),
                         "required": entry.get("required", True),
                         "client_only": client_only,
-                        "client_only_reasons": why,
+                        "client_only_reasons": why if client_only else [],
+                        "wrong_loader": wrong_loader,
+                        "wrong_loader_reason": why[0] if wrong_loader else None,
                         "identified_at": time.time(),
                     })
                 except Exception as e:
@@ -463,13 +487,22 @@ async def _download_manifest_mods(
 
         await asyncio.gather(*(one(e) for e in entries))
 
-    if disabled_client:
+    if wrong_loader_mods:
         job.log_line(
-            f"Installed {len(disabled_client)} client-only mods as disabled "
+            f"{len(wrong_loader_mods)} mod(s) are built for another loader and "
+            f"were installed disabled -- {plan.loader} cannot load them: "
+            + ", ".join(sorted(wrong_loader_mods)[:8])
+            + ("..." if len(wrong_loader_mods) > 8 else ""),
+            "warn",
+        )
+    client_only_disabled = [f for f in disabled_client if f not in set(wrong_loader_mods)]
+    if client_only_disabled:
+        job.log_line(
+            f"Installed {len(client_only_disabled)} client-only mods as disabled "
             "(they are on the Mods tab, tagged client-side, and can be "
             "re-enabled in one click): "
-            + ", ".join(sorted(disabled_client)[:8])
-            + ("..." if len(disabled_client) > 8 else "")
+            + ", ".join(sorted(client_only_disabled)[:8])
+            + ("..." if len(client_only_disabled) > 8 else "")
         )
     if problems:
         job.log_line(f"{len(problems)} mods could not be downloaded", "warn")
@@ -1224,6 +1257,19 @@ async def install_modpack(
         + (f", {len(summary['client_only_disabled'])} left disabled as client-only"
            if summary["client_only_disabled"] else "")
     )
+
+    # An install is the moment the cache has just grown, and the one moment
+    # nothing else is reading it. Failing to prune must never fail an install
+    # that otherwise worked.
+    try:
+        result = cache.prune()
+        if result["pruned"]:
+            job.log_line(
+                f"Cache trimmed: {result['pruned']} old files removed, "
+                f"{result['freed'] / 1024**3:.1f} GB freed")
+    except Exception as e:
+        job.log_line(f"Could not trim the download cache: {e}", "warn")
+
     return summary
 
 

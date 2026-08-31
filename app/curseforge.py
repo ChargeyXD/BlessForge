@@ -214,6 +214,44 @@ async def list_files(
     return [_slim_file(f) for f in data]
 
 
+async def latest_file_ids(
+    mod_ids: list[int], game_version: str, loader: str
+) -> dict[int, int]:
+    """Newest file id per mod for one (Minecraft, loader) pair, in bulk.
+
+    `POST /v1/mods` returns `latestFilesIndexes` for every mod in one call,
+    which answers "is there anything newer?" for a whole server in a handful
+    of requests instead of one per mod. Checked against the per-mod path over
+    a 225-mod pack it agreed on every mod it could resolve.
+
+    It does not resolve everything: an index entry can carry `modLoader: null`
+    for a file that declares no loader, and some mods list no entry at all for
+    a given pair. Those come back absent so the caller can fall back rather
+    than silently report "up to date".
+    """
+    type_id = LOADER_TYPE.get((loader or "").lower())
+    if not mod_ids or not game_version or not type_id:
+        return {}
+    out: dict[int, int] = {}
+    ids = list({int(m) for m in mod_ids})
+    for i in range(0, len(ids), _BULK_CHUNK):
+        chunk = ids[i : i + _BULK_CHUNK]
+        try:
+            data = await _post("/v1/mods", {"modIds": chunk}) or []
+        except Exception:
+            continue
+        for mod in data:
+            hit = next(
+                (x for x in (mod.get("latestFilesIndexes") or [])
+                 if x.get("gameVersion") == game_version
+                 and x.get("modLoader") == type_id),
+                None,
+            )
+            if hit and hit.get("fileId"):
+                out[mod["id"]] = hit["fileId"]
+    return out
+
+
 async def get_categories(class_id: int = CLASS_MODPACKS) -> list[dict]:
     data = await _get("/v1/categories", {"gameId": GAME_ID, "classId": class_id}) or []
     return [

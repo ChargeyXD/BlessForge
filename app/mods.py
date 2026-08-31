@@ -116,6 +116,14 @@ async def set_enabled(server_id: str, filename: str, enabled: bool,
         if new_name in entries and current not in entries:
             return {"file": new_name, "enabled": enabled, "changed": False,
                     "already": True}
+        if current not in entries:
+            # Neither name is on disk, so this is not an already-done toggle
+            # but a mod that is not there. Say so in those terms: the raw
+            # failure is a rename errno quoting Crafty's own filesystem path,
+            # which tells the user nothing and puts server-side paths in a
+            # browser response.
+            raise ValueError(
+                f"'{current}' is not in this server's {directory} folder")
         raise
     return {"file": new_name, "previous": current, "enabled": enabled, "changed": True}
 
@@ -560,6 +568,44 @@ async def check_updates(server_id: str, directory: str = "mods") -> dict:
                 "note": "No identified mods -- run Identify first."}
 
     updates = []
+
+    # One request per mod is 225 requests for an ordinary pack and the best
+    # part of a minute. CurseForge will answer for the whole set at once, so
+    # ask that way first and keep the per-mod path only for what it could not
+    # resolve -- typically a handful of files that declare no loader.
+    bulk: dict[int, int] = {}
+    cf_records = [r for r in records if r["source"] == "curseforge"]
+    if cf_records and mc and loader:
+        try:
+            bulk = await curseforge.latest_file_ids(
+                [int(r["project_id"]) for r in cf_records], mc, loader)
+        except Exception:
+            bulk = {}
+
+    def note(rec, latest_id, latest_name=None, latest_date=None):
+        if str(latest_id) == str(rec.get("file_id")):
+            return
+        updates.append({
+            "file": posixpath.basename(rec.get("file", "")),
+            "name": rec.get("name"),
+            "source": rec["source"],
+            "project_id": rec["project_id"],
+            "current_version": rec.get("version"),
+            "current_file_id": rec.get("file_id"),
+            "latest_version": latest_name,
+            "latest_file_id": latest_id,
+            "latest_date": latest_date,
+        })
+
+    slow: list[dict] = []
+    for rec in records:
+        if rec["source"] == "curseforge":
+            hit = bulk.get(int(rec["project_id"])) if rec.get("project_id") else None
+            if hit:
+                note(rec, hit)
+                continue
+        slow.append(rec)
+
     sem = asyncio.Semaphore(6)
 
     async def check(rec):
@@ -589,10 +635,29 @@ async def check_updates(server_id: str, directory: str = "mods") -> dict:
                     "latest_date": latest.get("date"),
                 })
 
-    await asyncio.gather(*(check(r) for r in records))
+    await asyncio.gather(*(check(r) for r in slow))
+
+    # The bulk index gives a file id and nothing else, so name and date are
+    # filled in afterwards -- for the handful that actually have an update,
+    # not for every mod on the server.
+    unnamed = [u for u in updates if u["latest_version"] is None
+               and u["source"] == "curseforge" and u["latest_file_id"]]
+    if unnamed:
+        try:
+            meta = await curseforge.get_files(
+                [int(u["latest_file_id"]) for u in unnamed])
+        except Exception:
+            meta = {}
+        for u in unnamed:
+            f = meta.get(int(u["latest_file_id"]))
+            if f:
+                u["latest_version"] = f.get("display_name") or f.get("file_name")
+                u["latest_date"] = f.get("date")
+
     updates.sort(key=lambda u: (u["name"] or "").lower())
     return {"checked": len(records), "updates": updates,
-            "minecraft": mc, "loader": loader}
+            "minecraft": mc, "loader": loader,
+            "resolved_in_bulk": len(records) - len(slow)}
 
 
 async def dependency_map(server_id: str, directory: str = "mods") -> dict:

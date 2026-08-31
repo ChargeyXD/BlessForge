@@ -101,6 +101,13 @@ MAX_UPLOAD_MB = _int("MAX_UPLOAD_MB", 4096)
 # How many imports to keep on disk. The oldest are pruned past this.
 MAX_UPLOADS = _int("MAX_UPLOADS", 12)
 
+# Ceiling for the download cache, in GB. Everything under CACHE_DIR is a copy
+# of something CurseForge or Modrinth will hand out again, so it is safe to
+# delete -- but nothing ever did, and a few months of installs is several GB
+# of jars for packs that are long gone, on the same disk as the worlds. Past
+# this the least recently used files go first. Set 0 to never prune.
+MAX_CACHE_GB = _int("MAX_CACHE_GB", 8)
+
 # --- Mod Roulette ------------------------------------------------------
 # Catalogue pages (50 mods each) fetched per category when building a pool.
 # Four gives roughly 3,000 candidates on a well-served version, which is

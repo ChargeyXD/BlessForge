@@ -111,5 +111,34 @@ check("a `started` in the future reads as unknown, not negative",
                                   + _dt.timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")}) is None,
       "a clock skew must not render as a negative uptime")
 
+# --- a jar built for the wrong loader -------------------------------------
+#
+# A Forge server ignores a jar whose only descriptor is neoforge.mods.toml:
+# no crash, no log line, the mod is simply absent. One roulette-built server
+# had eleven of them and Diagnose reported no findings at all.
+#
+# The rule has to stay permissive. Measured over every jar BlessForge had
+# cached, 194 of 1960 (9.9%) ship metadata for more than one loader and 13
+# ship none -- so "the jar's one detected loader differs" would condemn a
+# tenth of a real pack.
+from app import jarmeta as _jm
+
+for _loader, _mc, _markers, _want, _why in [
+    ("forge",    "1.21.1", ["neoforge"],        False, "Forge cannot read neoforge.mods.toml"),
+    ("forge",    "1.21.1", ["forge"],           True,  "the ordinary case"),
+    ("forge",    "1.21.1", ["fabric", "forge"], True,  "multi-loader jar, one marker fits"),
+    ("forge",    "1.21.1", [],                  True,  "a library jar declares no loader"),
+    ("neoforge", "1.21.1", ["forge"],           False, "descriptor renamed at 1.20.2"),
+    ("neoforge", "1.20.1", ["forge"],           True,  "NeoForge 1.20.1 still reads mods.toml"),
+    ("neoforge", "1.21.1", ["neoforge"],        True,  "the ordinary case"),
+    ("fabric",   "1.21.1", ["forge"],           False, "a different runtime entirely"),
+    ("fabric",   "1.21.1", ["fabric"],          True,  "the ordinary case"),
+    ("quilt",    "1.21.1", ["fabric"],          True,  "Quilt runs Fabric mods"),
+    ("quilt",    "1.21.1", ["forge"],           False, "a different runtime entirely"),
+]:
+    check(f"{_loader} {_mc} + {_markers or 'no markers'} -> "
+          f"{'loads' if _want else 'does not load'}",
+          _jm.fits_loader(_loader, _markers, _mc) is _want, _why)
+
 print(f"\n{sum(ok)}/{len(ok)} checks passed")
 sys.exit(0 if all(ok) else 1)

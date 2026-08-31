@@ -144,6 +144,57 @@ def _add_nested(z, names, info: dict, depth: int = 0) -> None:
         _add_nested(inner, inner_names, info, depth + 1)
 
 
+_LOADER_MARKERS = (
+    ("fabric.mod.json", "fabric"),
+    ("quilt.mod.json", "quilt"),
+    ("META-INF/neoforge.mods.toml", "neoforge"),
+    ("META-INF/mods.toml", "forge"),
+)
+
+
+def loader_markers(source) -> set[str]:
+    """Which loaders a jar carries metadata for, without parsing any of it.
+
+    Only the zip's central directory is read, so this is cheap enough to run
+    over every jar in a pack during an install. Accepts a path or bytes; an
+    unreadable jar reports nothing rather than raising, because "we could not
+    tell" must never be mistaken for "built for the wrong loader".
+    """
+    try:
+        if isinstance(source, (bytes, bytearray)):
+            z = zipfile.ZipFile(io.BytesIO(source))
+        else:
+            z = zipfile.ZipFile(source)
+        with z:
+            names = set(z.namelist())
+    except Exception:
+        return set()
+    return {loader for entry, loader in _LOADER_MARKERS if entry in names}
+
+
+def fits_loader(server_loader: str, jar_loaders, mc_version: str = "") -> bool:
+    """Whether a jar with these markers can load on this server.
+
+    Deliberately permissive: no markers (a library or resource jar) and any
+    single matching marker both pass. Roughly a tenth of real jars ship
+    metadata for more than one loader, so anything stricter reports working
+    mods as broken.
+    """
+    s = (server_loader or "").lower()
+    jl = {j.lower() for j in (jar_loaders or ())}
+    if not jl or not s:
+        return True
+    if s == "forge":
+        return "forge" in jl
+    if s == "neoforge":
+        # NeoForge for 1.20.1 is a Forge fork and still reads mods.toml; from
+        # 1.20.2 the descriptor was renamed and a Forge-only jar cannot load.
+        return "neoforge" in jl or ("forge" in jl and mc_version.startswith("1.20.1"))
+    if s in ("fabric", "quilt"):
+        return "fabric" in jl or (s == "quilt" and "quilt" in jl)
+    return True
+
+
 def parse(data: bytes, filename: str = "") -> dict:
     """Return normalised metadata for a mod jar."""
     info: dict = {
@@ -164,6 +215,12 @@ def parse(data: bytes, filename: str = "") -> dict:
         "provides": [],
         "nested": 0,
         "fml_type": None,      # NeoForge: LIBRARY / GAMELIBRARY / MOD
+        # Every loader this jar carries metadata for, not just the one the
+        # parse below settles on. A tenth of real jars are multi-loader, and
+        # the parse returns at the first marker it recognises -- so `loader`
+        # alone would call a Forge+Fabric jar "fabric" and any check based on
+        # it would flag a jar that is perfectly fine on Forge.
+        "loaders": [],
         "description": None,
         "parse_error": None,
     }
@@ -174,6 +231,7 @@ def parse(data: bytes, filename: str = "") -> dict:
         return info
 
     names = set(z.namelist())
+    info["loaders"] = [l for e, l in _LOADER_MARKERS if e in names]
 
     # --- Fabric / Quilt ------------------------------------------------
     for entry, loader in (("fabric.mod.json", "fabric"), ("quilt.mod.json", "quilt")):

@@ -830,6 +830,31 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
                 category="mods",
             ))
 
+    # Built for another loader. A Forge server simply ignores a jar whose
+    # only descriptor is neoforge.mods.toml, so the mod is silently absent --
+    # no crash, no log line, just a feature that never appears. That is worth
+    # saying out loud, because nothing else in the app would ever mention it.
+    manifest = await crafty.read_studio_manifest(server_id)
+    server_loader = (manifest.get("loader") or "").lower()
+    mc_version = manifest.get("minecraft") or ""
+    misfits = [
+        (f, i) for f, i in sorted(parsed.items())
+        if not jarmeta.fits_loader(server_loader, i.get("loaders") or [], mc_version)
+    ]
+    if misfits:
+        names = [f"{f} ({'/'.join(i['loaders'])})" for f, i in misfits]
+        findings.append(_finding(
+            "error",
+            f"{len(misfits)} mod(s) built for a different loader",
+            f"This server runs {server_loader or 'an unknown loader'} "
+            f"{mc_version}, and these jars carry metadata only for another "
+            "loader, so it will not load them: " + ", ".join(names[:6])
+            + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+            + ". They take up space and provide nothing.",
+            fix={"action": "disable_mods", "files": [f for f, _ in misfits]},
+            category="mods",
+        ))
+
     unreadable = [f for f, i in parsed.items() if i.get("parse_error")]
     if unreadable:
         findings.append(_finding(
@@ -845,6 +870,7 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
             "name": i.get("name"),
             "version": i.get("version"),
             "loader": i.get("loader"),
+            "loaders": i.get("loaders") or [],
             "side": i.get("side"),
             "dependencies": [d.get("id") for d in i.get("dependencies", [])],
             "provides": i.get("provides") or [],
@@ -867,6 +893,7 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
         "missing": len(missing),
         "duplicates": dupes,
         "unreadable": len(unreadable),
+        "wrong_loader": len(misfits),
         "client_only": sum(1 for i in parsed.values() if i.get("side") == "client"),
         "findings": sorted(findings, key=lambda f: SEVERITY_ORDER[f["severity"]]),
         "mods": mods_summary,

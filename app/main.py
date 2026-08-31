@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import (
     ai,
+    cache,
     config,
     configs,
     crafty,
@@ -1244,6 +1245,28 @@ async def roulette_preview_export(body: dict = Body(...)) -> dict:
 @app.get("/api/host/specs")
 async def host_specs() -> dict:
     return specs.effective_host()
+
+
+@app.get("/api/cache")
+async def cache_status() -> dict:
+    """What the download cache is holding, and the ceiling it is kept under."""
+    used = cache.usage_bytes()
+    limit = config.MAX_CACHE_GB * 1024**3
+    return {
+        "used_bytes": used,
+        "used_gb": round(used / 1024**3, 2),
+        "limit_gb": config.MAX_CACHE_GB,
+        "over": bool(limit and used > limit),
+    }
+
+
+@app.post("/api/cache/prune")
+async def cache_prune() -> dict:
+    """Trim the cache now rather than waiting for the next install."""
+    try:
+        return cache.prune()
+    except Exception as e:
+        raise _err(e)
 
 
 @app.get("/api/instances/{server_id}/properties")
