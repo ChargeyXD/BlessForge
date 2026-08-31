@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import re
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import (
     ai,
+    backups,
     cache,
     config,
     configs,
@@ -23,19 +25,36 @@ from app import (
     curseforge,
     deps,
     diagnostics,
+    exporter,
     installer,
     modrinth,
     mods as modmgr,
     optimizer,
     properties,
     roulette,
+    smoketest,
     specs,
     uploads,
+    watcher,
     whitelist,
 )
 from app.jobs import registry
 
-app = FastAPI(title="BlessForge", version="2.0.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Own the background update sweep for the life of the process."""
+    task = asyncio.create_task(watcher.run_forever())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+app = FastAPI(title="BlessForge", version="2.0.0", lifespan=_lifespan)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -575,6 +594,14 @@ async def toggle_mod(server_id: str, body: dict = Body(...)) -> dict:
 async def bulk_toggle(server_id: str, body: dict = Body(...)) -> dict:
     files = body.get("files") or []
     enabled = bool(body.get("enabled", False))
+    # Disabling a dozen jars at once is the change people most want back, and
+    # a snapshot is a list of names -- so take one before, not after. A single
+    # toggle is its own undo (toggle it again) and is not worth a snapshot.
+    snap = None
+    if len(files) > 1:
+        snap = await backups.snapshot(
+            server_id,
+            f"before {'enabling' if enabled else 'disabling'} {len(files)} mods")
     results, errors = [], []
     for f in files:
         try:
@@ -582,7 +609,8 @@ async def bulk_toggle(server_id: str, body: dict = Body(...)) -> dict:
                 server_id, f, enabled, body.get("directory", "mods")))
         except Exception as e:
             errors.append({"file": f, "error": str(e)})
-    return {"changed": results, "errors": errors}
+    return {"changed": results, "errors": errors,
+            "snapshot": (snap or {}).get("id")}
 
 
 @app.post("/api/instances/{server_id}/mods/delete")
@@ -686,7 +714,19 @@ async def read_config(server_id: str, path: str = Query(...)) -> dict:
 @app.post("/api/instances/{server_id}/configs/write")
 async def write_config(server_id: str, body: dict = Body(...)) -> dict:
     try:
-        return await configs.write_config(server_id, body["path"], body["content"])
+        path = body["path"]
+        # An edited config is the one thing here that exists nowhere else --
+        # no catalogue will hand it back. Keep the previous bytes first.
+        snap = None
+        try:
+            before = await configs.read_config(server_id, path)
+            snap = await backups.snapshot(
+                server_id, f"before editing {path}",
+                files={path: (before.get("content") or "").encode()})
+        except Exception:
+            pass
+        result = await configs.write_config(server_id, path, body["content"])
+        return {**result, "snapshot": (snap or {}).get("id")}
     except Exception as e:
         raise _err(e)
 
@@ -748,6 +788,93 @@ async def diagnose(server_id: str) -> dict:
 async def deep_scan(server_id: str) -> dict:
     job = await _job_for("deep_scan", "Dependency scan", server_id)
     registry.start(job, lambda j: diagnostics.deep_scan(j, server_id))
+    return {"job_id": job.id}
+
+
+# --- undo, boot test, export, scheduled updates ------------------------
+
+
+@app.get("/api/instances/{server_id}/backups")
+async def list_backups(server_id: str) -> dict:
+    """Snapshots taken before this server's destructive changes."""
+    return {"items": backups.list_snapshots(server_id),
+            "limit": config.MAX_BACKUPS}
+
+
+@app.post("/api/instances/{server_id}/backups")
+async def take_backup(server_id: str, reason: str = Body("manual", embed=True)) -> dict:
+    try:
+        return await backups.snapshot(server_id, reason)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/backups/{snap_id}/restore")
+async def restore_backup(server_id: str, snap_id: str) -> dict:
+    try:
+        return await backups.restore(server_id, snap_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/smoke-test")
+async def smoke_test(server_id: str, timeout: int = Body(300, embed=True)) -> dict:
+    """Boot once, watch, stop, and report -- for a server with no log yet."""
+    job = await _job_for("smoke_test", "Boot test", server_id)
+    registry.start(job, lambda j: smoketest.run(j, server_id,
+                                                timeout=max(60, min(timeout, 900))))
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/export")
+async def export_instance(
+    server_id: str,
+    include_disabled: bool = Body(False, embed=True),
+    bundle_others: bool = Body(True, embed=True),
+) -> dict:
+    """Write this server out as a CurseForge modpack archive."""
+    job = await _job_for("export", "Export pack", server_id)
+
+    async def run(j):
+        result = await exporter.export_instance(
+            j, server_id, include_disabled=include_disabled,
+            bundle_others=bundle_others)
+        blob = result.pop("bytes")
+        path = config.DATA_DIR / "exports" / result["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+        result["download"] = f"/api/exports/{result['filename']}"
+        return result
+
+    registry.start(job, run)
+    return {"job_id": job.id}
+
+
+@app.get("/api/exports/{filename}")
+async def download_export(filename: str):
+    safe = re.sub(r"[^A-Za-z0-9._ -]+", "", filename)
+    path = config.DATA_DIR / "exports" / safe
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="no such export")
+    return FileResponse(path, media_type="application/zip", filename=safe)
+
+
+@app.get("/api/updates")
+async def update_summary() -> dict:
+    """The last scheduled sweep for newer mod builds."""
+    state = watcher.load()
+    return {
+        **state,
+        "every_hours": config.UPDATE_CHECK_HOURS,
+        "total": sum(s.get("updates", 0) for s in (state.get("servers") or {}).values()),
+    }
+
+
+@app.post("/api/updates/check")
+async def update_check_now() -> dict:
+    """Run the sweep now instead of waiting for the schedule."""
+    job = registry.create("updates", "Checking every server for mod updates")
+    registry.start(job, lambda j: watcher.check_all())
     return {"job_id": job.id}
 
 
@@ -1617,6 +1744,18 @@ async def ai_autofix(server_id: str, body: dict = Body(default={})) -> dict:
 async def _apply_actions(server_id: str, actions: list[dict], job=None
                          ) -> tuple[list[dict], list[dict]]:
     """Execute a validated action list. Shared by /ai/apply and /ai/autofix."""
+    # The assistant's plan is the change a user is least able to predict and
+    # least able to reverse from memory, so it always gets a snapshot -- even
+    # a one-mod plan, unlike a hand-driven toggle.
+    if actions:
+        snap = await backups.snapshot(
+            server_id,
+            "before the assistant applied "
+            + ", ".join(a["action"] for a in actions[:4])
+            + (f" and {len(actions) - 4} more" if len(actions) > 4 else ""))
+        if job and snap.get("saved"):
+            job.log_line(f"Snapshot {snap['id']} taken -- this is reversible "
+                         "from the server's Backups list")
     applied, failed = [], []
     for action in actions:
         name, args = action["action"], action["args"]
@@ -1786,6 +1925,7 @@ async def install_modpack(body: dict = Body(...)) -> dict:
 @app.post("/api/instances/{server_id}/switch-pack-version")
 async def switch_pack_version(server_id: str, body: dict = Body(...)) -> dict:
     ref = _pack_ref(body)
+    await backups.snapshot(server_id, "before switching pack version")
     job = await _job_for("switch", "Switch pack version", server_id)
     registry.start(
         job,

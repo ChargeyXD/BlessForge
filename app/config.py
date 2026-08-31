@@ -108,6 +108,20 @@ MAX_UPLOADS = _int("MAX_UPLOADS", 12)
 # this the least recently used files go first. Set 0 to never prune.
 MAX_CACHE_GB = _int("MAX_CACHE_GB", 8)
 
+# --- Undo --------------------------------------------------------------
+# Snapshots kept per server before a destructive change. These hold mod
+# names and enabled/disabled state, not the jars, so they cost kilobytes --
+# the limit is about keeping the list readable, not about disk. 0 disables
+# snapshots entirely.
+MAX_BACKUPS = _int("MAX_BACKUPS", 20)
+
+# --- Scheduled update checks -------------------------------------------
+# How often to look for newer builds of installed mods, in hours. One pass
+# covers every managed server and is a handful of API calls each, so this is
+# cheap; it exists so "3 mods have updates" is waiting for you rather than
+# something you have to go and ask for. 0 turns the schedule off.
+UPDATE_CHECK_HOURS = _int("UPDATE_CHECK_HOURS", 12)
+
 # --- Mod Roulette ------------------------------------------------------
 # Catalogue pages (50 mods each) fetched per category when building a pool.
 # Four gives roughly 3,000 candidates on a well-served version, which is

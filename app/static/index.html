@@ -285,6 +285,10 @@
                 <button onClick="{{ actSwitchRelease }}" style="flex:1; padding:7px; background:#1A1D22; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:500; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">Switch release</button>
                 <button onClick="{{ actReimport }}" style="flex:1; padding:7px; background:#1A1D22; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:500; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">Re-import export</button>
               </div>
+              <button onClick="{{ actExportPack }}" style="display:block; width:100%; margin-top:5px; padding:7px; background:#1A1D22; border:1px solid rgba(255,255,255,.1); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:500; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.5); color:#fff;">
+                Export as a CurseForge pack
+                <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#71747B; margin-top:2px;">{{ exportPackNote }}</span>
+              </button>
               <sc-if value="{{ hasExport }}">
                 <a href="{{ exportUrl }}" download style="display:flex; align-items:center; gap:7px; margin-top:8px; padding:8px 10px; background:rgba(255,107,53,.10); border:1px solid rgba(255,107,53,.42); border-radius:2px; color:#FFD3C0; font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:600; text-decoration:none; transition:all .16s;" style-hover="background:rgba(255,107,53,.18);">
                   <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--ember,#FF6B35);">&#8681;</span>
@@ -307,6 +311,26 @@
                   <dd style="margin:0; color:{{ f.c }}; text-align:right;">{{ f.v }}</dd>
                 </sc-for>
               </dl>
+            </section>
+
+            <section style="padding:14px; background:#121417; border:1px solid rgba(255,255,255,.07); border-radius:3px;">
+              <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:4px;">
+                <h2 style="margin:0; font-size:12.5px; font-weight:600;">Undo</h2>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#6A6D74; letter-spacing:.1em; text-transform:uppercase;">{{ snapCount }}</span>
+              </div>
+              <p style="margin:0 0 10px; font-size:11.5px; color:#9C9EA4; line-height:1.55; text-wrap:pretty;">{{ snapBlurb }}</p>
+              <sc-for list="{{ snapshots }}" as="b" hint-placeholder-count="3">
+                <div style="display:flex; align-items:center; gap:9px; padding:8px 9px; margin-bottom:4px; background:#15181C; border-left:2px solid {{ b.c }}; border-radius:0 2px 2px 0; animation:bfRow var(--animdur) both; animation-delay:{{ b.d }};">
+                  <span style="min-width:0; flex:1;">
+                    <span style="display:block; font-size:11.5px; color:#E4E2DF; letter-spacing:-.005em;">{{ b.reason }}</span>
+                    <span style="display:block; font-family:'JetBrains Mono',monospace; font-size:9.5px; color:#8C8F96; margin-top:3px;">{{ b.sub }}</span>
+                  </span>
+                  <button onClick="{{ b.act }}" style="flex:0 0 auto; padding:5px 9px; background:#1A1D22; border:1px solid rgba(255,255,255,.12); border-radius:2px; color:#D5D3D0; font-family:'Space Grotesk',sans-serif; font-size:11px; font-weight:600; cursor:pointer; transition:all .16s;" style-hover="border-color:rgba(255,107,53,.55); color:#fff;">Restore</button>
+                </div>
+              </sc-for>
+              <sc-if value="{{ noSnapshots }}">
+                <div style="padding:10px; background:#15181C; border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:10px; color:#6A6D74; line-height:1.6;">Nothing to undo yet. A snapshot is taken automatically before a bulk disable, a config edit, a version switch, or anything the assistant applies.</div>
+              </sc-if>
             </section>
 
             <section style="padding:14px; background:#121417; border:1px solid rgba(255,59,92,.22); border-radius:3px;">
@@ -1984,13 +2008,38 @@ class Component extends DCLogic {
   /* --- loaders ----------------------------------------------------------- */
 
   async loadSystems() {
-    const [h, ai] = await Promise.all([
+    // Both extras are disk reads on the backend, so they ride along with the
+    // health poll rather than earning their own timer.
+    const [h, ai, upd, ca] = await Promise.all([
       api('/api/health').catch(e => ({ __err:e.message })),
-      api('/api/ai/status').catch(() => ({ available:false, reason:'unreachable' }))
+      api('/api/ai/status').catch(() => ({ available:false, reason:'unreachable' })),
+      api('/api/updates').catch(() => null),
+      api('/api/cache').catch(() => null)
     ]);
-    this.setD({ health:h, ai });
+    this.setD({ health:h, ai, updates_all:upd, cache:ca });
     if (!this.state.d.aiEndpoints)
       this.load('aiEndpoints', '/api/ai/endpoints');
+  }
+
+  async checkAllUpdates() {
+    try {
+      const r = await api('/api/updates/check', { method:'POST', body:{} });
+      this.follow(r.job_id, 'Checking every server for mod updates', () => {
+        this.loadSystems();
+        this.toast('Update sweep finished.', 'ok');
+      });
+    } catch (e) { this.toast(e.message, 'crit'); }
+  }
+
+  async trimCache() {
+    try {
+      const r = await api('/api/cache/prune', { method:'POST', body:{} });
+      this.toast(r.pruned
+        ? r.pruned + ' cached files removed, '
+          + (r.freed / 1073741824).toFixed(1) + ' GB freed.'
+        : 'The cache is already under its ceiling.', 'ok');
+      this.loadSystems();
+    } catch (e) { this.toast(e.message, 'crit'); }
   }
 
   async loadFleet() {
@@ -2070,6 +2119,10 @@ class Component extends DCLogic {
           .then(() => this.setState({ checkedAt:Date.now() }));
       if (view === 'situation' && !this.state.d.port)
         this.load('port', '/api/instances/' + id + '/port');
+      // Snapshots are a disk read of a few small JSON files, so this is cheap
+      // enough to fetch with the screen rather than behind another click.
+      if (view === 'situation')
+        this.load('backups', '/api/instances/' + id + '/backups', r => r.items || []);
     }
     if (view === 'diagnose') {
       this.load('diag', '/api/instances/' + id + '/diagnose');
@@ -2717,6 +2770,77 @@ class Component extends DCLogic {
     } catch (e) { this.toast(e.message, 'crit'); }
   }
 
+  async bootTest() {
+    const id = this.state.sid;
+    this.setBusy('boot', true);
+    try {
+      const r = await api('/api/instances/' + id + '/smoke-test',
+        { method:'POST', body:{ timeout:300 } });
+      this.follow(r.job_id, 'Boot test', (j) => {
+        this.setBusy('boot', false);
+        const res = (j && j.result) || {};
+        if (res.outcome === 'ready') {
+          this.setD({ diag:{ ...(this.state.d.diag || {}), findings:res.findings || [] } });
+          this.toast(res.findings && res.findings.length
+            ? 'Booted in ' + res.seconds + 's, but the log has '
+              + res.findings.length + ' issue(s) — see Diagnose.'
+            : 'Booted clean in ' + res.seconds + 's and stopped again.',
+            res.findings && res.findings.length ? 'warn' : 'ok');
+        } else if (res.outcome === 'failed') {
+          this.toast('It did not get through the boot. Diagnose now has the log.', 'crit');
+          this.setState({ view:'diagnose' });
+        } else if (res.outcome === 'timeout') {
+          this.toast('No "Done" within ' + res.timeout + 's — either a slow pack or a stuck one.', 'warn');
+        }
+        this.load('diag', '/api/instances/' + id + '/diagnose');
+        this.loadFleet();
+      });
+    } catch (e) { this.setBusy('boot', false); this.toast(e.message, 'crit'); }
+  }
+
+  async exportPack() {
+    const id = this.state.sid;
+    this.setBusy('export', true);
+    try {
+      const r = await api('/api/instances/' + id + '/export',
+        { method:'POST', body:{ bundle_others:true } });
+      this.follow(r.job_id, 'Export pack', (j) => {
+        this.setBusy('export', false);
+        const res = (j && j.result) || {};
+        if (!res.download) return this.toast('The export produced nothing.', 'crit');
+        this.setD({ packExport:res });
+        // A browser download is the whole point; starting it is the action.
+        const a = document.createElement('a');
+        a.href = res.download; a.download = res.filename || 'pack.zip';
+        document.body.appendChild(a); a.click(); a.remove();
+        this.toast(res.curseforge_mods + ' mods exported'
+          + (res.bundled && res.bundled.length ? ', ' + res.bundled.length + ' bundled' : '')
+          + '. Downloading now.', 'ok');
+      });
+    } catch (e) { this.setBusy('export', false); this.toast(e.message, 'crit'); }
+  }
+
+  async restoreSnapshot(b) {
+    const id = this.state.sid;
+    // No confirmation sheet: the backend snapshots the current state before
+    // restoring, so pressing this by mistake is itself one click from undone.
+    this.setBusy('restore', true);
+    try {
+      const r = await api('/api/instances/' + id + '/backups/' + b.id + '/restore',
+        { method:'POST', body:{} });
+      const bits = [];
+      if (r.changed.length) bits.push(r.changed.length + ' mods put back');
+      if (r.files_restored.length) bits.push(r.files_restored.length + ' files restored');
+      if (r.missing.length) bits.push(r.missing.length + ' no longer on disk');
+      if (r.failed.length) bits.push(r.failed.length + ' failed');
+      this.toast(bits.length ? bits.join(', ') + '.' : 'Nothing needed changing.',
+                 r.failed.length ? 'warn' : 'ok');
+      this.load('mods', '/api/instances/' + id + '/mods');
+      this.load('backups', '/api/instances/' + id + '/backups', x => x.items || []);
+    } catch (e) { this.toast(e.message, 'crit'); }
+    finally { this.setBusy('restore', false); }
+  }
+
   async deepScan() {
     const id = this.state.sid;
     this.setBusy('scan', true);
@@ -3216,7 +3340,11 @@ class Component extends DCLogic {
       ? [{ g:'⌫', t:'Delete record', p:true, act:() => this.setState({ confirmOpen:'forget' }) }]
       : [{ g:'▶', t:'Start', p:!live, dis:live, act:() => this.power('start_server') },
          { g:'↻', t:'Restart', p:live, dis:!live, act:() => this.power('restart_server') },
-         { g:'■', t:'Stop', dis:!live, act:() => this.power('stop_server') }];
+         { g:'■', t:'Stop', dis:!live, act:() => this.power('stop_server') },
+         /* A server that has never run has no log, and Diagnose reads logs --
+            so the one moment everything wrong with a pack is invisible is the
+            moment right after installing it. This boots once and stops. */
+         { g:'⏻', t:'Boot test', dis:live, act:() => this.bootTest() }];
 
     /* --- needs you ------------------------------------------------------ */
     const findings = ((D.diag && D.diag.findings) || []);
@@ -3302,10 +3430,30 @@ class Component extends DCLogic {
       ? { k:'AI assistant', v:(AI.model || 'model') + ' · ' + hostOf(AI.url), s:'ok' }
       : { k:'AI assistant', v:AI.reason || 'unavailable', s:'warn',
           fix:/not installed/.test(AI.reason || '') ? 'Pull the model' : null });
+    // Two things the fleet as a whole knows, which no single server's screen
+    // would ever show: whether anything has a newer build, and whether the
+    // download cache is about to eat the disk the worlds are on.
+    const UP = D.updates_all;
+    if (UP && UP.checked_at) sysRows.push(UP.total
+      ? { k:'Mod updates', v:UP.total + ' newer build'
+          + (UP.total === 1 ? '' : 's') + ' · checked ' + ago(UP.checked_at),
+          s:'warn', fix:'Check again' }
+      : { k:'Mod updates', v:'everything is on its newest build · checked '
+          + ago(UP.checked_at), s:'ok' });
+    const CA = D.cache;
+    if (CA) sysRows.push({ k:'Download cache',
+      v:CA.used_gb + ' GB of ' + (CA.limit_gb || '\u221e') + ' GB'
+        + (CA.over ? ' · over, trimmed on next install' : ''),
+      s:CA.over ? 'warn' : 'ok',
+      fix:CA.used_gb > 0.5 ? 'Trim now' : null });
+
     const systems = sysRows.map((y, i) => {
       const t = TONE[y.s];
-      return { ...y, d:(i * 45) + 'ms', col:t.c, bg:t.bg, edge:t.c, glyph:t.glyph,
-        act:y.fix ? (() => this.pullModel()) : (() => this.toast(y.k + ': ' + y.v, y.s === 'crit' ? 'crit' : 'info')) };
+      const act = y.fix === 'Check again' ? (() => this.checkAllUpdates())
+        : y.fix === 'Trim now' ? (() => this.trimCache())
+        : y.fix ? (() => this.pullModel())
+        : (() => this.toast(y.k + ': ' + y.v, y.s === 'crit' ? 'crit' : 'info'));
+      return { ...y, d:(i * 45) + 'ms', col:t.c, bg:t.bg, edge:t.c, glyph:t.glyph, act };
     });
     const nBad = sysRows.filter(y => y.s !== 'ok').length;
 
@@ -3358,7 +3506,13 @@ class Component extends DCLogic {
     const q = S.modQ.trim().toLowerCase();
     const modRows = modList.filter(m => {
       const on = S.modOn[m.j] === undefined ? m.on : S.modOn[m.j];
-      if (q && m.n.toLowerCase().indexOf(q) < 0 && m.j.toLowerCase().indexOf(q) < 0) return false;
+      /* Name and jar are not enough at 225 mods: people look for "the one
+         that adds backpacks", not for a filename they have never read. The
+         catalogue summary is already recorded at install, so search it too. */
+      if (q) {
+        const hay = (m.n + ' ' + m.j + ' ' + (m.raw.summary || '')).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
       if (S.modFilter === 'enabled') return on;
       if (S.modFilter === 'disabled') return !on;
       if (S.modFilter === 'unidentified') return !!m.unknown;
@@ -3666,6 +3820,29 @@ class Component extends DCLogic {
           + (mf.roll.installed || (mf.mods || []).length || 0)
           + ' jars · import it, or open it in the CurseForge app'
         : '',
+      actExportPack:() => this.exportPack(),
+      exportPackNote:(D.packExport && D.packExport.filename)
+        ? 'last export: ' + D.packExport.curseforge_mods + ' mods · '
+          + Math.round((D.packExport.size || 0) / 1048576) + ' MB'
+        : 'manifest + any non-CurseForge jars, for the CurseForge app or a friend',
+
+      /* --- undo ------------------------------------------------------- */
+      snapCount:(D.backups || []).length
+        ? (D.backups || []).length + ' kept' : 'none yet',
+      snapBlurb:'Taken automatically before a bulk disable, a config edit, a '
+        + 'version switch, or anything the assistant applies. Restoring is '
+        + 'itself snapshotted, so it is never a one-way door.',
+      snapshots:(D.backups || []).slice(0, 6).map((b, i) => ({
+        id:b.id, reason:b.reason,
+        sub:ago(b.at) + ' · ' + b.enabled + '/' + b.mods + ' mods enabled'
+          + (b.files ? ' · ' + b.files + ' file' + (b.files > 1 ? 's' : '') : '')
+          + (b.partial ? ' · partial' : ''),
+        c:b.partial ? '#FFC44D' : '#7AA7FF',
+        d:(i * 0.03).toFixed(2) + 's',
+        act:() => this.restoreSnapshot(b),
+      })),
+      noSnapshots:!(D.backups || []).length,
+
       sidRaw:srv.id,
       srvPath:(inst && inst.server && inst.server.path) || 'the server directory',
       worldSize:stats.world_size || 'size unknown until it has run',
@@ -3887,7 +4064,7 @@ class Component extends DCLogic {
       modShownN:modRows.length,
       modTotalN:modList.length,
       modOnN:nOn, modOffN:modList.length - nOn,
-      modFilterHint:'Filter ' + modList.length + ' mods by name or jar…',
+      modFilterHint:'Search ' + modList.length + ' mods by name, jar or what it does…',
       modEmptyHint:modList.length
         ? modList.length + ' mods are installed. Try a jar filename, or clear the filter.'
         : (S.busy.mods ? 'Reading the mods directory…'
