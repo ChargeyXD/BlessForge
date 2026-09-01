@@ -168,7 +168,11 @@ CATALOG: dict[str, tuple] = {
         "server; 0 keeps it always running.", None),
 }
 
-GROUP_ORDER = ["Network", "Performance", "Players", "World", "Misc", "Other"]
+# Every group a key can carry. A name missing here gets no tab, and its
+# keys become unreachable in the editor -- which is how `motd` (group
+# "Identity") ended up as the one property of 62 you could not edit.
+GROUP_ORDER = ["Identity", "Network", "Performance", "Players", "World",
+               "Misc", "Other"]
 
 # Changing these needs more than a file write, so the plain editor refuses
 # them and points at the dedicated control.

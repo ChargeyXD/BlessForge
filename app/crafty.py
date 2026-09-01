@@ -37,6 +37,7 @@ import asyncio
 import datetime
 import hashlib
 import json
+import logging
 import pathlib
 import posixpath
 import re
@@ -47,6 +48,8 @@ from typing import Any
 import httpx
 
 from app import config
+
+log = logging.getLogger(__name__)
 
 
 class CraftyError(RuntimeError):
@@ -79,6 +82,26 @@ def _client(timeout: float = 60.0) -> httpx.AsyncClient:
     )
 
 
+def _safe_detail(detail: Any) -> str:
+    """Crafty's error text, with any Python traceback held back.
+
+    A few Crafty endpoints answer a bad request with a raw traceback. Relaying
+    it puts Crafty's install paths, Python version and library versions in the
+    browser, which is no use to the operator and is more than the browser needs
+    to know. The traceback still goes to the log, where it is useful.
+    """
+    text = detail if isinstance(detail, str) else str(detail)
+    if "Traceback (most recent call last)" not in text:
+        return text
+    log.warning("Crafty replied with a traceback: %s", text)
+    # The useful line is the exception at the end, not the caret rule under it
+    # or the source line above that -- so look for the last "SomeError: why".
+    for line in reversed([ln.strip() for ln in text.splitlines() if ln.strip()]):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception|Exit)\b\s*:", line):
+            return f"Crafty rejected the request: {line[:160]}"
+    return "Crafty rejected the request and returned a traceback (see the log)"
+
+
 def _unwrap(resp: httpx.Response, what: str) -> Any:
     if resp.status_code >= 400:
         # Crafty returns JSON errors for most failures but raw tracebacks for
@@ -89,7 +112,8 @@ def _unwrap(resp: httpx.Response, what: str) -> Any:
         except Exception:
             body = resp.text[:600]
             detail = body
-        raise CraftyError(f"{what} failed: {detail}", resp.status_code, body)
+        raise CraftyError(f"{what} failed: {_safe_detail(detail)}",
+                          resp.status_code, body)
     if not resp.content:
         return None
     try:

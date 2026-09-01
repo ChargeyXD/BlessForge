@@ -150,9 +150,17 @@ async def write_config(server_id: str, path: str, content: str) -> dict:
 
 def _guard(path: str) -> None:
     clean = path.replace("\\", "/").strip()
-    if clean.startswith("/") or ".." in clean.split("/"):
+    if clean.startswith("/") or re.match(r"^[A-Za-z]:", clean):
         raise ValueError("invalid path")
-    top = clean.split("/")[0]
+    # Segment-wise, and every all-dots segment is rejected -- not just "..".
+    # "...." is not a traversal on any filesystem we target, but it sails past
+    # a ".." check and reaches Crafty, which answers a 500 with a traceback in
+    # it. A config path never has a dots-only segment, so refuse them here and
+    # keep the failure a 400 with a sentence in it.
+    parts = clean.split("/")
+    if any(p == "" or set(p) == {"."} for p in parts):
+        raise ValueError("invalid path")
+    top = parts[0]
     if top in BLOCKED_DIRS:
         raise ValueError(f"{top}/ is not editable from the config editor")
 

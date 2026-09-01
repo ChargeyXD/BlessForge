@@ -20,6 +20,7 @@ import re
 from collections import defaultdict
 
 from app import crafty, curseforge, jarmeta, modrinth, packs
+from app import mods as modmgr
 from app.jobs import Job
 
 LOG_CANDIDATES = ["logs/latest.log", "logs/debug.log", "server.log"]
@@ -738,7 +739,9 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
         nonlocal done
         async with sem:
             try:
-                blob = await crafty.download_file(server_id, f"{directory}/{name}")
+                blob = await crafty.download_file(
+                    server_id,
+                    f"{modmgr.guard_dir(directory)}/{modmgr.guard_name(name)}")
                 parsed[name] = jarmeta.parse(blob, name)
             except Exception as e:
                 parsed[name] = {"parse_error": str(e), "dependencies": [],

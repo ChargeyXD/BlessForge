@@ -106,7 +106,10 @@ check("the memory tile is not labelled Heap",
 for (const [tab, assert_, label] of [
   ["Mods", (t) => /\d+ TOTAL · \d+ ENABLED/.test(t), "mod counts are real"],
   ["Configs", (t) => /\d+ of \d+ shown/.test(t), "config files are listed"],
-  ["Tune", (t) => /GB heap/.test(t) && /threads/.test(t), "heap and host facts"],
+  // Case-insensitive: the heap card's unit label is styled
+  // text-transform:uppercase, and innerText returns the *rendered* text, so a
+  // case-sensitive match here tests the styling rather than the readout.
+  ["Tune", (t) => /GB heap/i.test(t) && /threads/.test(t), "heap and host facts"],
   ["Activity", (t) => /job/i.test(t), "the job registry"],
 ]) {
   await click(tab);
@@ -124,9 +127,19 @@ check("every JVM flag is listed, not a sample",
       "the canvas said '8 of 34 flags shown'");
 await click("server.properties"); await sleep(1800);
 const props = await text();
+// Ask the backend which groups this server's file actually has rather than
+// hard-coding six: a server whose properties file is still Crafty's stub
+// legitimately spans fewer, and the screen should match the data.
+const propGroups = await page.evaluate(async (u, name) => {
+  const list = await (await fetch(`${u}/api/instances`)).json();
+  const srv = (list.items || []).find(i => name.includes(i.name)) || (list.items || [])[0];
+  if (!srv) return [];
+  const p = await (await fetch(`${u}/api/instances/${srv.server_id}/properties`)).json();
+  return (p.groups || []).map(g => g.name);
+}, BASE, fleet[0]);
 check("server.properties offers every group, not a sample",
-      ["Network", "Performance", "Players", "World", "Misc", "Other"]
-        .every(g => props.includes(g)));
+      propGroups.length > 0 && propGroups.every(g => props.includes(g)),
+      propGroups.join(", "));
 check("and says how many keys there are", /\d+ of \d+ keys shown/.test(props),
       (props.match(/\d+ of \d+ keys shown/) || [""])[0]);
 await click("Ports"); await sleep(1800);

@@ -22,6 +22,39 @@ from app.jobs import Job
 
 DISABLED_SUFFIX = ".disabled"
 
+# The directories an instance keeps loadable jars in. `directory` arrives on
+# the request body, and every path built from it is handed to Crafty to
+# rename, delete or download -- so it is checked here rather than trusted.
+# Crafty does reject a traversal, but it does it with a 500 and a traceback,
+# and "the component downstream happens to refuse" is not a guard.
+MOD_DIRS = {"mods", "plugins", "config", "kubejs", "datapacks", "shaderpacks"}
+
+
+def guard_dir(directory: str) -> str:
+    d = (directory or "mods").replace("\\", "/").strip().strip("/")
+    if d not in MOD_DIRS:
+        raise ValueError(
+            f"{directory!r} is not a mod directory "
+            f"(expected one of {sorted(MOD_DIRS)})"
+        )
+    return d
+
+
+def guard_name(name: str) -> str:
+    """A bare filename -- no directory part, no traversal, no absolute path."""
+    n = (name or "").replace("\\", "/").strip()
+    # No separator means no traversal; the all-dots check stops "." and ".."
+    # from standing in for a directory on their own.
+    if not n or "/" in n or "\x00" in n or set(n) <= {"."}:
+        raise ValueError(f"{name!r} is not a valid file name")
+    return n
+
+
+def guard_names(names: list[str]) -> list[str]:
+    if not isinstance(names, list):
+        raise ValueError("files must be a list")
+    return [guard_name(n) for n in names]
+
 
 def _is_jar(name: str) -> bool:
     return name.lower().endswith(".jar") or name.lower().endswith(".jar" + DISABLED_SUFFIX)
@@ -33,6 +66,7 @@ def _base_name(name: str) -> str:
 
 async def list_mods(server_id: str, directory: str = "mods") -> dict:
     """List every jar in an instance, enriched with whatever we know."""
+    directory = guard_dir(directory)
     try:
         entries = await crafty.list_dir(server_id, directory)
     except crafty.CraftyError:
@@ -91,7 +125,8 @@ async def list_mods(server_id: str, directory: str = "mods") -> dict:
 async def set_enabled(server_id: str, filename: str, enabled: bool,
                       directory: str = "mods") -> dict:
     """Toggle a mod by renaming it to/from .jar.disabled."""
-    current = filename
+    directory = guard_dir(directory)
+    current = guard_name(filename)
     is_disabled = current.endswith(DISABLED_SUFFIX)
     if enabled and is_disabled:
         new_name = _base_name(current)
@@ -130,6 +165,8 @@ async def set_enabled(server_id: str, filename: str, enabled: bool,
 
 async def delete_mods(server_id: str, filenames: list[str],
                       directory: str = "mods") -> dict:
+    directory = guard_dir(directory)
+    filenames = guard_names(filenames)
     paths = [f"{directory}/{f}" for f in filenames]
     await crafty.delete_paths(server_id, paths)
     await _forget_mods(server_id, filenames)
@@ -179,6 +216,9 @@ async def add_mod(
     dependency_files: list[str] | None = None,
 ) -> dict:
     """Install a single mod from CurseForge or Modrinth into an instance."""
+    directory = guard_dir(directory)
+    if replace_file:
+        replace_file = guard_name(replace_file)
     if source == "curseforge":
         meta = await curseforge.get_file(int(project_id), int(file_id))
         blob = await curseforge.download(meta)
@@ -257,6 +297,9 @@ async def add_mod_with_dependencies(
     `skip_projects` lets the user deselect individual dependencies in the
     preview before confirming.
     """
+    directory = guard_dir(directory)
+    if replace_file:
+        replace_file = guard_name(replace_file)
     job.set_step("Resolving dependencies", 5)
     plan = await deps.resolve_for_instance(
         server_id, source=source, project_id=project_id, file_id=file_id

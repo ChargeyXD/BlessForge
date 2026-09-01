@@ -184,9 +184,20 @@ async def analyse_manifest_pack(
     # working pack into a missing-dependency crash. Two sources of truth:
     # CurseForge's declared relations, and the mod ids the jars themselves
     # require.
-    depended_on = await _dependency_targets(file_meta)
+    #
+    # Only jars that are STAYING get a vote, which is the same rule
+    # decide_with_protection() applies on the server-pack path. One
+    # client-only mod requiring another is not a reason to keep either: EMF
+    # and ETF are both confirmed client-side renderers, and the only things
+    # depending on them are other client-side mods being disabled in the same
+    # pass -- so protecting them locked the two mods the user most wanted off.
+    staying = {m.get("file_name") for m in keep if m.get("file_name")}
+    depended_on = await _dependency_targets({
+        fid: meta for fid, meta in file_meta.items()
+        if (meta.get("file_name") or "") in staying
+    })
     needed_mod_ids: dict[str, set[str]] = {}
-    for mod in all_mods:
+    for mod in keep:
         for dep_id in mod.get("dependencies") or []:
             if dep_id:
                 needed_mod_ids.setdefault(dep_id.lower(), set()).add(mod["name"])
