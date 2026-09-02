@@ -867,7 +867,12 @@
                     <div style="padding:0 8px; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.62; color:#3E434B; text-align:right;">{{ l.n }}</div>
                   </sc-for>
                 </div>
-                <textarea id="bfEditor" wrap="off" value="{{ edText }}" onInput="{{ setEdText }}" onScroll="{{ edScroll }}" readOnly="{{ edReadOnly }}" placeholder="{{ edPlaceholder }}" spellCheck="false" style="flex:1; min-width:0; height:62vh; padding:12px 14px; background:transparent; border:0; outline:none; resize:none; color:#C6C3BF; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.62; white-space:pre; overflow:auto;"></textarea>
+                <div style="position:relative; flex:1; min-width:0; height:62vh;">
+                    <sc-if value="{{ edHiOn }}" hint-placeholder-val="{{ true }}">
+                      <pre id="bfHi" aria-hidden="true" style="position:absolute; inset:0; margin:0; overflow:hidden; pointer-events:none; padding:12px 14px; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.62; white-space:pre; tab-size:4; letter-spacing:normal; color:#C6C3BF;"><sc-for list="{{ edHi }}" as="k" hint-placeholder-count="24"><span style="color:{{ k.c }};">{{ k.t }}</span></sc-for></pre>
+                    </sc-if>
+                    <textarea id="bfEditor" wrap="off" value="{{ edText }}" onInput="{{ setEdText }}" onScroll="{{ edScroll }}" readOnly="{{ edReadOnly }}" placeholder="{{ edPlaceholder }}" spellCheck="false" style="position:relative; display:block; width:100%; height:100%; padding:12px 14px; background:transparent; border:0; outline:none; resize:none; tab-size:4; color:{{ edTextCol }}; caret-color:var(--ember,#FF6B35); font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.62; white-space:pre; overflow:auto;"></textarea>
+                  </div>
               </div>
               <div style="display:flex; align-items:center; gap:12px; padding:9px 14px; border-top:1px solid rgba(255,255,255,.06); font-family:'JetBrains Mono',monospace; font-size:9px; color:#6A6D74;">
                 <span>{{ edEncoding }}</span>
@@ -2037,6 +2042,128 @@ function reasonsOf(text, fallback) {
   return parts.length ? parts.slice(0, 4) : [t];
 }
 
+/* --- config syntax colouring ---------------------------------------------
+
+   The editor is a transparent <textarea> over a <pre> carrying the same text
+   in coloured runs. That only lines up while the two agree on every metric,
+   so the textarea is wrap="off" and the layer is white-space:pre -- no line
+   ever wraps, and the pair cannot drift. Both are scrolled together on both
+   axes by edScroll.
+
+   Colours come from the app's own palette rather than an editor theme, so a
+   config file reads like the rest of the screen.
+   ------------------------------------------------------------------------- */
+
+const HI = {
+  cmt: '#6A6D74',                 // comments -- the grey of tertiary text
+  key: '#7AA7FF',                 // property names
+  str: '#56D9A3',                 // strings
+  num: '#FFC44D',                 // numbers
+  lit: '#C77DFF',                 // true/false/null and keywords
+  sec: 'var(--ember,#FF6B35)',    // [sections], tags, headings
+  op:  '#8C8F96',                 // = : , and friends
+  txt: '#C6C3BF'                  // everything else -- the textarea's own colour
+};
+
+// Ordered rules, tried in turn at each position. The two catch-alls at the end
+// of every set matter for speed: without them a prose-heavy file is scanned one
+// character at a time.
+const HI_WORD = [[/^[A-Za-z_][\w-]*/, 'txt'], [/^[ \t]+/, 'txt']];
+const HI_RULES = {
+  properties: [
+    [/^[#!][^\n]*/, 'cmt'], [/^\[[^\]\n]*\]/, 'sec'],
+    [/^[A-Za-z0-9_.\-]+(?=[ \t]*[=:])/, 'key'],
+    [/^(?:true|false)\b/i, 'lit'],
+    [/^-?\d+(?:\.\d+)?\b/, 'num'], [/^[=:]/, 'op'], ...HI_WORD
+  ],
+  ini: [
+    [/^[#;][^\n]*/, 'cmt'], [/^\[[^\]\n]*\]/, 'sec'],
+    [/^[A-Za-z0-9_.\-]+(?=[ \t]*[=:])/, 'key'],
+    [/^"(?:\\.|[^"\\])*"/, 'str'], [/^(?:true|false)\b/i, 'lit'],
+    [/^-?\d+(?:\.\d+)?\b/, 'num'], [/^[=:]/, 'op'], ...HI_WORD
+  ],
+  toml: [
+    [/^#[^\n]*/, 'cmt'], [/^\[\[?[^\]\n]*\]\]?/, 'sec'],
+    [/^"""[\s\S]*?"""/, 'str'], [/^'''[\s\S]*?'''/, 'str'],
+    [/^"(?:\\.|[^"\\])*"/, 'str'], [/^'[^'\n]*'/, 'str'],
+    [/^[A-Za-z0-9_.\-]+(?=[ \t]*=)/, 'key'],
+    [/^(?:true|false)\b/, 'lit'],
+    [/^-?\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/, 'num'],
+    [/^[=,]/, 'op'], ...HI_WORD
+  ],
+  json: [
+    [/^\/\/[^\n]*/, 'cmt'], [/^\/\*[\s\S]*?\*\//, 'cmt'],
+    [/^"(?:\\.|[^"\\])*"(?=[ \t]*:)/, 'key'],
+    [/^"(?:\\.|[^"\\])*"/, 'str'],
+    [/^(?:true|false|null)\b/, 'lit'],
+    [/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/, 'num'],
+    [/^[{}\[\],:]/, 'op'], ...HI_WORD
+  ],
+  yaml: [
+    [/^#[^\n]*/, 'cmt'], [/^-(?=[ \t\n])/, 'op'],
+    [/^[A-Za-z0-9_.\-]+(?=[ \t]*:)/, 'key'],
+    [/^"(?:\\.|[^"\\])*"/, 'str'], [/^'[^'\n]*'/, 'str'],
+    [/^(?:true|false|null|yes|no|on|off)\b/i, 'lit'],
+    [/^-?\d+(?:\.\d+)?\b/, 'num'], [/^[:>|]/, 'op'], ...HI_WORD
+  ],
+  javascript: [
+    [/^\/\/[^\n]*/, 'cmt'], [/^\/\*[\s\S]*?\*\//, 'cmt'],
+    [/^"(?:\\.|[^"\\])*"/, 'str'], [/^'(?:\\.|[^'\\])*'/, 'str'],
+    [/^`(?:\\.|[^`\\])*`/, 'str'],
+    [/^(?:function|return|if|else|for|while|var|let|const|new|import|export|class|true|false|null|undefined|in|of|this|val)\b/, 'lit'],
+    [/^-?\d+(?:\.\d+)?\b/, 'num'],
+    [/^[{}()\[\];,.=+\-*/<>!&|?:]/, 'op'], ...HI_WORD
+  ],
+  xml: [
+    [/^<!--[\s\S]*?-->/, 'cmt'], [/^<\/?[A-Za-z_][\w.:-]*/, 'sec'],
+    [/^"(?:\\.|[^"\\])*"/, 'str'], [/^'[^'\n]*'/, 'str'],
+    [/^[A-Za-z_][\w.:-]*(?==)/, 'key'],
+    [/^[<>\/=]/, 'op'], ...HI_WORD
+  ],
+  markdown: [
+    [/^#{1,6}[^\n]*/, 'sec'], [/^```[\s\S]*?```/, 'str'],
+    [/^`[^`\n]+`/, 'str'], [/^\*\*[^*\n]+\*\*/, 'lit'],
+    [/^\[[^\]\n]*\]\([^)\n]*\)/, 'key'],
+    [/^[-*+](?=[ \t])/, 'op'], ...HI_WORD
+  ]
+};
+
+// Colouring a two-megabyte file costs more than it is worth on a box that is
+// also installing modpacks, so above either of these the editor stays plain and
+// says so in the status bar. The run cap is the one that matters: every run is
+// a span, and the whole set is re-rendered on each keystroke, so a file that
+// tokenises into tens of thousands of them makes typing feel heavy long before
+// the byte count looks alarming.
+const HI_MAX_BYTES = 128 * 1024;
+const HI_MAX_RUNS = 6000;
+
+/** Text -> runs of {t, c}, adjacent runs of one colour merged.
+    Returns null past HI_MAX_RUNS, which the caller reads as "leave it plain". */
+function hiTokens(text, lang) {
+  const rules = HI_RULES[lang];
+  const src = String(text == null ? '' : text);
+  if (!rules || !src) return [];
+  const out = [];
+  let i = 0;
+  const push = (t, k) => {
+    const c = HI[k] || HI.txt;
+    if (out.length && out[out.length - 1].c === c) out[out.length - 1].t += t;
+    else out.push({ t, c });
+  };
+  while (i < src.length) {
+    const rest = src.slice(i);
+    let hit = null;
+    for (let r = 0; r < rules.length; r++) {
+      const m = rules[r][0].exec(rest);
+      if (m && m[0]) { hit = [m[0], rules[r][1]]; break; }
+    }
+    if (hit) { push(hit[0], hit[1]); i += hit[0].length; }
+    else { push(rest[0], 'txt'); i += 1; }
+    if (out.length > HI_MAX_RUNS) return null;
+  }
+  return out;
+}
+
 /* --- the component ------------------------------------------------------- */
 
 class Component extends DCLogic {
@@ -2727,6 +2854,9 @@ class Component extends DCLogic {
       this.setState(s => ({ d:{ ...s.d, cfgBody:{ ...s.d.cfgBody,
         [path]:{ body:r.content != null ? r.content : (r.body || ''),
                  size:r.size, editable:r.editable !== false,
+                 // /configs/read types the file for us; the editor colours by
+                 // this rather than sniffing the name a second time.
+                 language:r.language || 'text',
                  meta:[r.lines ? r.lines + ' lines' : null,
                        r.editable === false ? 'read-only' : null]
                       .filter(Boolean).join(' · ') } } },
@@ -3732,6 +3862,13 @@ class Component extends DCLogic {
     const edBody = S.cfgDraft[S.cfgPath] != null ? S.cfgDraft[S.cfgPath]
                  : (curBody ? curBody.body : '');
     const edDirty = !!S.cfgDirty[S.cfgPath];
+    const edLang = curBody ? (curBody.language || 'text') : 'text';
+    const edHiTok = (!S.cfgPath || edBody.length > HI_MAX_BYTES)
+                  ? null : hiTokens(edBody, edLang);
+    const edHiOn = !!(edHiTok && edHiTok.length);
+    // "too large" covers both caps: the byte gate above, and the run cap that
+    // hiTokens applies itself by returning null.
+    const edTooBig = !!S.cfgPath && !!HI_RULES[edLang] && !edHiOn;
 
     /* --- activity: jobs -------------------------------------------------- */
     const KIND = { install:'INSTALL', preflight:'REVIEW', roulette:'ROULETTE',
@@ -4562,24 +4699,37 @@ class Component extends DCLogic {
         c:t.trim().startsWith('#') ? '#5B6068' : (t.indexOf('=') > 0 ? '#C6C3BF' : '#9DA3AC'),
         bg:'transparent' })),
       edCursor:String(edBody).split('\n').length + ' lines',
-      edEncoding:'utf-8 · lf · ' + String(edBody).split('\n').length + ' lines',
+      edEncoding:'utf-8 · lf'
+               + (!S.cfgPath ? ''
+                  : edHiOn ? ' · ' + edLang
+                  : edTooBig ? ' · plain: too large to colour'
+                  : ' · plain'),
       edGuard:edDirty ? 'navigating away will ask first'
         : (curBody ? (curBody.editable === false ? 'read-only: BlessForge will not write this type'
                                                  : 'saved') : ''),
       edGuardCol:edDirty ? '#FFC44D' : '#5F6269',
       edText:edBody,
+      edHi:edHiOn ? edHiTok : [],
+      edHiOn:edHiOn,
+      // While the layer is showing, the textarea's own glyphs would double up
+      // over it -- so it keeps only its caret and its selection.
+      edTextCol:edHiOn ? 'transparent' : '#C6C3BF',
       edReadOnly:!S.cfgPath || !!S.busy.cfg,
       edPlaceholder:!S.cfgPath ? 'Pick a file on the left.'
                     : S.busy.cfg ? 'reading…' : '',
       setEdText:e => { const v = e.target.value;
         this.setState(s => ({ cfgDraft:{ ...s.cfgDraft, [s.cfgPath]:v },
                               cfgDirty:{ ...s.cfgDirty, [s.cfgPath]:true } })); },
-      // The gutter is a separate element sharing the textarea's font metrics,
-      // so it has to be scrolled in step. An overlay that tried to colour the
-      // text instead would drift the moment a line wrapped, which is why the
-      // editor is plain while you are typing in it.
-      edScroll:e => { const g = document.getElementById('bfGutter');
-        if (g) g.scrollTop = e.target.scrollTop; },
+      // The gutter and the colour layer share the textarea's font metrics, so
+      // both are scrolled in step with it. The layer tracks both axes: the
+      // textarea is wrap="off", so a long line scrolls sideways and the
+      // colours have to go with it or they drift.
+      edScroll:e => {
+        const g = document.getElementById('bfGutter');
+        if (g) g.scrollTop = e.target.scrollTop;
+        const h = document.getElementById('bfHi');
+        if (h) { h.scrollTop = e.target.scrollTop; h.scrollLeft = e.target.scrollLeft; }
+      },
       edSave:() => this.saveConfig(),
       edRevert:() => this.setState(s => {
         const d = { ...s.cfgDirty }; delete d[s.cfgPath];
