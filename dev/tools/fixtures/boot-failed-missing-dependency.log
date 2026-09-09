@@ -1,0 +1,6 @@
+		Zero CORE 2 1.21.1-2.4.21 (zerocore)
+[09Sep2026 18:38:03.952] [main/INFO] [Configured Defaults/]: Applying default files...
+[09Sep2026 18:38:03.972] [main/ERROR] [net.neoforged.fml.loading.ModSorter/LOADING]: Missing or unsupported mandatory dependencies:
+	Mod ID: 'flib', Requested by: 'storagenetwork', Expected range: '[0.2.9,)', Actual version: '[MISSING]'
+[09Sep2026 18:38:04.245] [main/INFO] [net.fabricmc.loader.impl.bootstrap.FabricLoaderBootstrap/]: Propagating FML mod list to Fabric Loader
+[09Sep2026 18:38:04.255] [main/INFO] [cpw.mods.modlauncher.LaunchServiceHandler/MODLAUNCHER]: Launching target 'forgeserver' with arguments [nogui, $@]

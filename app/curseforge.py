@@ -411,8 +411,13 @@ async def download_cached(
     return data
 
 
-async def download(file_meta: dict, client: httpx.AsyncClient | None = None) -> bytes:
-    """Fetch a file's bytes, falling back to the CDN path when needed."""
+def _download_urls(file_meta: dict) -> list[str]:
+    """Where a file can be fetched from, best first.
+
+    `downloadUrl` is null for any project whose author opted out of third-party
+    distribution, so the deterministic CDN path is not a fallback for network
+    trouble -- it is the only address most files have.
+    """
     urls = []
     if file_meta.get("download_url"):
         urls.append(file_meta["download_url"])
@@ -422,6 +427,72 @@ async def download(file_meta: dict, client: httpx.AsyncClient | None = None) -> 
             urls.append(fallback)
     if not urls:
         raise CurseForgeError(f"no download URL for {file_meta.get('file_name')}")
+    return urls
+
+
+async def download_to(file_meta: dict, dest: Path,
+                      client: httpx.AsyncClient | None = None,
+                      on_progress=None) -> Path:
+    """Stream a file straight to `dest`, never holding it whole in memory.
+
+    Pack archives are the one download here that is measured in hundreds of
+    megabytes -- Tensura Evolutions' server pack is 617 MB -- and the container
+    runs under a 1 GB cap, so buffering the body and then writing it out needs
+    twice the archive's size in RAM and gets the process killed. This keeps the
+    peak at one chunk.
+
+    Writes to a sibling `.part` and renames on success, so an interrupted
+    download can never be mistaken for a cached archive by a later run.
+    """
+    urls = _download_urls(file_meta)
+    own = client is None
+    c = client or httpx.AsyncClient(timeout=600, follow_redirects=True)
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        last: Exception | None = None
+        for url in urls:
+            for attempt in range(3):
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    got = 0
+                    async with c.stream("GET", url) as r:
+                        if r.status_code != 200:
+                            last = CurseForgeError(f"{url} -> {r.status_code}")
+                            await r.aclose()
+                            raise last
+                        with open(tmp, "wb") as fh:
+                            async for chunk in r.aiter_bytes(1 << 20):
+                                fh.write(chunk)
+                                got += len(chunk)
+                                if on_progress:
+                                    on_progress(got)
+                    if got:
+                        tmp.replace(dest)
+                        return dest
+                    last = CurseForgeError(f"{url} -> empty body")
+                except Exception as e:
+                    last = e
+                finally:
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+                await asyncio.sleep(1.5 * (attempt + 1))
+        raise CurseForgeError(
+            f"failed to download {file_meta.get('file_name')}: {last}"
+        )
+    finally:
+        if own:
+            await c.aclose()
+
+
+async def download(file_meta: dict, client: httpx.AsyncClient | None = None) -> bytes:
+    """Fetch a file's bytes, falling back to the CDN path when needed.
+
+    For mod jars, which are megabytes. Anything pack-sized goes through
+    download_to() instead.
+    """
+    urls = _download_urls(file_meta)
 
     own = client is None
     c = client or httpx.AsyncClient(timeout=600, follow_redirects=True)

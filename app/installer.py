@@ -124,17 +124,28 @@ async def fetch_pack_archive(job: Job, mod_id: int, file_id: int
 
     size_mb = expected / (1024 * 1024)
     job.log_line(f"Downloading {meta.get('file_name')} ({size_mb:.0f} MB)")
-    data = await curseforge.download(meta)
+
+    # Streamed, not buffered. The docstring above has always said "deliberately
+    # a path, not bytes", but the body used to fetch the whole archive into
+    # memory and then write it out -- which needs the archive's size twice over
+    # and, at 617 MB for Tensura Evolutions' server pack, walked straight into
+    # the container's 1 GB cap. The process was SIGKILLed with no traceback,
+    # the in-memory job registry went with it, and the install simply vanished
+    # from the drawer.
+    def progress(got: int) -> None:
+        if expected:
+            job.set_step(
+                f"Downloading server pack ({got // 1048576} of "
+                f"{expected // 1048576} MB)", 5 + 3 * min(got / expected, 1.0))
+
     try:
         config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        await curseforge.download_to(meta, path, on_progress=progress)
     except OSError as e:
         job.log_line(f"Could not cache the archive: {e}", "warn")
         fallback = Path(tempfile.gettempdir()) / path.name
-        fallback.write_bytes(data)
+        await curseforge.download_to(meta, fallback, on_progress=progress)
         path = fallback
-    finally:
-        del data
     return path, meta
 
 

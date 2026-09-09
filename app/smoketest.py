@@ -24,14 +24,25 @@ from app.jobs import Job
 # "Done (12.345s)! For help, type "help"" is vanilla's line for a finished
 # boot; the loader ones catch a failure before the game gets that far.
 _READY = re.compile(r'Done \([\d.]+s\)!|For help, type "help"', re.I)
+# Deliberately specific. This used to include a bare `Caused by: java.lang.`,
+# which a modded server trips on the way *up*: mods probe for client-only
+# classes and catch the miss, and on a box with no outbound DNS every mod that
+# version-checks logs a ConnectException chain. Tensura Evolutions reaches
+# "Done (25.641s)" with three of those in its log, and the boot test called it
+# failed and stopped it mid-load, twice. A failure has to say so in FML's own
+# words, or be the JVM giving up.
 _FAILED = re.compile(
     r"Failed to start the minecraft server"
     r"|A potential solution has been determined"
     r"|Missing or unsupported mandatory dependencies"
-    r"|Caused by: java\.lang\."
-    r"|Exception in thread \"main\""
+    r"|Loading errors encountered"
     r"|The game crashed whilst"
-    r"|Loading errors encountered",
+    r"|Mod loading has failed"
+    r"|LoadingFailedException|ModLoadingException"
+    r"|---- Minecraft Crash Report ----"
+    r'|Exception in thread "main"'
+    r"|java\.lang\.OutOfMemoryError"
+    r"|\[[^\]]*/FATAL\]",
     re.I,
 )
 
@@ -50,6 +61,13 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             "console directly instead of booting it again")
 
     job.set_step("Starting the server", 5)
+    # Where this run's output begins. Crafty's console buffer spans restarts,
+    # so a previous boot's failure sits in it and would be read as this one's;
+    # everything from here on is ours.
+    try:
+        base = len(await crafty.console_lines(server_id, from_file=True))
+    except Exception:
+        base = 0
     started_at = time.time()
     await crafty.server_action(server_id, "start_server")
 
@@ -62,10 +80,23 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
         while time.time() - started_at < timeout:
             await asyncio.sleep(5)
             try:
-                lines = await crafty.console_lines(server_id)
+                # From the log file, not the live console. Crafty's console
+                # buffer holds about seventy lines: on a 253-mod pack it had
+                # already scrolled past "Done (13.138s)" by the next poll, so
+                # a server that was up got watched for the full five minutes
+                # and reported as a timeout. The file read returns the boot.
+                lines = await crafty.console_lines(server_id, from_file=True)
             except Exception:
                 continue
-            text = "\n".join(lines[-400:])
+            # Everything this run has said, not a sliding tail of it. The tail
+            # used to be 400 lines, and a big pack keeps logging long after it
+            # is up -- Tensura Evolutions pushes "Done (25.641s)" out of a
+            # 400-line window within one 5-second poll, so a server that had
+            # booted was watched for the full five minutes and called a
+            # timeout.
+            if len(lines) < base:      # buffer rotated under us
+                base = 0
+            text = "\n".join(lines[base:])
             elapsed = int(time.time() - started_at)
             job.set_step(f"Watching the boot ({elapsed}s)",
                          10 + 70 * min(elapsed / max(timeout, 1), 1.0))

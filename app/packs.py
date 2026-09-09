@@ -123,6 +123,26 @@ def is_safe_target(rel: str) -> bool:
     return not any(part in ("", ".", "..") for part in parts)
 
 
+def mc_from_neoforge(version: str) -> str:
+    """'21.1.249' -> '1.21.1'.
+
+    NeoForge dropped Forge's `<mc>-<loader>` compound version and encodes the
+    game version in its own instead: major is Minecraft's minor, minor is
+    Minecraft's patch, and a zero patch is dropped ('21.0.x' is for 1.21).
+
+    Worth having because a pre-built NeoForge server pack can carry no other
+    statement of its Minecraft version at all -- Tensura Evolutions' 617 MB
+    pack has no manifest, no variables.txt and no version in run.sh, so this
+    path is the only thing standing between it and "could not determine the
+    Minecraft version for this pack".
+    """
+    m = re.match(r"^(\d+)\.(\d+)(?:\.\d+)?", (version or "").strip())
+    if not m:
+        return ""
+    minor, patch = m.group(1), m.group(2)
+    return f"1.{minor}" if patch == "0" else f"1.{minor}.{patch}"
+
+
 def parse_loader_id(loader_id: str) -> tuple[str, str]:
     """'neoforge-21.1.247' -> ('neoforge', '21.1.247')."""
     if not loader_id:
@@ -352,11 +372,16 @@ def analyse_server_pack(zf: zipfile.ZipFile) -> PackPlan:
             plan.loader = "neoforge" if "neoforged" in m2.group(1) else "forge"
             ver = m2.group(2)
             if "-" in ver:
+                # Forge: libraries/.../forge/1.20.1-47.4.23/
                 mcv, _, lv = ver.partition("-")
                 plan.mc_version = plan.mc_version or mcv
                 plan.loader_version = plan.loader_version or lv
             else:
+                # NeoForge: libraries/.../neoforge/21.1.249/ -- no Minecraft
+                # version in the path, because NeoForge encodes it in its own.
                 plan.loader_version = plan.loader_version or ver
+                if plan.loader == "neoforge":
+                    plan.mc_version = plan.mc_version or mc_from_neoforge(ver)
 
     plan.crafty_loader = LOADER_TO_CRAFTY.get(plan.loader, "")
 

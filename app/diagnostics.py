@@ -264,8 +264,20 @@ def _scan_missing_client_class(text: str) -> list[dict]:
     produces a false positive on every healthy modded server. Only lines that
     are fatal -- an ERROR/FATAL level, or a `Caused by:` inside a stack --
     count here.
+
+    `Caused by:` on its own is not proof of a fatality, though: a mod that
+    probes for a client class and catches the miss logs exactly that. So the
+    boot itself is the arbiter -- if the server went on to report "Done" after
+    the line, it plainly survived it. Tensura Evolutions logs two such probes
+    for net.minecraft.client.ParticleStatus and still boots in 25 seconds.
     """
-    for line in text.splitlines():
+    lines = text.splitlines()
+    ready_at = max(
+        (i for i, l in enumerate(lines)
+         if "Done (" in l or 'For help, type "help"' in l),
+        default=-1,
+    )
+    for idx, line in enumerate(lines):
         m = _FATAL_CLIENT_CLASS.search(line)
         if not m:
             continue
@@ -274,6 +286,8 @@ def _scan_missing_client_class(text: str) -> list[dict]:
         if not ("Caused by" in line or "ERROR" in line or "FATAL" in line
                 or line.lstrip().startswith("java.lang.")):
             continue
+        if ready_at > idx:
+            continue          # the server booted past it
         return [_finding(
             "critical", "Client-only mod on a server",
             f"A mod fatally required the client-only class {m.group(1)}. It has "

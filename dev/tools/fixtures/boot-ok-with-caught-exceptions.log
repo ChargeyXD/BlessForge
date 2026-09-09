@@ -1,0 +1,25 @@
+	at java.base/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1808) [?:?]
+	at java.base/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188) [?:?]
+Caused by: java.lang.ClassNotFoundException: net.minecraft.client.ParticleStatus
+	at cpw.mods.securejarhandler/cpw.mods.cl.ModuleClassLoader.loadClass(ModuleClassLoader.java:220) ~[securejarhandler-3.0.8.jar:?]
+	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:526) ~[?:?]
+	at java.base/java.util.concurrent.ThreadPerTaskExecutor$TaskRunner.run(ThreadPerTaskExecutor.java:314) ~[?:?]
+	at java.base/java.lang.VirtualThread.run(VirtualThread.java:329) ~[?:?]
+Caused by: java.lang.ClassNotFoundException: net.minecraft.client.ParticleStatus
+	at cpw.mods.securejarhandler/cpw.mods.cl.ModuleClassLoader.loadClass(ModuleClassLoader.java:220) ~[securejarhandler-3.0.8.jar:?]
+	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:526) ~[?:?]
+	at java.base/java.lang.Iterable.forEach(Iterable.java:75) [?:?]
+	at MC-BOOTSTRAP/fml_loader@4.0.44/net.neoforged.fml.VersionChecker$1.run(VersionChecker.java:105) [loader-4.0.44.jar%2359!/:4.0]
+Caused by: java.lang.IllegalStateException: Expected BEGIN_OBJECT but was STRING at line 1 column 1 path $
+	at MC-BOOTSTRAP/com.google.gson@2.10.1/com.google.gson.stream.JsonReader.beginObject(JsonReader.java:393) ~[gson-2.10.1.jar%2394!/:?]
+	at MC-BOOTSTRAP/com.google.gson@2.10.1/com.google.gson.internal.bind.MapTypeAdapterFactory$Adapter.read(MapTypeAdapterFactory.java:182) ~[gson-2.10.1.jar%2394!/:?]
+	at java.net.http/jdk.internal.net.http.HttpClientImpl.send(HttpClientImpl.java:933) ~[java.net.http:?]
+	... 5 more
+Caused by: java.nio.channels.UnresolvedAddressException
+	at java.base/sun.nio.ch.Net.checkAddress(Net.java:147) ~[?:?]
+	at java.base/sun.nio.ch.Net.checkAddress(Net.java:155) ~[?:?]
+[09Sep2026 18:34:47.643] [Server thread/INFO] [Tensura/LabyrinthStorage/]: Creating block data...
+[09Sep2026 18:34:48.029] [Server thread/INFO] [Tensura/LabyrinthStorage/]: Action completed in 396.0 milliseconds
+[09Sep2026 18:34:48.030] [Server thread/INFO] [net.minecraft.server.dedicated.DedicatedServer/]: Done (25.641s)! For help, type "help"
+[09Sep2026 18:34:48.059] [LanServerPinger #1/WARN] [net.minecraft.client.server.LanServerPinger/]: LanServerPinger: Network is unreachable
+[09Sep2026 18:34:48.097] [ForkJoinPool.commonPool-worker-7/INFO] [Tensura/LabyrinthStorage/]: Placed 20%...
