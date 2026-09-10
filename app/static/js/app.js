@@ -105,6 +105,9 @@ async function route() {
     if (token !== routeToken) { view?.dispose?.(); return; }
     currentView = view || null;
     if (view?.node) mount(main, view.node);
+    main.classList.remove('routing');
+    void main.offsetWidth;           // restart the animation, not resume it
+    main.classList.add('routing');
     main.scrollTop = 0;
     window.scrollTo({ top: 0, behavior: 'instant' });
   } catch (e) {
@@ -361,6 +364,13 @@ function checkDisplayFont() {
 
 async function boot() {
   applyTheme(readTheme());
+  // Entrance animations start from opacity 0 and would leave the page blank
+  // if they never ran. Gating them on a class stamped from here means the
+  // worst case is a page with no animation rather than a page with no
+  // content. Stamped with a timer rather than rAF: a document that is not
+  // being painted still runs timers, and that is exactly the case this
+  // protects against.
+  setTimeout(() => document.documentElement.classList.add('js-motion'), 0);
   buildShell();
   checkDisplayFont();
   startPetals($('#petals'));
@@ -386,14 +396,20 @@ async function boot() {
     refreshInstances({ quiet: true }).catch(() => {});
   });
 
-  await refreshHealth();
+  // Route FIRST. Health is three network round trips and the fleet is one
+  // more, and awaiting them before the first paint is how a LAN box spends a
+  // second and a half on a blank page — for a banner that, when everything is
+  // configured, never appears. The screen draws now and fills in as answers
+  // arrive; every view already renders its own loading state.
   paintNav();
   route();
 
-  if (state.health?.ready) {
-    refreshInstances({ quiet: true }).catch(() => {});
-    startFleetPolling();
-  }
+  refreshHealth().then(() => {
+    if (state.health?.ready) {
+      refreshInstances({ quiet: true }).catch(() => {});
+      startFleetPolling();
+    }
+  });
   adoptRunning();
 
   // Health is cheap and the answer changes when someone fixes their compose
@@ -404,6 +420,11 @@ async function boot() {
       if (state.health?.ready && !fleetTimer) startFleetPolling();
     });
   }, 60000);
+  // Coming back to the tab after a while, the first thing worth knowing is
+  // whether anything broke while you were away.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshHealth().catch(() => {});
+  });
 }
 
 /* A global keyboard route: '/' focuses the nearest search box, which is the

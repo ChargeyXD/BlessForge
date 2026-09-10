@@ -23,6 +23,9 @@ const LOADER_ART = {
   forge: '/assets/loader-forge.jpg',
   neoforge: '/assets/loader-neoforge.png',
   vanilla: '/assets/loader-vanilla.svg',
+  paper: '/assets/loader-paper.png',
+  purpur: '/assets/loader-purpur.png',
+  folia: '/assets/loader-paper.png',
 };
 
 const STATE_PILL = {
@@ -147,7 +150,7 @@ function card(s) {
     style: { cursor: 'pointer' },
   },
     h('div.top',
-      h('div.loader-badge', art
+      h('div.loader-art', art
         ? h('img', { src: art, alt: '', loading: 'lazy' })
         : icon(s.loader ? 'puzzle' : 'box', 16)),
       h('h3', s.name || s.server_id.slice(0, 8)),

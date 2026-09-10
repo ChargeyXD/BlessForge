@@ -77,19 +77,52 @@ export async function render(ctx) {
 
   /* --- findings ------------------------------------------------ */
 
+  /* What ran, and what did not.
+     The screen used to say "nothing looks wrong" whether every pass had come
+     back clean or half of them had failed to run. Those are two different
+     claims and only one of them is good news, so the passes report
+     themselves. */
+  function passReport() {
+    const passes = diag.passes || [];
+    if (!passes.length) return null;
+    const failed = passes.filter((p) => !p.ok);
+    if (!failed.length) {
+      return h('div.chiprow', { style: { marginBottom: '12px' } },
+        ...passes.map((p) => pill(p.name, 'ok', `Ran: ${p.what}`)),
+        diag.has_logs === false
+          ? pill('no log to read', 'dead',
+            'This instance has produced neither a log nor a crash report')
+          : null);
+    }
+    return h('div.note.warn', { role: 'alert', style: { marginBottom: '14px' } },
+      h('b', `${failed.length} of ${passes.length} checks could not run`),
+      'So this is an incomplete examination, not a clean bill of health.',
+      h('ul', { style: { margin: '6px 0 0 18px' } },
+        ...failed.map((p) => h('li', `${p.what}: `, h('code', p.error)))));
+  }
+
   function findingsView(findings, crit, warn) {
     if (!findings.length) {
-      return empty('parrot-vibing.gif', 'Nothing looks wrong',
-        diag.has_logs
-          ? 'The checks pass and nothing in the log stands out. If it is still '
-            + 'misbehaving, a deep scan reads every jar\'s declared '
-            + 'dependencies and builds the graph.'
-          : 'This server has produced no log at all yet, so there was nothing '
-            + 'to read. A boot test from Overview is the quickest way to find '
-            + 'out what it actually does.',
-        h('button.btn', { onclick: deepScan }, hl(), h('span', 'Deep scan')));
+      return frag(
+        passReport(),
+        empty('parrot-vibing.gif',
+          diag.complete === false
+            ? 'Nothing found — but not everything ran'
+            : 'Nothing looks wrong',
+          diag.complete === false
+            ? (diag.note || 'Some checks failed, so the absence of findings '
+              + 'here is not evidence of health.')
+            : diag.has_logs
+              ? 'Every check passed and nothing in the log stands out. If it '
+                + 'is still misbehaving, a deep scan reads every jar and '
+                + 'builds the dependency graph.'
+              : 'This server has produced no log at all yet, so there was '
+                + 'nothing to read. A boot test from Overview is the quickest '
+                + 'way to find out what it actually does.',
+          h('button.btn', { onclick: deepScan }, hl(), h('span', 'Deep scan'))));
     }
     return frag(
+      passReport(),
       h('div.chiprow', { style: { marginBottom: '14px' } },
         crit.length ? pill(`${crit.length} critical`, 'bad') : null,
         warn.length ? pill(`${warn.length} warnings`, 'warn') : null,
@@ -108,25 +141,29 @@ export async function render(ctx) {
   function findingCard(f) {
     const tone = f.severity === 'critical' ? 'bad'
       : f.severity === 'warn' ? 'warn' : 'info';
-    return h('div.card', { style: { borderColor: `var(--${
-      tone === 'bad' ? 'danger' : tone === 'warn' ? 'gold' : 'info'})` } },
+    return h(`div.card.finding.sev-${f.severity || 'info'}`,
       h('header',
         pill(f.severity, tone),
         f.category ? pill(f.category, 'ghost') : null,
+        // Two independent passes agreeing is worth more than one, and worth
+        // saying: it is the difference between a hunch and a fact.
+        f.corroborated
+          ? pill('two checks agree', 'ok',
+            'The state check and the log both found this independently')
+          : null,
+        f.confidence ? pill(f.confidence, 'ghost') : null,
         h('h3', { style: { flex: 1, minWidth: 0 } }, f.title)),
       h('p.wrapany', f.detail),
       f.evidence
         ? h('details',
           h('summary', { style: { cursor: 'pointer', fontFamily: 'var(--mono)',
-            fontSize: '11px', color: 'var(--faint)' } }, 'Evidence'),
-          h('pre', {
-            style: { background: 'var(--paper-2)', padding: '10px',
-              overflow: 'auto', maxHeight: '220px', fontSize: '11.5px',
-              fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap',
-              overflowWrap: 'anywhere', marginTop: '8px' },
-          }, f.evidence))
+            fontSize: '11px', color: 'var(--faint)' } },
+            'The lines this was read from'),
+          h('pre.evidence', f.evidence))
         : null,
-      f.fix ? h('div.btnrow', fixButton(f.fix)) : null);
+      // A fix button with nothing to act on is worse than no button.
+      f.fix && (f.fix.action !== 'disable_mods' || (f.fix.files || []).length)
+        ? h('div.btnrow', fixButton(f.fix)) : null);
   }
 
   function fixButton(fix) {

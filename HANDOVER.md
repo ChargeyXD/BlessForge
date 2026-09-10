@@ -11,14 +11,13 @@ you want done."**
 
 ## 0. Where this is right now
 
-**The front end is the design canvas itself, wired to the API.** Earlier
-sessions read `design/BlessForge.dc.html` as a *specification* and hand-wrote
-an approximation of it. That was the wrong reading: the zip the user supplied
-(`BlessForge Server New GUI.zip`) also contains **`support.js`**, the Claude
-Design runtime — so the canvas is not a mockup, it is a runnable app whose only
-missing piece was its data. On 2026-08-29 the hand-built front end was deleted
-and `app/static/index.html` became that canvas with its markup untouched. See
-§4, which is now about how that works.
+**The front end is plain ES modules, written from scratch.** The design canvas
+and its runtime are *gone* — no `design/BlessForge.dc.html` as a live document,
+no `support.js`, no vendored React, no 316-binding contract. An earlier session
+read the canvas as a specification and hand-wrote an approximation; a later one
+made the canvas itself the app. Both are history. On 2026-09-10 the whole front
+end was rebuilt on `h()` and real DOM, then reworked a second time the same day
+for weight and speed (§5G). See §4 for how it works now.
 
 **Three real servers exist and all three have been watched booting.** The
 install pipeline, the client-only review, Mod Roulette and its CurseForge
@@ -27,22 +26,21 @@ export are all verified end to end against them (§5D).
 | | |
 |---|---|
 | Deployed | `http://<host>:8710`, healthy |
-| Tests | **137 checks** — 98 offline Python, 39 in a real browser (§9) |
+| Version | 2.1.0, ~131 routes |
+| Tests | **141 backend checks** across five files, **125 front-end checks** (§9) |
 | Servers in Crafty | **five**, §5D and §5F. `Perfect World` :25565 (NeoForge, 100), `Cozy Experience` :25566 (Fabric, 245), `Lucky Dip` :25567 (rolled, 44), `Roulette RB5-YR9-BC` :25568 (rolled, 72), `Tensura` :25569 (Forge 1.19.2, 223 — will not boot here, §5F) |
 
-**Merged into `main`** on 2026-08-29 (fast-forward from
-`rebuild/ui-and-mod-roulette`, 20 commits). **Not pushed** — `origin/main` is
-still at `207d0ae`, and pushing is what triggers the GHCR build, so it is a
-deliberate separate step. The container here runs the local tree, not GHCR, so
-deploying and publishing remain independent.
+**Committed on `main`.** `1d00eb8` is the rebuild and the six new features and
+is on `origin/main`; the UI pass (§5G) is the commit after it and may still be
+local — check `git status -sb`. Pushing triggers the GHCR build; the container
+on the box runs the *local tree*, not GHCR, so deploying and publishing stay
+independent.
 
 **What to read first:** `NEXT-SESSION.md` — a line-by-line review of what is
 finished, what is unproven, and what is worth tidying. Then §4 for how the
-front end is built (it is nothing like what §4 said before), §5D for what was
-verified and what it cost, and
-`design/README.md` for the places the design asserted something untrue about
-this app. Those corrections are marked `DESIGN:` in the code.
-
+front end is built, §5G for the UI pass and the layering contract it turns on,
+and §5D for what was verified and what it cost. `HANDOVER-CASAOS.md` is the
+deploy-and-verify script for the box itself.
 ---
 
 ## 1. What this is
@@ -234,14 +232,52 @@ as `no-cache, must-revalidate` and fonts/images as `immutable`. There is no
 stale-asset failure mode left to reason about, and `_VERSIONED` and
 `_asset_version()` are gone with it.
 
-**The wiggling polygon has one hard rule.** The highlight is a `z-index:-1`
-child, which paints behind its parent's *background* only while the parent is
-not a stacking context. So nothing carrying a highlight may take a
-`transform`, an `opacity` below 1, a `filter` or an `isolation` — the hover
-lift is `box-shadow`, and disabled buttons are drawn with colour rather than
-transparency for exactly this reason. Break it and the blob paints between
-the card fill and the card text, which reads as a colour bug rather than a
-layering one. `dev/tools/check_frontend.py` enforces it.
+**The wiggling polygon has one hard rule, and it is the opposite of what it
+used to be.** The highlight started as a `z-index:-1` child, which paints
+behind its parent's *background* only while the parent is not a stacking
+context — so the rule was that nothing carrying a highlight could take a
+`transform`. That rule was one animated property away from breaking, and the
+entrance animation on `.stagger > *` duly broke it: every card took a
+`transform`, every card became a stacking context, and the blob started
+painting between the card fill and the card text.
+
+So the layering is explicit now, and each host is a stacking context **on
+purpose**:
+
+```
+.p5-hl                    z-index 0    the blob, inset -15px -17px
+.card::after              z-index 1    the fill and the border
+.card > *:not(.p5-hl)     z-index 2    everything you read
+```
+
+with `isolation:isolate` on `.card`, `.btn` and `.loadercard` so the order is
+ours to set rather than the nearest ancestor's. Transforms are free, which is
+what lets the app move at all. Two things will silently break it:
+
+- **A blanket `.card > *` rule.** At specificity (0,1,1) it outranks
+  `.p5-hl`'s own (0,1,0) `position:absolute` and collapses the blob to a
+  zero-size element in flow — which looks exactly like the highlight not
+  working. The `:not(.p5-hl)` is load-bearing.
+- **Any new `z-index:-1`.** It reintroduces the old dependence on the parent
+  not being a stacking context.
+
+`dev/tools/check_frontend.check_layering` enforces all of it, including both
+of those.
+
+**Never animate *from* `opacity:0`.** Entrance animations are translate-only,
+gated on `html.js-motion`, which `app.js` stamps in a `setTimeout(…, 0)` after
+first paint. The reason is blunt: if the document timeline stalls — a
+background tab, a throttled preview pane, a stalled main thread — a `fill:both`
+animation that starts at `opacity:0` never runs and the content is permanently
+invisible. A blank screen is a worse failure than an unanimated one.
+
+**Boot does not await health.** `paintNav()` and `route()` run first;
+`refreshHealth()` resolves into the UI afterwards. `/api/health` itself runs
+its three upstream checks under `asyncio.gather` behind an 8-second cache
+(`_HEALTH_TTL`, `_health_lock`). Awaiting it before first paint was the whole
+of "everything loads really slow" — the page was waiting on CurseForge and
+Modrinth to answer before drawing anything. DOMContentLoaded went 248 → 118 ms
+and load 589 → 387 ms on that change alone.
 
 **Fonts degrade rather than block.** Archivo Black and Plus Jakarta Sans come
 from Google Fonts on a non-blocking link; Space Grotesk and JetBrains Mono are
@@ -271,14 +307,14 @@ checks that every module parses *as a module* (`node --check` alone accepts a
 file with a broken string literal in it — only `--input-type=module` is a real
 check), that every import and asset resolves, that every API path the front
 end names is a route the server serves, that every `icon()` name exists, and
-the stacking-context rule above.
+the layering contract above. 125 checks.
 
 ---
 
 ## 5. What changed on 2026-08-27/28 — the nine reported faults
 
 Nine faults the user reported, plus three new features. Sections 5A–5D cover
-what came after. **None of it is committed** (§0).
+what came after. All of it is committed and pushed (§0).
 
 ### 5.1 The bug behind "the review never creates an instance"
 
@@ -432,11 +468,13 @@ chip that opens the instance.
 `dev/tools/test_job_stream.py` (10) and `dev/tools/test_install_decisions.py`
 (20, grown since). `dev/ui-tests/04-terminal-and-review.mjs` was written here
 and retired with the front end on 2026-08-29 — see §5C. The suite today is
-**137 checks**; §9 runs it.
+**141 backend checks and 125 front-end checks**; §9 runs it.
 
-(That `window.__bf` test seam went with the hand-built front end. The canvas
-has no equivalent and does not need one: `ui.mjs` drives it by clicking, the
-way a person does.)
+(That `window.__bf` test seam went with the hand-built front end, and so did
+`ui.mjs`, which drove the canvas that replaced it. Neither has a successor:
+`check_frontend.py` covers the static half — parsing, imports, assets, API
+paths, the layering contract — and the interactive half is driven in a real
+browser, which is how both of the bugs in §5E were actually found.)
 
 ---
 
@@ -691,6 +729,108 @@ Three things it found:
 
 ---
 
+## 5G. The second UI pass (2026-09-10, later the same day)
+
+The rebuild in §4 was correct and read flat. Reported back as: too plain, too
+static, slow to load, the polygon in the wrong place, the sidebar bland, the
+lever "just a button". All of that was true. Nothing below changes an endpoint
+or a payload — the three server-side changes exist only to make the page paint
+sooner.
+
+### 5G.1 The polygon was painting in the wrong layer, and why
+
+Covered in §4 as the contract; here is the diagnosis, because the failure mode
+is instructive. The blob was `z-index:-1`, which paints behind the parent's
+background *only while the parent is not a stacking context*. The entrance
+animation `.stagger > *` set a `transform`. A transform creates a stacking
+context. So `-1` stopped meaning "behind the card" and started meaning "behind
+the card's own content but in front of its background" — the blob appeared
+*inside* the card, under the text, which reads as a colour bug rather than a
+layering one.
+
+Reproduced by reading computed styles in a real browser rather than by
+inspecting the CSS, which is the only way this one is visible. The fix is
+three explicit layers with `isolation:isolate`; the verification is the same
+computed styles read back: card isolates, blob `position:absolute` at z 0,
+fill at z 1, bleeding 17 px left and 15 px top past the card edge.
+
+Then a second, quieter failure: `.card > *` at specificity (0,1,1) beat
+`.p5-hl`'s own (0,1,0) `position:absolute` and collapsed the blob into a
+zero-height flow element. Hence `.card > *:not(.p5-hl)`, and hence the check
+that forbids the naked form.
+
+### 5G.2 "Everything loads really slow" was the health check, not the JS
+
+Worth stating plainly because the instinct is to look at the front end. It was
+`/api/health`: three upstream probes (Crafty, CurseForge, Modrinth) run in
+sequence, and `app.js` **awaited** it before the first paint. The page waited
+on two third-party APIs before drawing its own shell.
+
+| | before | after |
+|---|---|---|
+| `/api/health` | 1.3 s sequential | 665 ms concurrent, 2 ms cached |
+| DOMContentLoaded | 248 ms | 118 ms |
+| load | 589 ms | 387 ms |
+
+Three changes: `asyncio.gather` over `_check_crafty` / `_check_curseforge` /
+`_check_modrinth`; an 8-second cache (`_HEALTH_TTL`, `_health_cache`,
+`_health_lock`, with `?fresh=true` to bypass it); and boot no longer awaiting
+it — `paintNav()` and `route()` run first, `refreshHealth()` resolves in
+afterwards. `enrich()` got the same treatment, gathering the manifest read and
+the stats call instead of doing them one after the other.
+
+### 5G.3 The rest
+
+- **Mod side tags.** `sideTag(mod)` renders `client only` / `server only` /
+  `both` on every mod row, from `clientscan`'s scored evidence rather than a
+  second guess. `_persist_sides` writes the verdict into the instance manifest
+  so a row does not have to be re-scored on every render, and a jar with
+  nothing recorded says exactly that instead of claiming "both".
+- **The config editor is in the tab.** `tab-configs.js` is a two-column grid:
+  file list beside a live editor with a matching line gutter, no modal. A
+  `buffers` Map holds unsaved text per file so switching files does not lose
+  it, the row is marked dirty, and `beforeunload` warns.
+- **Mod Roulette's constraints, rebuilt.** A recklessness ladder (`data-lit`
+  rungs, a blurb per level), an intensity dial and a live catalogue monitor
+  replace the old form. The lever is a **rope**: `buildRope()` handles
+  pointerdown/move/up with real resistance
+  (`pulled = MAX * (1 - Math.exp(-raw / 90))`), a snap back, a `ring()` and a
+  petal burst. `click` is still wired as a fallback — a rope you can only drag
+  is unusable with a keyboard.
+- **Diagnose is dependable rather than confident.** It now returns `passes[]`
+  with per-pass counts, a `complete` flag and de-duplicated findings, so
+  "nothing found" distinguishes between *the checks ran and found nothing* and
+  *the checks did not run*.
+- **The chrome.** Fox app icon and favicon (`make_icon.py` letterboxes the
+  crop so the ears survive), sidebar buttons with state and motion, evenly
+  sized loader tiles on **New server** with Paper and Purpur marks added,
+  source logos on mod rows (`sourceMark()`), art in the job drawer keyed to
+  what the job is doing (`jobArt()`), and the creeper on the delete confirm.
+  Every previously-unused asset in `static/img/` is now referenced;
+  `lucky-block.png` was deleted as superseded by the `.webp`.
+- **Motion, safely.** `magnetic`, `tilt`, `countUp`, `reveal`, `installRipple`
+  in `core.js`; all entrance animation translate-only and gated on
+  `html.js-motion`; `prefers-reduced-motion` disables it; and
+  `html.theme-switching` suppresses every transition for the duration of a
+  theme flip so the whole page does not cross-fade.
+
+### 5G.4 What this pass was checked against
+
+125 front-end checks, 141 backend checks, all 15 routes rendered with zero
+console errors in both themes, and the four new interactions driven rather
+than read: the config editor opened a real TOML and marked it unsaved, the
+recklessness ladder lit to `11111` at Unhinged, the rope started a roll from
+both a drag and a click, and a mod row reported `client only` with the prompt
+correctly saying "3 of 3 jars have no side recorded" beforehand.
+
+One environment caveat, because it will waste your time otherwise: **a hidden
+browser preview pane does not advance its document timeline.** CSS animations
+never start (`startTime: null`) and screenshots return stale frames. Verify
+motion-dependent things by forcing styles or reading computed values, not by
+screenshotting a hidden pane.
+
+---
+
 ## 6. Earlier sessions (8 commits, `23b38e7..c62d607`)
 
 History. Kept for the traps it records, which are all still live.
@@ -838,16 +978,21 @@ missing from disk.
 
 ### The front end — known gaps
 
-24. **A missing binding renders as nothing, silently.** No error, no console
-    message, just a blank where a number should be. `python3
-    dev/tools/check_bindings.py` diffs the 316 names the template reads against
-    what `renderVals()` returns; run it after touching either.
-25. **`index.html` is 3,955 lines** — about 1,500 of canvas markup and 2,400 of
-    logic. It cannot be split: the runtime wants the template and its script in
-    one document. Keep the section comments honest; they are the only
-    navigation there is.
-26. **`support.js` is a vendored build with no source here.** If it ever needs
-    a fix, the fix belongs upstream in Claude Design, not in that file.
+24. **A broken ES module fails at the route that imports it, and nowhere
+    else.** There is no build step, so a typo in `views/tab-mods.js` is a 404
+    or a parse error the first time someone opens that tab. `python
+    dev/tools/check_frontend.py` parses every module *as a module*, resolves
+    every import and asset, and checks every API path the front end names
+    against the routes the server actually serves. Run it after touching
+    anything under `app/static/`.
+25. **`node --check <file>` is not a syntax check for a module.** It parses as
+    a *script* and will happily accept a file with a broken string literal in
+    it. Only `node --input-type=module --check` is real. That distinction cost
+    a screen once.
+26. **The layering contract is invisible when it breaks.** A new
+    `.card > *` rule, or any new `z-index:-1`, silently moves the wiggling
+    polygon in front of the card fill. `check_frontend.check_layering` catches
+    both; nothing else will, short of hovering a card and noticing.
 27. **Two servers cannot both hold 4 GB on this host.** The Tune screen's
     ceiling is computed from what is free *now*, so it drops while another
     server runs — which is correct, and does mean the same pack shows a
@@ -1025,15 +1170,14 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 137 checks
+# the whole suite: 141 backend + 125 front-end checks
 cd ~/blessforge
-for t in test_loader_detection test_job_stream test_install_decisions test_roulette; do
+for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
-python3 dev/tools/check_bindings.py | tail -1     # 316 template bindings
-cd dev/ui-tests && docker run --rm --network host -v "$PWD":/w -w /home/pptruser \
-  ghcr.io/puppeteer/puppeteer:latest sh -c "cp /w/ui.mjs . && node ui.mjs" | tail -1
-# ui.mjs drives a REAL browser against the REAL backend, and only reads.
+.venv/bin/python dev/tools/check_frontend.py | tail -1
+# check_frontend.py wants `node` on PATH for its parse check and skips it
+# cleanly without one -- but that is the check worth having (trap 25).
 
 # what it looks like — screenshots at four widths
 mkdir -p /tmp/shots && chmod 777 /tmp/shots
@@ -1049,12 +1193,11 @@ docker compose -f /var/lib/casaos/apps/blessforge/docker-compose.yml \
 # NEVER redeploy while an install is running -- the job registry is in memory
 # and the container restart kills it mid-flight.
 
-# JS syntax check on the canvas's logic (there is no node on the host)
-docker run --rm -v "$PWD/app/static":/w:ro node:20-alpine node -e '
-const fs=require("fs");const s=fs.readFileSync("/w/index.html","utf8");
-const i=s.indexOf("data-dc-script");const j=s.indexOf(">",i)+1;
-new Function("DCLogic","StreamableLogic","React", s.slice(j,s.lastIndexOf("</script>")));
-console.log("ok");'
+# JS syntax check without node on the host
+docker run --rm -v "$PWD/app/static/js":/w:ro node:20-alpine sh -c '
+for f in $(find /w -name "*.js"); do
+  node --input-type=module --check < "$f" || echo "FAIL $f";
+done; echo ok'
 
 # a dev server on 8719, without touching the deployed container.
 # NEVER `pkill -f uvicorn` -- it kills the container's process too (§8.17).

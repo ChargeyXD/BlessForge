@@ -42,6 +42,15 @@ export function h(tag, props, ...kids) {
   }
   if (props) applyProps(el, props);
   append(el, kids);
+  // Anything that carries the wiggling polygon gets its layer here rather
+  // than at the call site. Forgetting it is invisible until someone hovers,
+  // which is the worst kind of bug to leave to discipline -- and the layer
+  // must be the FIRST child, because the card paints its own fill at
+  // z-index 1 and the blob at 0.
+  if ((el.classList.contains('card') || el.classList.contains('btn'))
+      && !el.querySelector(':scope > .p5-hl')) {
+    el.prepend(hl());
+  }
   return el;
 }
 
@@ -100,7 +109,12 @@ export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
    it is behind the label in source order, and its parent must never take a
    transform — a transform makes the parent a stacking context and the blob
    then paints between the fill and the text instead of behind both. */
-export const hl = () => h('span.p5-hl', { 'aria-hidden': 'true' });
+export function hl() {
+  const span = document.createElement('span');
+  span.className = 'p5-hl';
+  span.setAttribute('aria-hidden', 'true');
+  return span;
+}
 
 /* --- icons --------------------------------------------------
    One family, one stroke width, drawn inline so a LAN box with no
@@ -419,7 +433,7 @@ function trapFocus(e, panel) {
 }
 
 export function confirmDialog({
-  title, message, confirmLabel = 'Confirm', danger, detail, requireText,
+  title, message, confirmLabel = 'Confirm', danger, detail, requireText, art,
 }) {
   return new Promise((resolve) => {
     // `close()` runs onClose, which resolves false — so the answer has to be
@@ -452,6 +466,12 @@ export function confirmDialog({
     modal({
       title: title || 'Are you sure?',
       body: frag(
+        // A picture on a destructive dialog is not decoration: it is half a
+        // second of "wait, what am I about to do" before the muscle memory
+        // reaches the confirm button.
+        art ? h('div', { style: { textAlign: 'center', marginBottom: '10px' } },
+          h('img', { src: `/assets/${art}`, alt: '',
+            style: { width: 'min(190px,46vw)' } })) : null,
         h('p', message),
         detail && h('div.note.warn', { style: { marginTop: '12px' } }, detail),
         requireText && h('div.field', { style: { marginTop: '14px' } },
@@ -594,8 +614,20 @@ export function readTheme() {
 }
 
 export function applyTheme(mode) {
-  if (mode === 'system') document.documentElement.removeAttribute('data-theme');
-  else document.documentElement.setAttribute('data-theme', mode);
+  const root = document.documentElement;
+  // Suppress transitions across the swap. Every colour token changes at once
+  // and a `transition: color` on a label would animate it from one palette to
+  // the other — which reads as the text briefly becoming unreadable rather
+  // than as a tasteful crossfade.
+  root.classList.add('theme-switching');
+  if (mode === 'system') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', mode);
+  // Two frames: one for the new values to be computed, one for them to paint.
+  requestAnimationFrame(() => requestAnimationFrame(
+    () => root.classList.remove('theme-switching')));
+  // A timer as well, because rAF does not fire in a tab that is not being
+  // painted and the class must never be left on.
+  setTimeout(() => root.classList.remove('theme-switching'), 120);
   try { localStorage.setItem(THEME_KEY, mode); } catch { /* private window */ }
 }
 
@@ -616,3 +648,201 @@ export const prefs = {
     catch { /* private window, or storage disabled */ }
   },
 };
+
+/* ============================================================
+   Interaction behaviours
+   ------------------------------------------------------------
+   Small, opt-in, and all of them no-ops under reduced motion or
+   on a touch device — a magnetic button is a pointer affordance
+   and on a finger it is just jitter.
+   ============================================================ */
+
+const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)');
+const FINE_POINTER = window.matchMedia('(hover: hover) and (pointer: fine)');
+const wantsMotion = () => !REDUCED.matches && FINE_POINTER.matches;
+
+/* The label leans toward the cursor while it is over the control. Two or
+   three pixels — enough that the button feels like it noticed you, not
+   enough to move the hit target out from under the finger. */
+export function magnetic(el, strength = 4) {
+  if (!wantsMotion()) return el;
+  const inner = el.querySelector(':scope > span') || el;
+  let raf = null;
+  const move = (e) => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = null;
+      const r = el.getBoundingClientRect();
+      const dx = ((e.clientX - r.left) / r.width - 0.5) * strength * 2;
+      const dy = ((e.clientY - r.top) / r.height - 0.5) * strength;
+      inner.style.transform = `translate(${dx.toFixed(2)}px,${dy.toFixed(2)}px)`;
+    });
+  };
+  const reset = () => {
+    if (raf) { cancelAnimationFrame(raf); raf = null; }
+    inner.style.transform = '';
+  };
+  el.addEventListener('pointermove', move);
+  el.addEventListener('pointerleave', reset);
+  el.addEventListener('blur', reset);
+  return el;
+}
+
+/* A card tips very slightly toward the cursor. The maximum is deliberately
+   under 4 degrees: past that it stops reading as depth and starts reading as
+   a gimmick, and text on a tilted plane gets harder to read. */
+export function tilt(el, max = 3.2) {
+  if (!wantsMotion()) return el;
+  let raf = null;
+  const move = (e) => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = null;
+      const r = el.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width - 0.5;
+      const py = (e.clientY - r.top) / r.height - 0.5;
+      el.style.transform =
+        `perspective(900px) rotateX(${(-py * max).toFixed(2)}deg) `
+        + `rotateY(${(px * max).toFixed(2)}deg) translate3d(0,-3px,0)`;
+    });
+  };
+  const reset = () => {
+    if (raf) { cancelAnimationFrame(raf); raf = null; }
+    el.style.transform = '';
+  };
+  el.addEventListener('pointermove', move);
+  el.addEventListener('pointerleave', reset);
+  return el;
+}
+
+/* A number that arrives by counting rather than by appearing. Only worth it
+   for the handful of figures a person actually reads — a KPI, a total — and
+   never for a value inside a list. */
+export function countUp(el, to, { decimals = 0, duration = 700, suffix = '' } = {}) {
+  const target = Number(to);
+  if (!Number.isFinite(target)) { el.textContent = String(to); return el; }
+  if (!wantsMotion() || target === 0) {
+    el.textContent = target.toFixed(decimals) + suffix;
+    return el;
+  }
+  const from = 0;
+  const started = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - started) / duration);
+    // easeOutExpo — fast, then settles, which reads as a mechanical counter
+    const eased = t === 1 ? 1 : 1 - 2 ** (-10 * t);
+    el.textContent = (from + (target - from) * eased).toFixed(decimals) + suffix;
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+  return el;
+}
+
+/* Reveal on scroll, shared observer. Cheaper than one per element and it
+   unobserves on first reveal, so a long list does not keep a callback alive
+   per row for the life of the screen. */
+let revealObserver = null;
+export function reveal(el, delay = 0) {
+  if (REDUCED.matches) return el;
+  if (!revealObserver) {
+    revealObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        entry.target.classList.add('revealed');
+        revealObserver.unobserve(entry.target);
+      }
+    }, { rootMargin: '0px 0px -8% 0px', threshold: 0.06 });
+  }
+  el.classList.add('to-reveal');
+  if (delay) el.style.setProperty('--reveal-delay', `${delay}ms`);
+  revealObserver.observe(el);
+  return el;
+}
+
+/* A ripple from the point of contact. Bound once on the document rather than
+   per button, because there are several hundred buttons in this app and each
+   listener would outlive the screen that made it. */
+function installRipple() {
+  document.addEventListener('pointerdown', (e) => {
+    if (REDUCED.matches) return;
+    const btn = e.target.closest?.('.btn, .navlink, .fleetrow, .tabs button');
+    if (!btn || btn.hasAttribute('disabled')) return;
+    const r = btn.getBoundingClientRect();
+    const ink = document.createElement('span');
+    ink.className = 'ripple';
+    const size = Math.max(r.width, r.height) * 1.6;
+    ink.style.width = ink.style.height = `${size}px`;
+    ink.style.left = `${e.clientX - r.left - size / 2}px`;
+    ink.style.top = `${e.clientY - r.top - size / 2}px`;
+    btn.appendChild(ink);
+    setTimeout(() => ink.remove(), 560);
+  }, { passive: true });
+}
+installRipple();
+
+/* The shrine spinner: a sakura mon turning. Used wherever a wait is short
+   enough that the fox would be too much. */
+export function spinner(label) {
+  return h('div.shrine-wait',
+    h('span.mon-spin', { 'aria-hidden': 'true' }),
+    label ? h('span', label) : null);
+}
+
+/* Which half of the game a mod runs on, as the loudest chip in the row.
+   `server_side` / `client_side` follow Modrinth's vocabulary: required,
+   optional, unsupported, unknown. */
+export function sideTag(mod) {
+  const server = (mod.server_side || '').toLowerCase();
+  const client = (mod.client_side || '').toLowerCase();
+  if (!server && !client) {
+    return mod.client_only
+      ? pill('client only', 'side-client',
+        (mod.client_only_reasons || []).join('; ') || 'flagged client-only')
+      : null;
+  }
+  const serverOk = server === 'required' || server === 'optional';
+  const clientOk = client === 'required' || client === 'optional';
+
+  if (server === 'unsupported') {
+    return pill('client only', 'side-client',
+      'Its author states server_side: unsupported — a server cannot use it.');
+  }
+  if (client === 'unsupported') {
+    return pill('server only', 'side-server',
+      'Its author states client_side: unsupported — players need nothing.');
+  }
+  if (serverOk && clientOk) {
+    const optional = server === 'optional' || client === 'optional';
+    return pill(optional ? 'both (optional)' : 'both sides', 'side-both',
+      optional
+        ? `server_side: ${server}, client_side: ${client} — it runs on both, `
+          + 'and one of the two is optional.'
+        : 'Required on the server and on every client that joins.');
+  }
+  if (serverOk) {
+    return pill('server side', 'side-server', `server_side: ${server}`);
+  }
+  if (clientOk) {
+    return pill('client side', 'side-client', `client_side: ${client}`);
+  }
+  return pill('side unknown', 'side-unknown',
+    'Neither catalogue states which side this runs on.');
+}
+
+
+/* The catalogue a thing came from, as its own mark rather than the word.
+   Two sources, two very recognisable logos — a text pill saying "modrinth"
+   is strictly less legible at a glance than the logo everyone already
+   knows. */
+const SOURCE_ART = {
+  curseforge: { src: '/assets/src-curseforge.png', label: 'CurseForge' },
+  modrinth: { src: '/assets/src-modrinth.png', label: 'Modrinth' },
+};
+
+export function sourceMark(source) {
+  const art = SOURCE_ART[(source || '').toLowerCase()];
+  if (!art) return source ? pill(source, 'ghost') : null;
+  return h('span.srcmark', { title: art.label },
+    h('img', { src: art.src, alt: '', loading: 'lazy', width: 13, height: 13 }),
+    h('span', art.label));
+}

@@ -194,7 +194,7 @@ export async function render() {
             h('header', icon('layers', 15), h('h3', 'Server software'),
               h('span.sp', `${catalogue.length} available`)),
             h('div.pad',
-              h('div.grid.gauto', { style: { gap: '12px' } },
+              h('div.loadergrid',
                 ...catalogue.map((entry) => loaderCard(entry, form.loader,
                   () => {
                     form.loader = entry.key;
@@ -385,27 +385,24 @@ function summaryRow(label, value, sub) {
 
 function loaderCard(entry, selected, onpick) {
   const on = entry.key === selected;
-  return h('button.card.hoverable', {
+  // One fixed art box for every loader. The source marks are a 4 KB PNG, a
+  // JPEG on a white ground, a 140 KB PNG and a 152 KB SVG at four different
+  // aspect ratios — rendered at their natural sizes they read as four
+  // different visual weights and the row looks like a ransom note.
+  return h('button.loadercard', {
     type: 'button',
     'aria-pressed': String(on),
     onclick: onpick,
-    style: {
-      textAlign: 'left', cursor: 'pointer', gap: '8px', padding: '14px',
-      borderColor: on ? 'var(--rose)' : null,
-      background: on ? 'var(--rose-soft)' : null,
-    },
   },
-    h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
-      h('div.loader-badge', entry.logo
-        ? h('img', { src: entry.logo, alt: '', loading: 'lazy' })
-        : icon(entry.kind === 'plugins' ? 'puzzle' : 'box', 16)),
+    h('div.top',
+      h('div.loader-art', entry.logo
+        ? h('img', { src: entry.logo, alt: '', loading: 'lazy', decoding: 'async' })
+        : icon(entry.kind === 'plugins' ? 'puzzle' : 'box', 20)),
       h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div.h-num', { style: { fontSize: '15px' } }, entry.title),
-        h('div.mono.muted', { style: { fontSize: '10px' } },
-          `${entry.mod_directory}/ · ${entry.versions.length} versions`)),
-      on ? icon('check', 16) : null),
-    h('p', { style: { fontSize: '12.5px', color: 'var(--mid)', margin: 0 } },
-      entry.blurb),
+        h('div.nm', entry.title),
+        h('div.meta', `${entry.mod_directory}/ · ${entry.versions.length} versions`)),
+      h('span.tick', icon('check', 17))),
+    h('p', entry.blurb),
   );
 }
 

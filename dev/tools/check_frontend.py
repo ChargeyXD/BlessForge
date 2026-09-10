@@ -17,11 +17,11 @@ can break silently in a no-build-step ES-module front end:
      it is the one that matters: a screen calling an endpoint that was
      renamed fails at the moment someone opens it.
 
-Plus one design invariant worth machine-checking, because breaking it is
-invisible until you hover: the wiggling-polygon highlight is a `z-index:-1`
-child, which only paints behind its parent's background while the parent is
-not a stacking context. A `transform` on `.card` or `.btn` creates one, and
-the blob then paints between the card fill and the card text.
+Plus the layering contract behind the wiggling polygon, which is worth
+machine-checking because breaking it is invisible until someone hovers. The
+highlight is an explicit layer inside each card and button -- blob at 0, fill
+at 1, content at 2 -- and every part of that has to hold together or the blob
+paints over the card instead of behind it. See `check_layering`.
 
     python dev/tools/check_frontend.py
 """
@@ -177,38 +177,106 @@ def check_api() -> None:
 _RULE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 
 
-def check_stacking_context() -> None:
-    """No transform / opacity / filter on anything that carries a highlight.
+def _decl(body: str, prop: str) -> str | None:
+    m = re.search(rf"(?:^|;)\s*{prop}\s*:\s*([^;]+)", body)
+    return m.group(1).strip() if m else None
 
-    Each of those makes the element a stacking context, at which point its
-    z-index:-1 child stops painting behind the element's own background and
-    starts painting on top of it -- behind the text, in front of the fill.
-    Invisible until hover, and it looks like a colour bug rather than a
-    layering one.
+
+_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+
+
+def _rules(css: str) -> list[tuple[str, str]]:
+    """(selector, body) pairs, with comments stripped first.
+
+    Stripping matters: the selector group is `[^{}]+`, so it swallows
+    everything since the previous closing brace -- including the comment
+    block above the rule. Left in, `.card` is never found by name and every
+    layering check reports a false failure.
     """
-    css = (STATIC / "css" / "theme.css").read_text(encoding="utf-8")
-    offenders: list[str] = []
-    for selector, body in _RULE.findall(css):
-        sel = selector.strip()
-        if sel.startswith("@") or "keyframes" in sel:
+    css = _COMMENT.sub("", css)
+    out = []
+    for sel, body in _RULE.findall(css):
+        sel = " ".join(sel.split()).strip()
+        if not sel or sel.startswith("@") or "keyframes" in sel:
             continue
-        # Only the selectors that actually host a highlight.
-        if not re.search(r"(^|[,\s])\.(card|btn|p5)\b", sel):
-            continue
-        if ".p5-hl" in sel or "::before" in sel:
-            continue
-        for prop in ("transform", "opacity", "filter", "isolation",
-                     "will-change", "backdrop-filter"):
-            m = re.search(rf"(?:^|;)\s*{prop}\s*:\s*([^;]+)", body)
-            if not m:
+        out.append((sel, body))
+    return out
+
+
+def check_layering() -> None:
+    """The polygon must paint behind the card's FILL, not behind its text.
+
+    This inverts the rule that used to be here. The highlight was a
+    `z-index:-1` pseudo-element, which paints behind its parent's background
+    only while the parent is NOT a stacking context -- so the old check
+    forbade transforms everywhere. That rule was one animated `transform`
+    away from being broken, and the entrance animation on `.stagger > *`
+    duly broke it: the blob started painting over the card fill and under the
+    text, which is exactly what it must never do.
+
+    The layering is now explicit and the contract is the opposite one. Each
+    highlight host is a stacking context ON PURPOSE, and inside it:
+
+        .p5-hl    z-index 0   the blob
+        ::after   z-index 1   the fill and the border
+        content   z-index 2   everything you read
+
+    So what is checked is that the three layers exist and stay in that
+    order -- and transforms are free, which is what lets the app move.
+    """
+    theme = (STATIC / "css" / "theme.css").read_text(encoding="utf-8")
+    app = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    rules = _rules(theme) + _rules(app)
+
+    def find(selector: str, prop: str) -> str | None:
+        """The last declared value for `prop` on a rule naming `selector`.
+
+        Last, not first: CSS cascades, and a later rule is the one that
+        actually applies.
+        """
+        found = None
+        for sel, body in rules:
+            if selector not in [s.strip() for s in sel.split(",")]:
                 continue
-            value = m.group(1).strip().rstrip("!important").strip()
-            # `transform:none` and `opacity:1` create no stacking context.
-            if value in ("none", "1", "auto", "initial"):
-                continue
-            offenders.append(f"{sel} {{ {prop}: {value} }}")
-    check("nothing that carries the wiggling polygon is a stacking context",
-          not offenders, "; ".join(offenders[:3]))
+            value = _decl(body, prop)
+            if value:
+                found = value
+        return found
+
+    # Every host that carries a blob must isolate, or the layering is at the
+    # mercy of whatever ancestor happens to be a stacking context.
+    for host in (".card", ".btn", ".loadercard"):
+        check(f"{host} isolates its own stacking context",
+              find(host, "isolation") == "isolate",
+              "without `isolation:isolate` the layer order is not ours to set")
+
+    blob_z = find(".p5-hl", "z-index")
+    check("the blob sits on layer 0", blob_z == "0", f"z-index: {blob_z}")
+
+    for host in (".card::after", ".btn::after", ".loadercard::after"):
+        z = find(host, "z-index")
+        check(f"{host} (the fill) sits above the blob", z == "1", f"z-index: {z}")
+
+    for host in (".card > *:not(.p5-hl)", ".btn > *:not(.p5-hl)",
+                 ".loadercard > *:not(.p5-hl)"):
+        z = find(host, "z-index")
+        check(f"content in {host.split(' ')[0]} sits above the fill",
+              z == "2", f"z-index: {z}")
+
+    # `.card > *` without the :not() would win over `.p5-hl`'s own
+    # `position:absolute` on specificity and collapse the blob to a zero-size
+    # element in flow -- which looks exactly like the highlight not working,
+    # and did, once.
+    naked = [sel for sel, _ in rules
+             if sel in (".card > *", ".btn > *", ".loadercard > *")]
+    check("no blanket `> *` rule can outrank the blob's own position",
+          not naked, ", ".join(naked))
+
+    # Nothing may reintroduce the old negative-z-index trick.
+    negatives = [sel for sel, body in rules
+                 if _decl(body, "z-index") == "-1"]
+    check("nothing relies on a negative z-index any more",
+          not negatives, ", ".join(negatives[:3]))
 
 
 # --- 6. the icon set is complete ---------------------------------------
@@ -231,7 +299,7 @@ def main() -> int:
     check_imports()
     check_assets()
     check_icons()
-    check_stacking_context()
+    check_layering()
     print("--- API contract ---")
     check_api()
     print()

@@ -37,6 +37,9 @@ const LOADERS = {
   forge: '/assets/loader-forge.jpg',
   neoforge: '/assets/loader-neoforge.png',
   vanilla: '/assets/loader-vanilla.svg',
+  paper: '/assets/loader-paper.png',
+  purpur: '/assets/loader-purpur.png',
+  folia: '/assets/loader-paper.png',
 };
 const PLUGIN_FAMILIES = new Set(['paper', 'purpur', 'folia', 'spigot', 'bukkit']);
 
@@ -100,7 +103,7 @@ export async function render({ params }) {
         style: { opacity: st === 'running' ? '.85' : '.35' } }),
       h('div', { style: { paddingTop: '10px', display: 'flex', gap: '14px',
         alignItems: 'flex-start', flex: 1, flexWrap: 'wrap' } },
-        h('div.loader-badge', { style: { width: '46px', height: '46px' } },
+        h('div.loader-art', { style: { width: '46px', height: '46px' } },
           art ? h('img', { src: art, alt: '' })
             : icon(ctx.plugins ? 'puzzle' : 'box', 20)),
         h('div.idn',
@@ -291,6 +294,7 @@ export async function deleteInstance(id, name) {
     confirmLabel: 'Delete permanently',
     danger: true,
     requireText: 'DELETE',
+    art: 'creeper-delete-2x.png',
   });
   if (!ok) return;
   try {

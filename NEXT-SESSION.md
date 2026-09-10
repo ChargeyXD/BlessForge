@@ -1,7 +1,8 @@
 # BlessForge — the state of the code, for the next session
 
-Rewritten 2026-09-10, after the front end was rebuilt from scratch and six
-features were added. Read `HANDOVER.md` first for how the app is put together;
+Rewritten 2026-09-10, after the front end was rebuilt from scratch, six
+features were added, and the UI was then reworked a second time for weight
+and speed. Read `HANDOVER.md` first for how the app is put together;
 this is the list of what is *incomplete*, separated so you can tell which is
 which.
 
@@ -25,6 +26,43 @@ vendored React, no binding contract. Do not go looking for them.
 | Decisions | The whitelist is now allow **and** block, matched by project id → mod id → version-stripped stem, global or per-instance, exportable. |
 | Roulette | Every pinned build verified against what its publisher declares; short hands topped up in seeded rounds instead of shipped short. |
 
+## 1A. The second pass — how it looks, and how fast
+
+The rebuild was correct and read flat, so it was reworked the same day. No
+endpoint moved; three server-side changes exist only to make the page load
+faster.
+
+| area | what it is now |
+|---|---|
+| Layering | Explicit, and machine-checked. Every card, button and loader tile isolates its own stacking context and holds three layers: blob at 0, fill and border at 1, content at 2. The blob bleeds ~17 px past the card edge, behind the fill. |
+| Load time | `/api/health` runs its three upstream checks under `asyncio.gather` behind an 8 s cache, and boot no longer awaits it. DOMContentLoaded 248 → 118 ms, load 589 → 387 ms, health 1.3 s → 665 ms cold and 2 ms warm. |
+| Motion | Every entrance animation is translate-only and gated on `html.js-motion`; `prefers-reduced-motion` turns it all off. Hover lifts, magnetic buttons, ripples, counting numbers, staggered reveals. |
+| Mod side tags | Every mod row says `client only` / `server only` / `both`, from the same scored evidence the install review uses. A jar with nothing recorded says so instead of guessing. |
+| Config editor | Side by side in the tab rather than in a modal. Unsaved text survives switching files; leaving with unsaved work warns. |
+| Roulette | The constraint system is rebuilt — a recklessness ladder, an intensity dial, a live catalogue monitor. The lever is now a rope you drag, with resistance, release and a petal burst; clicking still works for keyboards and phones. |
+| Diagnose | Returns named passes with counts, a `complete` flag and de-duplicated findings, so "nothing found" means the checks ran. |
+| Chrome | Fox app icon and favicon, sidebar buttons with state and motion, evenly sized loader tiles, Paper and Purpur marks, source logos on mod rows, art in the job drawer and on the delete confirm. |
+
+**The layering is the part worth understanding.** The polygon used to be a
+`z-index:-1` pseudo-element, which paints behind its parent's background *only
+while the parent is not a stacking context*. The entrance animation put a
+`transform` on every card, so every card became one, and the blob started
+painting over the card and under the text. Relying on that trick was the bug;
+the three explicit layers are the fix, and `check_frontend.check_layering`
+enforces them — including that no blanket `.card > *` rule exists, because
+that selector outranks `.p5-hl`'s own `position:absolute` on specificity and
+collapses the blob to a zero-size element in flow.
+
+Two more traps from this pass, both now guarded:
+
+- **Never animate *from* `opacity:0` with `fill:both`.** If the document
+  timeline stalls — a hidden tab, a throttled preview pane — the animation
+  never starts and the content is permanently invisible. Every entrance
+  animation is translate-only for that reason.
+- **Cache control is header-based** (`_StaticCache`), not `?v=` fingerprints.
+  ES module imports carry no query string, so a fingerprint on the entry point
+  does nothing for anything it imports.
+
 ## 2. Verified in this session
 
 Driven against a mock Crafty (`dev/`-adjacent, not committed) and against the
@@ -40,7 +78,11 @@ APIs:
 | Players | Both routes: console on a running server, JSON file on a stopped one, each saying which it took; Mojang UUID lookup |
 | Client-only scoring | 6 targeted cases including the Forge mod that declares nothing and is caught by package layout |
 | Backend suite | 141 checks across 5 test files |
-| Front end | 107 checks (`dev/tools/check_frontend.py`) |
+| Front end | 125 checks (`dev/tools/check_frontend.py`), including the layering contract |
+| Layering | Read back from computed styles in a real browser: card `isolation:isolate`, blob `position:absolute` at z 0, fill at z 1, bleeding 17 px left and 15 px top |
+| Load time | Measured, not estimated: shell 4 ms, health 541 ms non-blocking, instances 32 ms, DCL 118 ms, load 387 ms |
+| The rope | Dragged and clicked; recklessness ladder lit to `11111` at Unhinged, crest cycling, the roll starting from both |
+| Config editor | Opened a real TOML beside the list, typed into it, row marked unsaved, status line counting lines and bytes |
 
 Two real bugs were found by driving the UI rather than reading it, and both
 are fixed: `confirmDialog` resolved `false` before it resolved `true` (so
@@ -66,7 +108,10 @@ trailing space threw and took the whole screen down.
 5. **No destructive button has been pressed against a real server.** Delete,
    kill and delete-world are wired and their confirmations work (and the
    confirmation bug above is fixed, so they now actually fire).
-6. **Below 900 px is drawn but not driven.** The layout collapses correctly in
+6. **The rope has not been pulled with a real finger.** It is driven by
+   pointer events, which is the right API for it, and it was dragged with a
+   synthetic pointer — but a touchscreen has not been near it.
+7. **Below 900 px is drawn but not driven.** The layout collapses correctly in
    CSS — the rail becomes a drawer, grids go to one column — but it has not
    been used on a phone.
 

@@ -1,15 +1,20 @@
 /* ============================================================
    BLESSFORGE — pink shrine fox theme
    ------------------------------------------------------------
-   Tokens, ornament and motion, shared with the Project Fox
-   landing page so the two read as one product. Everything that
-   is not layout lives here; app.css owns the shell.
+   A shrine at night: plum ink, sakura, gold leaf and paper.
+   Tokens, ornament and motion. app.css owns the shell.
+
+   The one structural rule everything else rests on: the
+   wiggling polygon is a LAYER INSIDE the card, not a negative
+   z-index sibling of its background. See "THE WIGGLING POLYGON".
    ============================================================ */
 
 :root{
   --paper:#FBF3F0;
   --paper-2:#F5E9E5;
+  --paper-3:#EFE0DB;
   --card:#FFFFFF;
+  --card-2:#FDF8F7;
   --text:#2E2432;
   --mid:#6E5C68;
   --faint:#7C687A;
@@ -35,10 +40,11 @@
   --gold:#C9A227;
   --gold-ink:#8A6A1F;
   --gold-soft:#F6EACB;
+  --gold-leaf:linear-gradient(115deg,#8A6A1F 0%,#E8CE72 22%,#FFF6D2 38%,
+    #C9A227 55%,#8A6A1F 78%,#E8CE72 100%);
 
   --plum:#6B4E72;
   --plum-soft:#EDE3F0;
-
   --sage:#3F6B4F;
   --sage-soft:#DEEDE3;
   --amber-ink:#8A5A12;
@@ -52,15 +58,20 @@
   --shrine-deep:#8E3049;
   --shrine-soft:#F3D7DE;
 
-  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
-  --sp-7:48px;
+  /* Depth. Two shadows, always: a hard offset one that carries the
+     brutalist edge, and a wide soft one that stops it looking like a
+     sticker. The soft one is what reads as expensive. */
+  --lift-1:3px 3px 0 var(--slab-bg), 0 4px 14px -6px rgba(36,27,40,.32);
+  --lift-2:5px 6px 0 var(--slab-bg), 0 12px 30px -10px rgba(36,27,40,.38);
+  --lift-3:8px 9px 0 var(--slab-bg), 0 22px 48px -14px rgba(36,27,40,.44);
+  --glow-rose:0 0 0 1px var(--rose), 0 0 24px -6px var(--rose);
 
-  /* Project Fox's faces first, then the two this image actually ships.
-     Archivo Black and Plus Jakarta Sans are fetched from Google Fonts on a
-     non-blocking link, so a box with a route to the internet gets the exact
-     typography of the landing page -- and a LAN box with no route falls back
-     to vendored Space Grotesk and paints immediately rather than waiting out
-     a DNS timeout on a font. */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+
+  /* Project Fox's faces first, then the two this image ships. Archivo Black
+     and Plus Jakarta Sans come from Google Fonts on a non-blocking link, so a
+     box with no route out falls back to vendored Space Grotesk and paints
+     immediately rather than waiting out a DNS timeout on a font. */
   --disp:"Archivo Black","Space Grotesk",Impact,"Arial Black",sans-serif;
   --num:"Archivo","Space Grotesk","Helvetica Neue",Arial,sans-serif;
   --body:"Plus Jakarta Sans","Space Grotesk","Segoe UI",system-ui,-apple-system,sans-serif;
@@ -69,47 +80,65 @@
   --skew:-8deg;
   --edge:2.5px;
   --z-nav:60; --z-drawer:70; --z-modal:100; --z-toast:120;
+
+  /* Motion. Named for what they are for, so a call site reads as intent. */
+  --ease-out:cubic-bezier(.22,1,.36,1);
+  --ease-spring:cubic-bezier(.34,1.56,.64,1);
+  --ease-in:cubic-bezier(.55,0,1,.45);
+  --t-tap:.11s;      /* the response you feel     */
+  --t-move:.22s;     /* something changing place  */
+  --t-enter:.36s;    /* something arriving        */
+
   color-scheme:light dark;
 }
 
-/* Dark is the working default for a control panel that lives on a second
-   monitor at midnight, but every token is defined light-first so a single
-   attribute flips the whole app and nothing is left undefined. */
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --paper:#17111A; --paper-2:#1E1622; --card:#221A28;
-    --text:#EDE2E6; --mid:#B7A4B0; --faint:#9E8B99;
-    --rule:#372B3D; --rule-2:#2A2030;
+    --paper:#15101A; --paper-2:#1C1523; --paper-3:#241B2C; --card:#221A29;
+    --card-2:#281F30;
+    --text:#F2E8EC; --mid:#BFAEBA; --faint:#A492A2;
+    --rule:#3A2D41; --rule-2:#2B2132;
     --slab-bg:#F3E4E8; --slab-fg:#17111A; --slab-rose-fg:#241B28;
-    --band-bg:#241B28; --band-fg:#F6EBEA; --band-mid:#B9A6B4;
-    --band-card:#2E2334; --band-rule:#41334A;
-    --sakura:#EFAEC0; --sakura-soft:#33222C; --sakura-deep:#F0A0B6;
-    --rose:#F2879F; --rose-hi:#F9A6B9; --rose-soft:#3A222B;
-    --gold:#E8C560; --gold-ink:#E8C560; --gold-soft:#332A16;
-    --plum:#C3A5CB; --plum-soft:#2C2233;
-    --sage:#8FCFA3; --sage-soft:#1D2E23;
-    --amber-ink:#E8B267; --amber-soft:#332613;
-    --danger:#FF8A93; --danger-soft:#381F23;
-    --info:#9EC1F0; --info-soft:#1D2534;
-    --shrine:#F2879F; --shrine-deep:#D9788F; --shrine-soft:#3A222B;
+    --band-bg:#1B1421; --band-fg:#F6EBEA; --band-mid:#BFACBA;
+    --band-card:#2A2032; --band-rule:#3E3049;
+    --sakura:#EFAEC0; --sakura-soft:#37232F; --sakura-deep:#F0A0B6;
+    --rose:#F2879F; --rose-hi:#F9A6B9; --rose-soft:#3C232D;
+    --gold:#E8C560; --gold-ink:#F0D584; --gold-soft:#352B17;
+    --gold-leaf:linear-gradient(115deg,#8A6A1F 0%,#E8CE72 22%,#FFF6D2 38%,
+      #C9A227 55%,#8A6A1F 78%,#E8CE72 100%);
+    --plum:#C9AAD1; --plum-soft:#2F2436;
+    --sage:#8FCFA3; --sage-soft:#1F3126;
+    --amber-ink:#EFBB70; --amber-soft:#372815;
+    --danger:#FF8A93; --danger-soft:#3B2126;
+    --info:#9EC1F0; --info-soft:#1F2739;
+    --shrine:#F2879F; --shrine-deep:#D9788F; --shrine-soft:#3C232D;
+    --lift-1:3px 3px 0 var(--slab-bg), 0 4px 16px -6px rgba(0,0,0,.7);
+    --lift-2:5px 6px 0 var(--slab-bg), 0 14px 34px -10px rgba(0,0,0,.75);
+    --lift-3:8px 9px 0 var(--slab-bg), 0 24px 54px -14px rgba(0,0,0,.8);
   }
 }
 :root[data-theme="dark"]{
-  --paper:#17111A; --paper-2:#1E1622; --card:#221A28;
-  --text:#EDE2E6; --mid:#B7A4B0; --faint:#9E8B99;
-  --rule:#372B3D; --rule-2:#2A2030;
+  --paper:#15101A; --paper-2:#1C1523; --paper-3:#241B2C; --card:#221A29;
+  --card-2:#281F30;
+  --text:#F2E8EC; --mid:#BFAEBA; --faint:#A492A2;
+  --rule:#3A2D41; --rule-2:#2B2132;
   --slab-bg:#F3E4E8; --slab-fg:#17111A; --slab-rose-fg:#241B28;
-  --band-bg:#241B28; --band-fg:#F6EBEA; --band-mid:#B9A6B4;
-  --band-card:#2E2334; --band-rule:#41334A;
-  --sakura:#EFAEC0; --sakura-soft:#33222C; --sakura-deep:#F0A0B6;
-  --rose:#F2879F; --rose-hi:#F9A6B9; --rose-soft:#3A222B;
-  --gold:#E8C560; --gold-ink:#E8C560; --gold-soft:#332A16;
-  --plum:#C3A5CB; --plum-soft:#2C2233;
-  --sage:#8FCFA3; --sage-soft:#1D2E23;
-  --amber-ink:#E8B267; --amber-soft:#332613;
-  --danger:#FF8A93; --danger-soft:#381F23;
-  --info:#9EC1F0; --info-soft:#1D2534;
-  --shrine:#F2879F; --shrine-deep:#D9788F; --shrine-soft:#3A222B;
+  --band-bg:#1B1421; --band-fg:#F6EBEA; --band-mid:#BFACBA;
+  --band-card:#2A2032; --band-rule:#3E3049;
+  --sakura:#EFAEC0; --sakura-soft:#37232F; --sakura-deep:#F0A0B6;
+  --rose:#F2879F; --rose-hi:#F9A6B9; --rose-soft:#3C232D;
+  --gold:#E8C560; --gold-ink:#F0D584; --gold-soft:#352B17;
+  --gold-leaf:linear-gradient(115deg,#8A6A1F 0%,#E8CE72 22%,#FFF6D2 38%,
+    #C9A227 55%,#8A6A1F 78%,#E8CE72 100%);
+  --plum:#C9AAD1; --plum-soft:#2F2436;
+  --sage:#8FCFA3; --sage-soft:#1F3126;
+  --amber-ink:#EFBB70; --amber-soft:#372815;
+  --danger:#FF8A93; --danger-soft:#3B2126;
+  --info:#9EC1F0; --info-soft:#1F2739;
+  --shrine:#F2879F; --shrine-deep:#D9788F; --shrine-soft:#3C232D;
+  --lift-1:3px 3px 0 var(--slab-bg), 0 4px 16px -6px rgba(0,0,0,.7);
+  --lift-2:5px 6px 0 var(--slab-bg), 0 14px 34px -10px rgba(0,0,0,.75);
+  --lift-3:8px 9px 0 var(--slab-bg), 0 24px 54px -14px rgba(0,0,0,.8);
 }
 
 /* ============================================================
@@ -124,6 +153,14 @@ body{
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
   min-height:100dvh;overflow-x:hidden;
 }
+/* A wash of colour behind everything, so the ground is never a flat fill. */
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(1100px 620px at 12% -8%, color-mix(in srgb,var(--sakura) 22%,transparent), transparent 62%),
+    radial-gradient(880px 520px at 96% 4%, color-mix(in srgb,var(--plum) 20%,transparent), transparent 58%),
+    radial-gradient(760px 620px at 60% 108%, color-mix(in srgb,var(--gold) 12%,transparent), transparent 60%);
+}
 a{color:var(--rose);text-decoration:none}
 a:hover{text-decoration:underline}
 strong,b{font-weight:700;color:var(--text)}
@@ -135,15 +172,20 @@ p{margin:0 0 10px}
 p:last-child{margin-bottom:0}
 hr{border:0;border-top:var(--edge) solid var(--rule);margin:var(--sp-5) 0}
 
+/* Focus reads as a paper lantern lighting up, not as a browser outline. */
 :where(a,button,summary,input,select,textarea,[tabindex]):focus-visible{
-  outline:3px solid var(--rose);outline-offset:3px;border-radius:1px;
+  outline:3px solid var(--rose);outline-offset:3px;border-radius:2px;
+  box-shadow:0 0 0 6px color-mix(in srgb,var(--rose) 22%,transparent);
 }
 
-::-webkit-scrollbar{width:11px;height:11px}
-::-webkit-scrollbar-track{background:var(--paper-2)}
-::-webkit-scrollbar-thumb{background:var(--rule);border:3px solid var(--paper-2)}
-::-webkit-scrollbar-thumb:hover{background:var(--sakura-deep)}
-*{scrollbar-color:var(--rule) var(--paper-2)}
+::-webkit-scrollbar{width:12px;height:12px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{
+  background:linear-gradient(var(--sakura-deep),var(--rose));
+  border:3px solid var(--paper);border-radius:99px;
+}
+::-webkit-scrollbar-thumb:hover{background:var(--rose)}
+*{scrollbar-color:var(--sakura-deep) transparent;scrollbar-width:thin}
 
 .sr-only{
   position:absolute;width:1px;height:1px;padding:0;margin:-1px;
@@ -151,7 +193,7 @@ hr{border:0;border-top:var(--edge) solid var(--rule);margin:var(--sp-5) 0}
 }
 
 /* ============================================================
-   type system
+   type
    ============================================================ */
 .slab{
   display:inline-block;background:var(--slab-bg);color:var(--slab-fg);
@@ -162,23 +204,21 @@ hr{border:0;border-top:var(--edge) solid var(--rule);margin:var(--sp-5) 0}
 }
 .slab > span{display:inline-block;transform:skewX(8deg)}
 .slab.rose{background:var(--rose);color:var(--slab-rose-fg);box-shadow:6px 6px 0 var(--gold)}
-.slab.sm{font-size:15px;box-shadow:4px 4px 0 var(--sakura)}
 
 .eyebrow{
   font-family:var(--mono);font-size:10.5px;font-weight:600;
-  text-transform:uppercase;letter-spacing:.16em;color:var(--faint);margin:0;
+  text-transform:uppercase;letter-spacing:.18em;color:var(--faint);margin:0;
 }
 .eyebrow b{color:var(--rose);font-weight:700}
 
 .h-disp{font-family:var(--disp);font-weight:400;text-transform:uppercase;
   letter-spacing:-.025em;line-height:.98}
-/* Archivo Black ships one weight (400) and would be smeared by a synthesised
-   bold, so the display faces ask for 400. Space Grotesk at 400 is a text
-   weight and reads as body copy in a slab -- so when Archivo Black did not
-   load, app.js stamps `no-archivo` on <html> and the fallback carries the
-   weight itself. Checked at runtime rather than guessed with @supports,
-   because what matters is whether the face arrived, not what the engine
-   can do. */
+/* Archivo Black ships one weight and would be smeared by a synthesised bold,
+   so the display faces ask for 400. Space Grotesk at 400 is a text weight and
+   reads as body copy in a slab — so when Archivo Black did not load, app.js
+   stamps `no-archivo` on <html> and the fallback carries the weight itself.
+   Checked at runtime rather than guessed, because what matters is whether the
+   face arrived. */
 html.no-archivo .slab,
 html.no-archivo .h-disp,
 html.no-archivo .sec-head h2,
@@ -190,27 +230,47 @@ html.no-archivo .card > header h3,
 html.no-archivo .modal > header h3,
 html.no-archivo .empty h3{font-weight:700}
 .slab,.h-disp{font-synthesis-weight:none}
+
 .h-num{font-family:var(--num);font-weight:800;letter-spacing:-.02em}
 .mono{font-family:var(--mono);font-size:.86em}
 .tnum{font-variant-numeric:tabular-nums}
 .muted{color:var(--faint)}
 .lede{font-size:16px;color:var(--mid);line-height:1.6;max-width:68ch}
 code,kbd{font-family:var(--mono);font-size:.86em;background:var(--sakura-soft);
-  color:var(--rose);padding:2px 6px;border-radius:3px;white-space:nowrap}
-
-/* Long identifiers — jar names, paths, seeds — must reflow rather than
-   push the layout sideways. */
+  color:var(--rose);padding:2px 6px;border-radius:3px}
 .wrapany{overflow-wrap:anywhere;min-width:0}
 .trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+/* Gold leaf, for the few numbers that deserve it. */
+.foil{
+  background:var(--gold-leaf);background-size:220% 100%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:foil 6s linear infinite;
+}
+@keyframes foil{to{background-position:220% 0}}
 
 /* ============================================================
    THE WIGGLING POLYGON
    ------------------------------------------------------------
-   A z-index:-1 child only paints behind its parent's BACKGROUND
-   while the parent is not a stacking context. So nothing that
-   carries a highlight may take a transform, an opacity below 1,
-   a filter or an isolation — the hover lift is done with
-   box-shadow for exactly that reason.
+   Previously a `z-index:-1` pseudo-element, which paints behind
+   its parent's background only while the parent is NOT a
+   stacking context. That made every transform in the app a trap,
+   and the entrance animation on `.stagger > *` sprang it: an
+   animated `transform` on a card made the card a stacking
+   context, so the blob painted inside it — over the fill, under
+   the text. Exactly the thing it must never do.
+
+   Now the card is a stacking context ON PURPOSE (`isolation`),
+   and it carries three explicit layers:
+
+       .p5-hl   z-index 0   the blob, bleeding past the edge
+       ::after  z-index 1   the card's own fill and border
+       content  z-index 2   everything you read
+
+   The blob is genuinely behind the card rather than behind its
+   text, it cannot be knocked out of order by anything, and
+   transforms are free everywhere — which is what lets the rest
+   of this file move.
    ============================================================ */
 @keyframes p5-wiggle-poly{
   0%  {clip-path:polygon(0% 56%,16% 0%,76% 7%,100% 24%,94% 100%,8% 88%)}
@@ -219,114 +279,195 @@ code,kbd{font-family:var(--mono);font-size:.86em;background:var(--sakura-soft);
   75% {clip-path:polygon(0% 52%,22% 0%,80% 12%,100% 28%,90% 100%,6% 82%)}
   100%{clip-path:polygon(0% 56%,16% 0%,76% 7%,100% 24%,94% 100%,8% 88%)}
 }
-.p5{position:relative}
-.p5 > .p5-hl{
-  position:absolute;top:-13px;right:-15px;bottom:-13px;left:-15px;
-  background:var(--sakura);z-index:-1;opacity:0;pointer-events:none;
-  transition:opacity .12s;
+@keyframes p5-wiggle-poly-2{
+  0%  {clip-path:polygon(4% 40%,30% 4%,88% 0%,100% 40%,84% 96%,0% 84%)}
+  33% {clip-path:polygon(0% 50%,20% 0%,92% 8%,100% 30%,90% 100%,6% 92%)}
+  66% {clip-path:polygon(6% 34%,36% 8%,80% 2%,100% 50%,94% 88%,10% 100%)}
+  100%{clip-path:polygon(4% 40%,30% 4%,88% 0%,100% 40%,84% 96%,0% 84%)}
 }
-.p5:hover > .p5-hl,.p5:focus-visible > .p5-hl{
-  opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite;
+
+.p5-hl{
+  position:absolute;inset:-15px -17px;z-index:0;
+  background:var(--sakura);opacity:0;pointer-events:none;
+  transition:opacity var(--t-tap) linear;
+}
+/* A second blob a shade deeper, offset and counter-rotating. One blob is a
+   highlight; two reads as a printed misregistration, which is the effect the
+   whole style is borrowed from. */
+.p5-hl::after{
+  content:"";position:absolute;inset:6px 10px;background:var(--rose);
+  opacity:.55;
 }
 
 /* ============================================================
-   card — the repeated object
+   card
    ============================================================ */
 .card{
-  position:relative;background:var(--card);border:var(--edge) solid var(--slab-bg);
+  position:relative;isolation:isolate;background:transparent;border:0;
   padding:18px;display:flex;flex-direction:column;gap:10px;
-  transition:box-shadow .18s ease,border-color .18s ease;
+  transition:transform var(--t-move) var(--ease-out),
+             box-shadow var(--t-move) var(--ease-out);
 }
-.card::before{
-  content:"";position:absolute;top:-16px;right:-18px;bottom:-16px;left:-18px;
-  background:var(--rose);z-index:-1;opacity:0;pointer-events:none;
-  transition:opacity .12s;
+.card::after{
+  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:linear-gradient(160deg,var(--card-2),var(--card) 46%);
+  border:var(--edge) solid var(--slab-bg);
+  box-shadow:var(--lift-1);
+  transition:box-shadow var(--t-move) var(--ease-out),
+             border-color var(--t-move) linear;
 }
-.card.hoverable:hover{box-shadow:7px 8px 0 var(--slab-bg)}
-.card.hoverable:hover::before{opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite}
-.card.flat{border-width:2px;box-shadow:none}
+/* `:not(.p5-hl)` rather than a later override: `.card > *` is more specific
+   than `.p5-hl`, so a blanket rule here would win and give the blob
+   `position:relative` — collapsing it to a zero-size element in flow, which
+   looks exactly like the highlight simply not working. */
+.card > *:not(.p5-hl){position:relative;z-index:2}
+
+.card.hoverable{cursor:pointer}
+.card.hoverable:hover,.card.hoverable:focus-within{transform:translate(-2px,-3px)}
+.card.hoverable:hover::after,.card.hoverable:focus-within::after{
+  box-shadow:var(--lift-3);border-color:var(--rose);
+}
+.card.hoverable:hover > .p5-hl,.card.hoverable:focus-within > .p5-hl{
+  opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite;
+}
+.card.hoverable:hover > .p5-hl::after{
+  animation:p5-wiggle-poly-2 .82s ease-in-out infinite reverse;
+}
+/* A hairline of gold along the top edge, only while hovered. */
+.card.hoverable:hover::before{
+  content:"";position:absolute;left:-1px;right:-1px;top:-3px;height:3px;
+  z-index:3;background:var(--gold-leaf);background-size:200% 100%;
+  animation:foil 3s linear infinite;
+}
+.card.flat::after{box-shadow:none;border-width:2px}
+
 .card > header{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .card > header h3{font-family:var(--disp);font-size:13.5px;text-transform:uppercase;
   letter-spacing:.02em;margin:0}
 .card .k{font-family:var(--mono);font-size:10px;font-weight:700;
   text-transform:uppercase;letter-spacing:.14em;color:var(--rose)}
 
-.panel{border:var(--edge) solid var(--slab-bg);background:var(--card);position:relative}
+/* --- readability over the blob -------------------------------
+   The blob is a saturated sakura/rose and the card text is
+   plum-on-cream in light mode and cream-on-plum in dark. Over the
+   blob only the BLEED shows, so the text never sits on it — but
+   the border does, and so does anything the card lets overflow.
+   These keep the contrast honest in both themes rather than
+   trusting that the fill always covers.                          */
+.card.hoverable:hover .muted,
+.card.hoverable:hover .mono.muted{color:var(--mid)}
+.card.hoverable:hover .card-sub{color:var(--text)}
+
+/* ============================================================
+   panel
+   ============================================================ */
+.panel{
+  position:relative;border:var(--edge) solid var(--slab-bg);
+  background:linear-gradient(165deg,var(--card-2),var(--card) 40%);
+  box-shadow:var(--lift-1);
+}
 .panel > header{
   padding:12px 16px;background:var(--slab-bg);color:var(--slab-fg);
-  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:relative;
+  overflow:hidden;
 }
+/* A slow sheen across every panel header. Cheap, and it is the single thing
+   that stops a page of flat headers reading as a spreadsheet. */
+.panel > header::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(105deg,transparent 30%,
+    color-mix(in srgb,var(--sakura) 26%,transparent) 46%,transparent 62%);
+  transform:translateX(-60%);
+  animation:sheen 7s var(--ease-out) infinite;
+}
+@keyframes sheen{0%,72%{transform:translateX(-60%)}100%{transform:translateX(160%)}}
 .panel > header h3{font-family:var(--disp);font-size:13px;text-transform:uppercase;
-  letter-spacing:.02em;margin:0}
+  letter-spacing:.02em;margin:0;position:relative;z-index:1}
+.panel > header svg{position:relative;z-index:1}
 .panel > header .sp{margin-left:auto;font-family:var(--mono);font-size:10px;
-  letter-spacing:.1em;text-transform:uppercase;opacity:.75}
+  letter-spacing:.1em;text-transform:uppercase;opacity:.8;position:relative;z-index:1}
 .panel .pad{padding:16px}
 
 /* ============================================================
    buttons
    ============================================================ */
 .btn{
-  position:relative;display:inline-flex;align-items:center;justify-content:center;
-  gap:8px;cursor:pointer;
-  font-family:var(--num);font-weight:800;font-size:14px;
-  padding:11px 18px;min-height:44px;border:var(--edge) solid var(--slab-bg);
-  background:var(--card);color:var(--text);text-decoration:none;
-  box-shadow:4px 4px 0 var(--slab-bg);
-  transition:box-shadow .16s,background .16s,color .16s;
-  white-space:nowrap;
+  position:relative;isolation:isolate;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  cursor:pointer;font-family:var(--num);font-weight:800;font-size:14px;
+  padding:11px 18px;min-height:44px;border:0;background:transparent;
+  color:var(--text);text-decoration:none;white-space:nowrap;
+  transition:transform var(--t-tap) var(--ease-spring),
+             color var(--t-tap) linear;
 }
-.btn:hover{box-shadow:7px 7px 0 var(--slab-bg);text-decoration:none}
-.btn:active{box-shadow:1px 1px 0 var(--slab-bg)}
-.btn > .p5-hl{background:var(--sakura)}
-.btn:hover > .p5-hl{opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite}
+.btn::after{
+  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:var(--card);border:var(--edge) solid var(--slab-bg);
+  box-shadow:var(--lift-1);
+  transition:box-shadow var(--t-move) var(--ease-out),
+             background var(--t-tap) linear, border-color var(--t-tap) linear;
+}
+.btn > *:not(.p5-hl){position:relative;z-index:2}
+.btn > .p5-hl{inset:-11px -13px}
 .btn svg{width:16px;height:16px;flex:none}
 
-.btn.primary{background:var(--rose);color:var(--slab-rose-fg);box-shadow:4px 4px 0 var(--gold)}
-.btn.primary:hover{box-shadow:7px 7px 0 var(--gold)}
-.btn.primary:active{box-shadow:1px 1px 0 var(--gold)}
+.btn:hover{transform:translate(-1px,-2px)}
+.btn:hover::after{box-shadow:var(--lift-2)}
+.btn:hover > .p5-hl{opacity:1;animation:p5-wiggle-poly .6s ease-in-out infinite}
+.btn:active{transform:translate(1px,1px)}
+.btn:active::after{box-shadow:1px 1px 0 var(--slab-bg)}
+
+.btn.primary{color:var(--slab-rose-fg)}
+.btn.primary::after{background:linear-gradient(150deg,var(--rose-hi),var(--rose));
+  box-shadow:3px 3px 0 var(--gold), 0 8px 22px -8px color-mix(in srgb,var(--rose) 70%,transparent)}
+.btn.primary:hover::after{box-shadow:5px 6px 0 var(--gold),
+  0 16px 34px -10px color-mix(in srgb,var(--rose) 78%,transparent)}
 .btn.primary > .p5-hl{background:var(--gold)}
-.btn.gold{background:var(--gold);color:#241B28;box-shadow:4px 4px 0 var(--slab-bg)}
-.btn.danger{background:var(--danger-soft);color:var(--danger);border-color:var(--danger);
-  box-shadow:4px 4px 0 var(--danger)}
-.btn.danger:hover{box-shadow:7px 7px 0 var(--danger)}
-.btn.ghost{background:transparent;box-shadow:none;border-color:var(--rule)}
-.btn.ghost:hover{background:var(--sakura-soft);box-shadow:3px 3px 0 var(--rule)}
-.btn.sm{padding:7px 12px;min-height:36px;font-size:13px;box-shadow:3px 3px 0 var(--slab-bg)}
-.btn.sm:hover{box-shadow:5px 5px 0 var(--slab-bg)}
-.btn.sm.primary{box-shadow:3px 3px 0 var(--gold)}
-.btn.sm.primary:hover{box-shadow:5px 5px 0 var(--gold)}
-.btn.xs{padding:4px 9px;min-height:30px;font-size:12px;box-shadow:2px 2px 0 var(--slab-bg);
-  border-width:2px}
+.btn.primary > .p5-hl::after{background:#FFF6D2;opacity:.7}
+
+.btn.gold{color:#241B28}
+.btn.gold::after{background:var(--gold-leaf);background-size:200% 100%;
+  animation:foil 5s linear infinite}
+.btn.danger{color:var(--danger)}
+.btn.danger::after{background:var(--danger-soft);border-color:var(--danger);
+  box-shadow:3px 3px 0 var(--danger)}
+.btn.danger:hover::after{box-shadow:5px 6px 0 var(--danger)}
+.btn.danger > .p5-hl{background:var(--danger)}
+.btn.ghost::after{background:transparent;border-color:var(--rule);box-shadow:none}
+.btn.ghost:hover::after{background:var(--sakura-soft);border-color:var(--sakura-deep);
+  box-shadow:var(--lift-1)}
+
+.btn.sm{padding:7px 12px;min-height:36px;font-size:13px}
+.btn.xs{padding:4px 9px;min-height:30px;font-size:12px}
+.btn.xs::after{border-width:2px}
 .btn.icon{padding:0;width:44px;min-height:44px}
 .btn.icon.sm{width:36px;min-height:36px}
 .btn.icon.xs{width:30px;min-height:30px}
 .btn.block{width:100%}
-/* Disabled is drawn with colour rather than opacity on purpose. `opacity`
-   below 1 makes the button a stacking context, and a button that carries the
-   wiggling polygon must never be one -- the blob would paint between the fill
-   and the label instead of behind both. Explicit colours also keep the
-   contrast predictable instead of leaving it to whatever is underneath. */
+
+/* Disabled is drawn with colour, never opacity: an opacity below 1 would make
+   the button a stacking context and it is already one by design, but more
+   importantly a translucent control over a patterned ground is unreadable. */
 .btn[disabled],.btn[aria-disabled="true"]{
-  cursor:not-allowed;box-shadow:2px 2px 0 var(--rule);
-  border-color:var(--rule);background:var(--paper-2);color:var(--faint);
+  cursor:not-allowed;color:var(--faint);transform:none;
 }
-.btn[disabled]:hover,.btn[aria-disabled="true"]:hover{
-  box-shadow:2px 2px 0 var(--rule);background:var(--paper-2)
+.btn[disabled]::after,.btn[aria-disabled="true"]::after{
+  background:var(--paper-2);border-color:var(--rule);box-shadow:none;
 }
 .btn[disabled] > .p5-hl,.btn[aria-disabled="true"] > .p5-hl{display:none}
-.btn[disabled] svg,.btn[aria-disabled="true"] svg{color:var(--faint)}
+.btn[disabled] svg{color:var(--faint)}
+
 .btn.busy{pointer-events:none}
-.btn.busy::after{
-  content:"";width:14px;height:14px;border:2px solid currentColor;
-  border-top-color:transparent;border-radius:50%;
-  animation:spin .7s linear infinite;
+.btn.busy::before{
+  content:"";position:absolute;z-index:3;right:12px;top:50%;margin-top:-7px;
+  width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;
+  border-radius:50%;animation:spin .7s linear infinite;
 }
 @keyframes spin{to{transform:rotate(360deg)}}
-
 .btnrow{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 
 /* ============================================================
-   pills, chips, badges
+   pills, chips
    ============================================================ */
 .pill{
   display:inline-flex;align-items:center;gap:6px;
@@ -343,19 +484,30 @@ code,kbd{font-family:var(--mono);font-size:.86em;background:var(--sakura-soft);
 .pill.gold{background:var(--gold-soft);color:var(--gold-ink)}
 .pill.plum{background:var(--plum-soft);color:var(--plum)}
 .pill.dead{background:var(--rule-2);color:var(--faint)}
-.pill.square{clip-path:none;border:2px solid currentColor;background:transparent}
+
+/* Side tags — which half of the game a mod actually runs on. Deliberately
+   the loudest chips in the list, because it is the question the Mods tab
+   exists to answer. */
+.pill.side-server{background:var(--sage);color:#0E1A12}
+.pill.side-client{background:var(--danger);color:#fff}
+.pill.side-both{background:var(--plum);color:#fff}
+.pill.side-unknown{background:var(--rule-2);color:var(--faint)}
+:root[data-theme="dark"] .pill.side-client{color:#2A1013}
+:root[data-theme="dark"] .pill.side-both{color:#1E1424}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .pill.side-client{color:#2A1013}
+  :root:not([data-theme="light"]) .pill.side-both{color:#1E1424}
+}
 
 .chip{
   display:inline-flex;align-items:center;gap:6px;max-width:100%;
   padding:5px 11px;border:2px solid var(--rule);background:var(--paper-2);
-  font-family:var(--mono);font-size:11px;color:var(--mid);
-  cursor:pointer;transition:border-color .15s,background .15s,color .15s;
+  font-family:var(--mono);font-size:11px;color:var(--mid);cursor:pointer;
+  transition:border-color var(--t-tap),background var(--t-tap),
+             color var(--t-tap),transform var(--t-tap) var(--ease-spring);
 }
-.chip:hover{border-color:var(--sakura-deep);color:var(--text)}
+.chip:hover{border-color:var(--sakura-deep);color:var(--text);transform:translateY(-1px)}
 .chip[aria-pressed="true"]{background:var(--rose);border-color:var(--rose);color:#fff}
-.chip[data-state="ban"]{background:var(--danger-soft);border-color:var(--danger);
-  color:var(--danger);text-decoration:line-through}
-.chip .n{font-weight:700}
 .chiprow{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
 
 .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
@@ -373,41 +525,43 @@ code,kbd{font-family:var(--mono);font-size:.86em;background:var(--sakura-soft);
 .field select,.field textarea{
   font-family:var(--body);font-size:15px;padding:10px 12px;min-height:44px;
   border:var(--edge) solid var(--rule);background:var(--paper);color:var(--text);
-  width:100%;transition:border-color .15s,background .15s;
+  width:100%;transition:border-color var(--t-tap),background var(--t-tap),
+    box-shadow var(--t-tap);
 }
 .inp:hover,.field input:hover,.field select:hover{border-color:var(--sakura-deep)}
 .inp:focus,.field input:focus,.field select:focus,.field textarea:focus{
   border-color:var(--rose);outline:none;background:var(--card);
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--rose) 16%,transparent);
 }
 .field textarea{min-height:110px;font-family:var(--mono);font-size:13px;resize:vertical}
 .field .help{font-size:12.5px;color:var(--faint);line-height:1.45}
 .field .err{font-size:12.5px;color:var(--danger);font-weight:700}
 .field.bad .inp,.field.bad input,.field.bad select{border-color:var(--danger)}
-.field.row{flex-direction:row;align-items:center;gap:10px}
 
-.switch{
-  display:inline-flex;align-items:center;gap:10px;cursor:pointer;min-height:36px;
-  font-size:13.5px;
-}
+.switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;
+  min-height:36px;font-size:13.5px}
 .switch input{position:absolute;opacity:0;width:1px;height:1px}
 .switch .track{
-  width:44px;height:24px;border:2px solid var(--slab-bg);background:var(--paper-2);
-  position:relative;flex:none;transition:background .18s,border-color .18s;
+  width:46px;height:25px;border:2px solid var(--slab-bg);background:var(--paper-2);
+  position:relative;flex:none;border-radius:99px;
+  transition:background var(--t-move),border-color var(--t-move);
 }
 .switch .track::after{
-  content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;
-  background:var(--slab-bg);transition:transform .18s cubic-bezier(.2,.9,.3,1.3);
+  content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;
+  background:var(--slab-bg);border-radius:50%;
+  transition:transform var(--t-move) var(--ease-spring),background var(--t-move);
 }
 .switch input:checked + .track{background:var(--rose);border-color:var(--rose)}
-.switch input:checked + .track::after{transform:translateX(20px);background:#fff}
+.switch input:checked + .track::after{transform:translateX(21px);background:#fff}
 .switch input:focus-visible + .track{outline:3px solid var(--rose);outline-offset:3px}
-.switch input:disabled + .track{opacity:.4}
 
-.seg{display:inline-flex;border:var(--edge) solid var(--slab-bg);background:var(--card)}
+.seg{display:inline-flex;border:var(--edge) solid var(--slab-bg);background:var(--card);
+  position:relative;overflow:hidden}
 .seg button{
   appearance:none;border:0;background:none;cursor:pointer;min-height:40px;
   padding:8px 14px;font-family:var(--num);font-weight:700;font-size:13px;
-  color:var(--mid);transition:background .15s,color .15s;white-space:nowrap;
+  color:var(--mid);white-space:nowrap;position:relative;
+  transition:color var(--t-tap) linear;
 }
 .seg button + button{border-left:2px solid var(--slab-bg)}
 .seg button[aria-pressed="true"]{background:var(--slab-bg);color:var(--slab-fg)}
@@ -428,24 +582,17 @@ table.tbl th{
   text-transform:uppercase;color:var(--slab-fg);background:var(--slab-bg);
   padding:10px 12px;font-weight:700;white-space:nowrap;position:sticky;top:0;z-index:1;
 }
-table.tbl th[aria-sort]{cursor:pointer;user-select:none}
-table.tbl th[aria-sort]:hover{color:var(--sakura)}
-table.tbl th[aria-sort="ascending"]::after{content:" ▲"}
-table.tbl th[aria-sort="descending"]::after{content:" ▼"}
 table.tbl td{padding:9px 12px;border-bottom:1.5px solid var(--rule-2);vertical-align:middle}
 table.tbl tbody tr:hover{background:var(--sakura-soft)}
-table.tbl tbody tr:last-child td{border-bottom:0}
-table.tbl tr.sel{background:var(--rose-soft)}
-table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);
-  font-size:12.5px}
-table.tbl td.act{text-align:right;white-space:nowrap}
+table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;
+  font-family:var(--mono);font-size:12.5px}
 
 /* ============================================================
-   feedback surfaces
+   feedback
    ============================================================ */
 .note{
-  border-left:5px solid var(--rose);background:var(--rose-soft);color:var(--text);
-  padding:12px 15px;font-size:13.5px;line-height:1.5;
+  position:relative;border-left:5px solid var(--rose);background:var(--rose-soft);
+  color:var(--text);padding:12px 15px;font-size:13.5px;line-height:1.5;
 }
 .note b{display:block;font-family:var(--num);font-weight:800;margin-bottom:2px}
 .note.warn{border-left-color:var(--amber-ink);background:var(--amber-soft);color:var(--amber-ink)}
@@ -453,47 +600,65 @@ table.tbl td.act{text-align:right;white-space:nowrap}
 .note.ok{border-left-color:var(--sage);background:var(--sage-soft);color:var(--sage)}
 .note.info{border-left-color:var(--info);background:var(--info-soft);color:var(--info)}
 
-.bar{height:10px;background:var(--rule-2);border:2px solid var(--slab-bg);overflow:hidden}
-.bar > i{display:block;height:100%;background:var(--rose);
-  transition:width .35s cubic-bezier(.2,.9,.3,1)}
-.bar.ok > i{background:var(--sage)}
-.bar.warn > i{background:var(--gold)}
-.bar.bad > i{background:var(--danger)}
+.bar{height:10px;background:var(--rule-2);border:2px solid var(--slab-bg);
+  overflow:hidden;position:relative}
+.bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--rose-hi),var(--rose));
+  transition:width .5s var(--ease-out);position:relative}
+/* Barber-pole, so a bar that is waiting still looks like it is working. */
+.bar > i::after{
+  content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(115deg,transparent 0 8px,
+    rgba(255,255,255,.22) 8px 16px);
+  animation:stripe 1.1s linear infinite;
+}
+@keyframes stripe{to{background-position:36px 0}}
+.bar.ok > i{background:linear-gradient(90deg,var(--sage),color-mix(in srgb,var(--sage) 70%,#fff))}
+.bar.warn > i{background:linear-gradient(90deg,var(--gold),var(--gold-ink))}
+.bar.bad > i{background:linear-gradient(90deg,var(--danger),#ff5f6d)}
 .bar.thin{height:6px;border-width:0;background:var(--rule)}
+.bar.thin > i::after{display:none}
 
 .kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
-.kpi{border:var(--edge) solid var(--slab-bg);background:var(--card);padding:13px 15px;
-  position:relative}
+.kpi{
+  position:relative;border:var(--edge) solid var(--slab-bg);padding:13px 15px;
+  background:linear-gradient(160deg,var(--card-2),var(--card) 55%);
+  box-shadow:var(--lift-1);overflow:hidden;
+  transition:transform var(--t-move) var(--ease-out),box-shadow var(--t-move);
+}
+.kpi:hover{transform:translateY(-2px);box-shadow:var(--lift-2)}
+.kpi::before{
+  content:"";position:absolute;right:-24px;top:-24px;width:80px;height:80px;
+  border-radius:50%;background:color-mix(in srgb,var(--sakura) 26%,transparent);
+  filter:blur(14px);pointer-events:none;
+}
 .kpi .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.13em;
-  text-transform:uppercase;color:var(--faint)}
+  text-transform:uppercase;color:var(--faint);position:relative}
 .kpi .v{font-family:var(--num);font-weight:800;font-size:25px;letter-spacing:-.03em;
-  font-variant-numeric:tabular-nums;margin-top:3px;line-height:1.05}
-.kpi .sub{font-family:var(--mono);font-size:11px;margin-top:3px;color:var(--faint)}
+  font-variant-numeric:tabular-nums;margin-top:3px;line-height:1.05;position:relative}
+.kpi .sub{font-family:var(--mono);font-size:11px;margin-top:3px;color:var(--faint);
+  position:relative}
 .kpi .v.ok{color:var(--sage)}.kpi .v.bad{color:var(--danger)}
 .kpi .v.warn{color:var(--amber-ink)}.kpi .v.rose{color:var(--rose)}
+.kpi .v.gold{color:var(--gold-ink)}
 
 /* ============================================================
    SHRINE ORNAMENT
    ============================================================ */
-/* torii, drawn once and reused wherever a divider is wanted */
 .torii{display:flex;justify-content:center;padding:8px 0;color:var(--shrine);opacity:.85}
 .torii svg{width:104px;height:auto}
 
-/* sakura mon marking a section head */
 .mon::before{
   content:"";display:block;width:22px;height:22px;margin-bottom:8px;
   background:no-repeat center/contain
     url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="%23B23F5C"><ellipse cx="12" cy="6" rx="3.1" ry="4.6"/><ellipse cx="12" cy="6" rx="3.1" ry="4.6" transform="rotate(72 12 12)"/><ellipse cx="12" cy="6" rx="3.1" ry="4.6" transform="rotate(144 12 12)"/><ellipse cx="12" cy="6" rx="3.1" ry="4.6" transform="rotate(216 12 12)"/><ellipse cx="12" cy="6" rx="3.1" ry="4.6" transform="rotate(288 12 12)"/></g></svg>');
+  animation:monTurn 22s linear infinite;
 }
-/* The mon is a data URI, so its ink cannot follow a custom property. On the
-   dark ground the same plum-rose reads as almost black, so it is lifted
-   rather than redrawn. */
+@keyframes monTurn{to{transform:rotate(360deg)}}
 :root[data-theme="dark"] .mon::before{filter:brightness(1.55) saturate(.9)}
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]) .mon::before{filter:brightness(1.55) saturate(.9)}
 }
 
-/* shimenawa: sacred rope with shide streamers, hung across a dark band */
 .shimenawa{
   position:absolute;top:0;left:0;right:0;height:24px;z-index:3;pointer-events:none;
   background:repeating-linear-gradient(115deg,var(--shrine) 0 7px,var(--shrine-deep) 7px 14px)
@@ -507,19 +672,18 @@ table.tbl td.act{text-align:right;white-space:nowrap}
   opacity:.9;
 }
 
-/* chōchin lantern */
 .lantern{
   width:34px;flex:none;transform-origin:50% 0;animation:sway 6s ease-in-out infinite;
   pointer-events:none;
 }
 .lantern.l2{animation-duration:7.4s;animation-delay:-2s}
 @keyframes sway{0%,100%{transform:rotate(-2.6deg)}50%{transform:rotate(2.6deg)}}
-.lantern .cord{width:2px;height:12px;background:var(--rule);margin:0 auto}
+.lantern .cord{width:2px;height:12px;background:var(--band-rule);margin:0 auto}
 .lantern .body{
   height:38px;border:2px solid var(--slab-bg);border-radius:44% 44% 40% 40%/22%;
   background:linear-gradient(var(--shrine) 0 6px,var(--paper) 6px calc(100% - 6px),
     var(--shrine) calc(100% - 6px) 100%);
-  position:relative;
+  position:relative;box-shadow:0 0 14px -2px color-mix(in srgb,var(--gold) 60%,transparent);
 }
 .lantern .body::after{
   content:"";position:absolute;inset:8px 0;
@@ -528,7 +692,6 @@ table.tbl td.act{text-align:right;white-space:nowrap}
 .lantern .glyph{position:absolute;inset:0;display:grid;place-items:center;
   font-family:var(--disp);font-size:12px;color:var(--shrine);line-height:1}
 
-/* ema: wooden wish plaque, a pentagon tag */
 .ema{
   background:var(--gold);color:#241B28;border:2px solid var(--slab-bg);
   clip-path:polygon(50% 0,100% 22%,100% 100%,0 100%,0 22%);
@@ -539,9 +702,8 @@ table.tbl td.act{text-align:right;white-space:nowrap}
 }
 @keyframes emaSway{0%,100%{transform:rotate(-4deg)}50%{transform:rotate(2deg)}}
 
-/* dotted grain, drifting */
 .grain{
-  position:fixed;inset:-40%;pointer-events:none;z-index:0;opacity:.4;
+  position:fixed;inset:-40%;pointer-events:none;z-index:0;opacity:.34;
   background-image:radial-gradient(var(--sakura) 1px,transparent 1.4px);
   background-size:15px 15px;
   -webkit-mask-image:radial-gradient(ellipse at 50% 12%,#000 0%,transparent 62%);
@@ -549,13 +711,10 @@ table.tbl td.act{text-align:right;white-space:nowrap}
   animation:drift 34s linear infinite;
 }
 @keyframes drift{to{transform:translate3d(15px,15px,0)}}
-
-/* falling petals, drawn on a canvas by petals.js */
 #petals{position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.55}
 
-/* the fox */
 .fox{display:block;transform-origin:50% 90%;animation:foxBob 5.2s ease-in-out infinite;
-  filter:drop-shadow(0 12px 20px rgba(36,27,40,.18))}
+  filter:drop-shadow(0 12px 20px rgba(36,27,40,.28))}
 @keyframes foxBob{0%,100%{transform:translateY(0) rotate(0deg)}
   50%{transform:translateY(-8px) rotate(-.7deg)}}
 .fox-halo{
@@ -565,7 +724,6 @@ table.tbl td.act{text-align:right;white-space:nowrap}
 }
 @keyframes halo{0%,100%{transform:scale(1);opacity:.95}50%{transform:scale(1.1);opacity:.55}}
 
-/* dark bands, for the app's inverted regions */
 .band{background:var(--band-bg);color:var(--band-fg);position:relative;overflow:hidden}
 .band::after{
   content:"";position:absolute;inset:0;pointer-events:none;opacity:.08;
@@ -573,38 +731,75 @@ table.tbl td.act{text-align:right;white-space:nowrap}
   background-size:11px 11px;
 }
 .band .muted,.band .lede{color:var(--band-mid)}
-.band .card{background:var(--band-card);border-color:var(--sakura);color:var(--band-fg)}
-.band .card::before{background:var(--sakura)}
 
 /* ============================================================
-   entrance motion — one idea per surface, staggered
+   motion
    ============================================================ */
-@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-@keyframes slam{0%{opacity:0;transform:translateX(26px) skewX(-5deg)}
-  70%{opacity:1}100%{opacity:1;transform:none}}
+@keyframes rise{from{transform:translateY(14px)}to{transform:none}}
+@keyframes slam{0%{transform:translateX(26px) skewX(-5deg)}
+  100%{transform:none}}
 @keyframes fade{from{opacity:0}to{opacity:1}}
-@keyframes shear{from{transform:scaleX(0);opacity:0}to{transform:scaleX(1);opacity:1}}
 @keyframes pop{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:none}}
+/* Entrance motion never animates opacity from 0.
+   ------------------------------------------------------------
+   `fill: both` holds the FROM state until the animation runs,
+   and an animation only runs while the document timeline is
+   advancing. Fade from zero and any stall — a tab that has not
+   been painted, a throttled background, a compositor that has
+   not caught up — leaves the page blank rather than merely
+   still. Translating from below costs nothing if it never
+   plays: the content is simply where it belongs, ten pixels
+   early. It also reads better. A fade is the house style of
+   every template; a weighted slide is not. */
+@keyframes inkIn{
+  from{transform:translateY(11px) scale(.992)}
+  to{transform:none}
+}
 
-.anim-rise{animation:rise .34s cubic-bezier(.2,.9,.3,1.1) both}
-.anim-slam{animation:slam .38s cubic-bezier(.2,.9,.3,1.1) both}
-.anim-fade{animation:fade .3s ease both}
-.anim-pop{animation:pop .26s cubic-bezier(.2,.9,.3,1.3) both}
-/* Stagger without a per-item inline style: 12 steps is plenty, and the rest
-   land together rather than trickling in for two seconds. */
-.stagger > *{animation:rise .34s cubic-bezier(.2,.9,.3,1.1) both}
-.stagger > *:nth-child(1){animation-delay:.02s}
-.stagger > *:nth-child(2){animation-delay:.05s}
-.stagger > *:nth-child(3){animation-delay:.08s}
-.stagger > *:nth-child(4){animation-delay:.11s}
-.stagger > *:nth-child(5){animation-delay:.14s}
-.stagger > *:nth-child(6){animation-delay:.17s}
-.stagger > *:nth-child(7){animation-delay:.2s}
-.stagger > *:nth-child(8){animation-delay:.23s}
-.stagger > *:nth-child(9){animation-delay:.26s}
-.stagger > *:nth-child(10){animation-delay:.29s}
-.stagger > *:nth-child(11){animation-delay:.32s}
-.stagger > *:nth-child(n+12){animation-delay:.35s}
+html.js-motion .anim-rise{animation:rise var(--t-enter) var(--ease-out) both}
+html.js-motion .anim-slam{animation:slam var(--t-enter) var(--ease-out) both}
+html.js-motion .anim-fade{animation:fade var(--t-move) ease both}
+html.js-motion .anim-pop{animation:pop .26s var(--ease-spring) both}
+html.js-motion .anim-ink{animation:inkIn .32s var(--ease-out) both}
+
+/* Staggered entrance.
+   ------------------------------------------------------------
+   Gated on `html.js-motion`, which app.js stamps on once. That
+   gate is not decoration: these keyframes start at opacity 0
+   with `fill: both`, so anything relying on them is INVISIBLE
+   until the animation actually runs — and an animation only runs
+   when the document timeline is advancing. A tab that is never
+   painted, a browser that throttles, a script that died before
+   boot: any of those and the page is blank rather than merely
+   unanimated. With the gate, the failure mode is "no animation",
+   which is the correct one.
+
+   Delays are short on purpose. The previous set ran to 460ms,
+   and a list that takes half a second to finish arriving reads
+   as a slow app even when every byte was already there. */
+html.js-motion .stagger > *{animation:inkIn .28s var(--ease-out) both}
+html.js-motion .stagger > *:nth-child(1){animation-delay:0s}
+html.js-motion .stagger > *:nth-child(2){animation-delay:.03s}
+html.js-motion .stagger > *:nth-child(3){animation-delay:.06s}
+html.js-motion .stagger > *:nth-child(4){animation-delay:.09s}
+html.js-motion .stagger > *:nth-child(5){animation-delay:.11s}
+html.js-motion .stagger > *:nth-child(6){animation-delay:.13s}
+html.js-motion .stagger > *:nth-child(7){animation-delay:.15s}
+html.js-motion .stagger > *:nth-child(n+8){animation-delay:.17s}
+
+/* Route changes: the new screen washes in like ink on paper. */
+html.js-motion #main.routing{animation:inkIn .24s var(--ease-out) both}
+
+/* Flipping the theme changes every colour token at once, and half the app
+   has a `transition: color` on it for hover. Without this, a theme switch
+   animates every label from its old palette to its new one — a second of
+   grey mush where the text is genuinely unreadable, in both directions.
+   app.js stamps this class for one frame around the switch. */
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after{
+  transition:none!important;animation-duration:0s!important;
+}
 
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{
@@ -612,4 +807,5 @@ table.tbl td.act{text-align:right;white-space:nowrap}
     transition-duration:.01ms!important;scroll-behavior:auto!important;
   }
   #petals,.grain{display:none}
+  .card.hoverable:hover{transform:none}
 }

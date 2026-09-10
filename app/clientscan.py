@@ -670,6 +670,15 @@ async def scan_instance(job: Job, server_id: str, directory: str = "mods"
         -i["score"],
     ))
 
+    # The scan already asked Modrinth, by hash, which side every one of these
+    # runs on. Throwing that away meant the Mods tab could not show a side tag
+    # without asking again -- so it is written back into the instance manifest
+    # and the list reads it from there.
+    try:
+        await _persist_sides(server_id, items, directory)
+    except Exception as e:      # noqa: BLE001 -- a scan is still a scan
+        job.log_line(f"Could not record mod sides: {e}", "warn")
+
     summary = summarise(items)
     actionable = [i for i in items
                   if i["verdict"] == "client" and i.get("enabled", True)]
@@ -729,3 +738,52 @@ async def apply_scan(server_id: str, files: list[str], *, enabled: bool = False,
                 f"{len(changed)} jar(s) {'enabled' if enabled else 'disabled'}. "
                 "Restart the server for the change to take effect."
             )}
+
+
+async def _persist_sides(server_id: str, items: list[dict], directory: str
+                         ) -> int:
+    """Write each jar's declared sides into the instance manifest.
+
+    Keyed on the enabled filename whatever the jar's state on disk, matching
+    how every other record in the manifest is keyed -- so toggling a mod does
+    not orphan what we learned about it.
+    """
+    known = {
+        i["file_name"][:-len(".disabled")]
+        if i["file_name"].endswith(".disabled") else i["file_name"]: i
+        for i in items
+        if i.get("modrinth_side") or i.get("modrinth_client_side")
+    }
+    if not known:
+        return 0
+
+    manifest = await crafty.read_studio_manifest(server_id)
+    records = manifest.get("mods") or []
+    by_file = {posixpath.basename(r.get("file", "")): r for r in records}
+
+    changed = 0
+    for base, item in known.items():
+        record = by_file.get(base)
+        if record is None:
+            # A jar nobody installed through this app -- an import, or a hand
+            # -added file. It still deserves a row, or its side tag would
+            # vanish on the next list.
+            record = {"file": f"{directory}/{base}", "name": item.get("name"),
+                      "source": item.get("source")}
+            records.append(record)
+            by_file[base] = record
+        if (record.get("server_side") == item.get("modrinth_side")
+                and record.get("client_side") == item.get("modrinth_client_side")):
+            continue
+        record["server_side"] = item.get("modrinth_side")
+        record["client_side"] = item.get("modrinth_client_side")
+        record["sides_from"] = "modrinth-hash"
+        if item.get("modrinth_id") and not record.get("project_id"):
+            record["project_id"] = item["modrinth_id"]
+            record["source"] = record.get("source") or "modrinth"
+        changed += 1
+
+    if changed:
+        manifest["mods"] = records
+        await crafty.write_studio_manifest(server_id, manifest)
+    return changed

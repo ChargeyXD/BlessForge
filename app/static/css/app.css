@@ -18,25 +18,48 @@
    ============================================================ */
 #shell{display:flex;min-height:100dvh;position:relative;z-index:2}
 
-/* --- the rail ------------------------------------------------ */
+/* --- the rail ------------------------------------------------
+   Was a stack of plain text links. Now each row is a lacquered
+   plaque: a gold rule that grows from the left on hover, a
+   sakura wash behind it, and the icon in its own inked tile.
+   ------------------------------------------------------------ */
 #rail{
-  width:250px;flex:0 0 250px;background:var(--band-bg);color:var(--band-fg);
+  width:252px;flex:0 0 252px;color:var(--band-fg);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb,var(--band-bg) 96%,var(--rose)) 0%,
+      var(--band-bg) 34%,
+      color-mix(in srgb,var(--band-bg) 92%,var(--plum)) 100%);
   border-right:var(--edge) solid var(--slab-bg);
   display:flex;flex-direction:column;position:sticky;top:0;height:100dvh;
   z-index:var(--z-nav);
 }
 #rail::after{
-  content:"";position:absolute;inset:0;pointer-events:none;opacity:.07;
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:.09;
   background-image:radial-gradient(var(--sakura) 1px,transparent 1.5px);
   background-size:11px 11px;
 }
+/* A thin gold seam down the trailing edge — the one detail that makes the
+   whole rail read as lacquer rather than as a dark div. */
+#rail::before{
+  content:"";position:absolute;top:0;bottom:0;right:-1px;width:2px;z-index:4;
+  background:var(--gold-leaf);background-size:100% 300%;
+  animation:foilY 9s linear infinite;opacity:.75;
+}
+@keyframes foilY{to{background-position:0 300%}}
+
 .rail-brand{
-  display:flex;align-items:center;gap:11px;padding:16px 16px 14px;
+  display:flex;align-items:center;gap:11px;padding:15px 16px 13px;
   border-bottom:var(--edge) solid var(--band-rule);position:relative;z-index:2;
   text-decoration:none;color:inherit;
 }
 .rail-brand:hover{text-decoration:none}
-.rail-brand img{width:38px;height:38px;flex:none}
+.rail-brand img{
+  width:40px;height:40px;flex:none;
+  filter:drop-shadow(0 3px 8px color-mix(in srgb,var(--rose) 60%,transparent));
+  transition:transform .5s var(--ease-spring);
+}
+.rail-brand:hover img{transform:rotate(-7deg) scale(1.08)}
 .rail-brand .wm{font-family:var(--disp);font-size:16px;letter-spacing:-.02em;
   text-transform:uppercase;line-height:1;display:block;color:var(--band-fg)}
 .rail-brand .tag{font-family:var(--mono);font-size:8.5px;letter-spacing:.15em;
@@ -45,48 +68,96 @@
   margin-top:-6px;position:relative;z-index:1}
 
 .rail-nav{padding:10px 0;position:relative;z-index:2}
-.rail-nav .sec{font-family:var(--mono);font-size:9px;letter-spacing:.16em;
-  text-transform:uppercase;color:var(--band-mid);padding:12px 16px 5px}
+.rail-nav .sec{font-family:var(--mono);font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--band-mid);padding:12px 18px 6px;
+  display:flex;align-items:center;gap:8px}
+.rail-nav .sec::after{content:"";flex:1;height:1px;
+  background:linear-gradient(90deg,var(--band-rule),transparent)}
+
 .navlink{
-  position:relative;display:flex;align-items:center;gap:11px;width:100%;
+  position:relative;isolation:isolate;overflow:hidden;
+  display:flex;align-items:center;gap:12px;width:100%;
   border:0;background:none;cursor:pointer;text-align:left;
   font-family:var(--num);font-weight:700;font-size:14px;color:var(--band-fg);
-  padding:10px 16px;min-height:44px;text-decoration:none;
+  padding:11px 18px;min-height:46px;text-decoration:none;
+  transition:color var(--t-tap) linear,padding-left var(--t-move) var(--ease-out);
 }
-.navlink > .p5-hl{background:var(--sakura);left:-8px;right:-8px;top:-4px;bottom:-4px}
-.navlink:hover{text-decoration:none;color:#241B28}
-.navlink:hover > .p5-hl{opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite}
-.navlink svg{width:17px;height:17px;flex:none}
+/* the sakura wash */
+.navlink::before{
+  content:"";position:absolute;inset:0;z-index:0;
+  background:linear-gradient(90deg,
+    color-mix(in srgb,var(--sakura) 26%,transparent),transparent 78%);
+  transform:translateX(-100%);
+  transition:transform var(--t-move) var(--ease-out);
+}
+/* the gold rule that grows from the left */
+.navlink::after{
+  content:"";position:absolute;left:0;top:50%;height:0;width:3px;z-index:1;
+  background:var(--gold-leaf);background-size:100% 200%;
+  transform:translateY(-50%);
+  transition:height var(--t-move) var(--ease-spring);
+}
+.navlink > *{position:relative;z-index:2}
+.navlink:hover{text-decoration:none;color:#fff;padding-left:22px}
+.navlink:hover::before{transform:translateX(0)}
+.navlink:hover::after{height:62%}
+.navlink svg{width:18px;height:18px;flex:none;
+  transition:transform var(--t-move) var(--ease-spring)}
+.navlink:hover svg{transform:scale(1.14) rotate(-6deg)}
 .navlink .count{margin-left:auto;font-family:var(--mono);font-size:10px;
-  background:var(--band-rule);color:var(--band-fg);padding:2px 7px;font-weight:700}
-.navlink[aria-current="page"]{background:var(--rose);color:#fff}
-.navlink[aria-current="page"] > .p5-hl{display:none}
-.navlink[aria-current="page"] .count{background:rgba(0,0,0,.28);color:#fff}
+  background:var(--band-rule);color:var(--band-fg);padding:2px 8px;font-weight:700;
+  border-radius:99px}
+.navlink[aria-current="page"]{
+  color:#fff;
+  background:linear-gradient(90deg,var(--rose),
+    color-mix(in srgb,var(--rose) 40%,transparent));
+}
+.navlink[aria-current="page"]::after{height:76%;background:var(--gold)}
+.navlink[aria-current="page"]::before{display:none}
+.navlink[aria-current="page"] .count{background:rgba(0,0,0,.3);color:#fff}
 
 .rail-fleet{flex:1;overflow-y:auto;padding:4px 0 12px;position:relative;z-index:2;
   min-height:0}
 .fleetrow{
-  position:relative;display:flex;align-items:center;gap:9px;width:100%;
+  position:relative;isolation:isolate;overflow:hidden;
+  display:flex;align-items:center;gap:10px;width:100%;
   border:0;background:none;cursor:pointer;text-align:left;color:var(--band-fg);
-  padding:8px 16px;min-height:46px;font-family:var(--num);font-size:13.5px;
+  padding:9px 18px;min-height:48px;font-family:var(--num);font-size:13.5px;
+  transition:color var(--t-tap) linear,padding-left var(--t-move) var(--ease-out);
 }
-.fleetrow > .p5-hl{background:var(--sakura);left:-8px;right:-8px;top:-3px;bottom:-3px}
-.fleetrow:hover > .p5-hl{opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite}
-.fleetrow:hover{color:#241B28}
-.fleetrow[aria-current="true"]{background:var(--band-card);
-  box-shadow:inset 3px 0 0 var(--rose)}
-.fleetrow[aria-current="true"] > .p5-hl{display:none}
+.fleetrow::before{
+  content:"";position:absolute;inset:0;z-index:0;
+  background:linear-gradient(90deg,
+    color-mix(in srgb,var(--sakura) 22%,transparent),transparent 74%);
+  transform:translateX(-100%);
+  transition:transform var(--t-move) var(--ease-out);
+}
+.fleetrow > *{position:relative;z-index:2}
+.fleetrow:hover{color:#fff;padding-left:22px}
+.fleetrow:hover::before{transform:translateX(0)}
+.fleetrow[aria-current="true"]{
+  background:linear-gradient(90deg,
+    color-mix(in srgb,var(--rose) 32%,transparent),transparent);
+  box-shadow:inset 3px 0 0 var(--gold);
+}
 .fleetrow .nm{font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;flex:1}
 .fleetrow .meta{font-family:var(--mono);font-size:9.5px;color:var(--band-mid);
   display:block;margin-top:1px}
-.fleetrow:hover .meta{color:#4A3A50}
-.state{width:9px;height:9px;flex:none;border-radius:50%;background:var(--faint)}
-.state.running{background:var(--sage);animation:beat 2.4s ease-in-out infinite}
+.fleetrow:hover .meta{color:var(--sakura)}
+
+/* The state dot gets a halo when the server is up, so a glance at the rail
+   answers "is anything running" without reading a word. */
+.state{width:9px;height:9px;flex:none;border-radius:50%;background:var(--faint);
+  position:relative}
+.state.running{background:var(--sage);box-shadow:0 0 0 3px
+  color-mix(in srgb,var(--sage) 26%,transparent);animation:beat 2.4s ease-in-out infinite}
 .state.stopped{background:#7A6A78}
-.state.crashed{background:var(--danger)}
+.state.crashed{background:var(--danger);box-shadow:0 0 0 3px
+  color-mix(in srgb,var(--danger) 30%,transparent)}
 .state.orphan{background:var(--plum)}
-.state.incomplete{background:var(--gold)}
+.state.incomplete{background:var(--gold);box-shadow:0 0 0 3px
+  color-mix(in srgb,var(--gold) 30%,transparent)}
 
 .rail-foot{border-top:var(--edge) solid var(--band-rule);padding:10px 12px;
   display:flex;gap:8px;align-items:center;position:relative;z-index:2;flex-wrap:wrap}
@@ -272,20 +343,6 @@
   .fmrow .ac{grid-column:1/-1;justify-content:flex-start;padding-left:58px}
 }
 
-/* editor */
-.editor{display:grid;grid-template-columns:52px minmax(0,1fr);border:var(--edge) solid var(--slab-bg)}
-.editor .gut{
-  background:var(--paper-2);color:var(--faint);font-family:var(--mono);font-size:12.5px;
-  line-height:1.55;padding:12px 8px;text-align:right;overflow:hidden;
-  border-right:2px solid var(--rule);user-select:none;white-space:pre;
-}
-.editor textarea{
-  border:0;background:var(--card);font-family:var(--mono);font-size:12.5px;
-  line-height:1.55;padding:12px;resize:vertical;min-height:min(58vh,560px);
-  white-space:pre;overflow-wrap:normal;overflow-x:auto;tab-size:2;
-}
-.editor textarea:focus{outline:none}
-
 /* ============================================================
    console
    ============================================================ */
@@ -406,42 +463,6 @@
 .loading-fox img{width:84px}
 
 /* ============================================================
-   roulette
-   ============================================================ */
-.roul{display:grid;grid-template-columns:340px minmax(0,1fr);gap:18px;align-items:start}
-.reel{border:var(--edge) solid var(--slab-bg);background:var(--card);overflow:hidden}
-.reelrow{
-  display:flex;align-items:center;gap:11px;padding:9px 12px;
-  border-bottom:1.5px solid var(--rule-2);min-height:54px;
-  animation:slam .3s cubic-bezier(.2,.9,.3,1.1) both;
-}
-.reelrow:last-child{border-bottom:0}
-.reelrow:hover{background:var(--sakura-soft)}
-.reelrow.held{background:var(--gold-soft)}
-.reelrow .ico{width:30px;height:30px;flex:none;border:2px solid var(--rule);
-  object-fit:cover;background:var(--paper-2)}
-.reelrow .who{flex:1;min-width:0}
-.reelrow .nm{font-family:var(--num);font-weight:700;font-size:13.5px;overflow-wrap:anywhere}
-.reelrow .sub{font-family:var(--mono);font-size:10px;color:var(--faint);overflow-wrap:anywhere}
-.seedbox{
-  font-family:var(--mono);font-size:18px;font-weight:700;letter-spacing:.16em;
-  text-align:center;padding:12px;border:var(--edge) solid var(--slab-bg);
-  background:var(--gold-soft);color:var(--gold-ink);text-transform:uppercase;
-}
-.catgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.catbtn{
-  border:2px solid var(--rule);background:var(--paper-2);cursor:pointer;
-  padding:9px 6px;display:flex;flex-direction:column;align-items:center;gap:3px;
-  font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
-  color:var(--mid);min-height:58px;transition:background .15s,border-color .15s,color .15s;
-}
-.catbtn .g{font-size:16px;line-height:1}
-.catbtn[data-state="1"]{background:var(--rose);border-color:var(--rose);color:#fff}
-.catbtn[data-state="2"]{background:var(--rule-2);border-color:var(--rule);
-  color:var(--faint);text-decoration:line-through}
-.catbtn:hover{border-color:var(--sakura-deep)}
-
-/* ============================================================
    players
    ============================================================ */
 .plrow{
@@ -526,3 +547,346 @@
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .btnrow{gap:8px}
 }
+
+/* ============================================================
+   ADDED IN THE 2026-09-11 PASS
+   Ripples, reveals, the shrine spinner, the rope, the roulette
+   controls, the side-by-side config editor, balanced loader art.
+   ============================================================ */
+
+/* --- ripple ---------------------------------------------------
+   Bound once on the document (see core.js), so this only has to
+   describe the ink, not manage it. Every .btn already isolates;
+   the other hosts get it here.                                  */
+.navlink,.fleetrow,.tabs button{isolation:isolate}
+.ripple{
+  position:absolute;z-index:3;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,
+    color-mix(in srgb,var(--sakura) 62%,transparent) 0%,transparent 68%);
+  transform:scale(0);opacity:.85;
+  animation:ripple .55s var(--ease-out) forwards;
+}
+@keyframes ripple{to{transform:scale(1);opacity:0}}
+
+/* --- reveal on scroll ---------------------------------------- */
+/* Same rule as the entrance keyframes: move it, do not hide it. A row that
+   never gets revealed is still readable. */
+html.js-motion .to-reveal{transform:translateY(18px);
+  transition:transform .5s var(--ease-out) var(--reveal-delay,0ms)}
+html.js-motion .to-reveal.revealed{transform:none}
+
+/* --- the shrine spinner --------------------------------------- */
+.shrine-wait{display:flex;align-items:center;gap:11px;padding:22px;
+  color:var(--faint);font-family:var(--mono);font-size:11.5px;
+  letter-spacing:.12em;text-transform:uppercase}
+.mon-spin{
+  width:24px;height:24px;flex:none;
+  background:no-repeat center/contain
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><g fill='%23B23F5C'><ellipse cx='12' cy='6' rx='3.1' ry='4.6'/><ellipse cx='12' cy='6' rx='3.1' ry='4.6' transform='rotate(72 12 12)'/><ellipse cx='12' cy='6' rx='3.1' ry='4.6' transform='rotate(144 12 12)'/><ellipse cx='12' cy='6' rx='3.1' ry='4.6' transform='rotate(216 12 12)'/><ellipse cx='12' cy='6' rx='3.1' ry='4.6' transform='rotate(288 12 12)'/></g></svg>");
+  animation:monSpin 1.5s var(--ease-out) infinite;
+}
+:root[data-theme="dark"] .mon-spin{filter:brightness(1.55)}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .mon-spin{filter:brightness(1.55)}
+}
+@keyframes monSpin{
+  0%{transform:rotate(0) scale(.86)}
+  50%{transform:rotate(180deg) scale(1)}
+  100%{transform:rotate(360deg) scale(.86)}
+}
+
+/* --- loader art, evenly sized ---------------------------------
+   The source logos are a 4 KB PNG, a JPEG on a white ground, a
+   140 KB PNG and a 152 KB SVG, at four different aspect ratios.
+   Left alone they render at four different visual weights and the
+   create screen looks like a ransom note. One fixed box, contain,
+   and a paper tile behind them settles it.                       */
+.loader-art{
+  width:44px;height:44px;flex:none;display:grid;place-items:center;
+  background:var(--paper-2);border:2px solid var(--rule);overflow:hidden;
+  transition:border-color var(--t-tap),transform var(--t-move) var(--ease-spring);
+}
+.loader-art img{
+  width:100%;height:100%;object-fit:contain;padding:5px;
+  /* The Forge mark is a JPEG on white; multiply drops that ground on the
+     light theme. On the dark one multiply would erase the logo instead. */
+  mix-blend-mode:multiply;
+}
+:root[data-theme="dark"] .loader-art img{mix-blend-mode:normal}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .loader-art img{mix-blend-mode:normal}
+}
+.loader-art.lg{width:58px;height:58px}
+.loader-art.sm{width:32px;height:32px}
+.loadercard:hover .loader-art{border-color:var(--rose);transform:rotate(-4deg) scale(1.06)}
+
+/* --- create screen: loader cards ------------------------------ */
+.loadergrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
+.loadercard{
+  position:relative;isolation:isolate;text-align:left;cursor:pointer;border:0;
+  background:transparent;padding:14px;display:flex;flex-direction:column;gap:9px;
+  transition:transform var(--t-move) var(--ease-out);
+}
+.loadercard::after{
+  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:linear-gradient(160deg,var(--card-2),var(--card) 46%);
+  border:var(--edge) solid var(--slab-bg);box-shadow:var(--lift-1);
+  transition:box-shadow var(--t-move),border-color var(--t-move);
+}
+.loadercard > *:not(.p5-hl){position:relative;z-index:2}
+.loadercard:hover{transform:translate(-2px,-3px)}
+.loadercard:hover::after{box-shadow:var(--lift-3);border-color:var(--rose)}
+.loadercard:hover > .p5-hl{opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite}
+.loadercard[aria-pressed="true"]::after{
+  border-color:var(--rose);
+  background:linear-gradient(160deg,var(--rose-soft),var(--card) 70%);
+  box-shadow:var(--lift-2);
+}
+.loadercard .top{display:flex;gap:11px;align-items:center}
+.loadercard .nm{font-family:var(--num);font-weight:800;font-size:15.5px}
+.loadercard .meta{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.loadercard p{font-size:12.5px;color:var(--mid);margin:0;line-height:1.45}
+.loadercard .tick{margin-left:auto;color:var(--rose);opacity:0;
+  transition:opacity var(--t-tap)}
+.loadercard[aria-pressed="true"] .tick{opacity:1}
+
+/* ============================================================
+   MOD ROULETTE — the shrine rope
+   ------------------------------------------------------------
+   "Pull the lever" was a button that said "pull the lever". This
+   is a suzu rope you actually drag: grab it, pull it down, let go,
+   and it snaps back and rings. Keyboard and touch get the same
+   result without the drag — Enter or a tap pulls it — because a
+   gesture-only control is one nobody on a phone can use.
+   ============================================================ */
+.ropebay{
+  position:relative;display:flex;flex-direction:column;align-items:center;
+  padding:6px 0 18px;user-select:none;overflow:hidden;
+}
+.suzu{
+  width:66px;height:52px;position:relative;z-index:2;
+  background:radial-gradient(ellipse at 50% 30%,#F0D584,var(--gold-ink) 72%);
+  border:2.5px solid var(--slab-bg);border-radius:46% 46% 38% 38%/60% 60% 40% 40%;
+  box-shadow:0 6px 18px -6px color-mix(in srgb,var(--gold) 70%,transparent);
+  transform-origin:50% 0;
+}
+.ropebay.ringing .suzu{animation:suzuRing .7s var(--ease-out)}
+@keyframes suzuRing{
+  0%,100%{transform:rotate(0)}
+  18%{transform:rotate(-9deg)}42%{transform:rotate(7deg)}
+  66%{transform:rotate(-4deg)}84%{transform:rotate(2deg)}
+}
+.suzu::after{
+  content:"";position:absolute;left:50%;bottom:-6px;width:12px;height:12px;
+  margin-left:-6px;border-radius:50%;background:var(--slab-bg);
+}
+.rope{
+  width:44px;position:relative;z-index:1;cursor:grab;touch-action:none;
+  border:0;padding:0;background:none;display:block;
+}
+.rope:active{cursor:grabbing}
+.rope .cord{
+  width:26px;height:var(--rope-len,150px);margin:0 auto;
+  background:repeating-linear-gradient(20deg,
+    var(--shrine) 0 9px,var(--shrine-deep) 9px 18px);
+  border:2.5px solid var(--slab-bg);border-top:0;
+  transition:height .42s var(--ease-spring);
+}
+.rope.dragging .cord{transition:none}
+.rope .tassel{
+  width:44px;height:34px;margin:-2px auto 0;
+  background:repeating-linear-gradient(90deg,
+    var(--paper) 0 6px,transparent 6px 11px);
+  border:2.5px solid var(--slab-bg);border-top:0;
+  clip-path:polygon(0 0,100% 0,86% 100%,14% 100%);
+}
+.rope:hover .cord{filter:brightness(1.08)}
+.rope:focus-visible{outline:3px solid var(--rose);outline-offset:6px}
+.ropebay .hint{
+  font-family:var(--mono);font-size:10px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--faint);margin-top:12px;text-align:center;
+}
+.ropebay.pulled .hint{color:var(--rose)}
+.ropebay .burst{position:absolute;inset:0;pointer-events:none;z-index:3}
+.ropebay .burst i{
+  position:absolute;left:50%;top:36%;width:9px;height:12px;
+  background:var(--sakura);border-radius:50% 50% 50% 50%/60% 60% 40% 40%;
+  animation:burst .9s var(--ease-out) forwards;
+}
+@keyframes burst{
+  from{transform:translate(0,0) rotate(0);opacity:1}
+  to{transform:translate(var(--bx),var(--by)) rotate(var(--br));opacity:0}
+}
+
+/* --- roulette constraint dials -------------------------------- */
+.dials{display:grid;gap:13px}
+.dial{
+  position:relative;border:var(--edge) solid var(--slab-bg);padding:12px 14px;
+  background:linear-gradient(160deg,var(--card-2),var(--card) 55%);
+  box-shadow:var(--lift-1);
+}
+.dial > .lbl{
+  display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:10px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:9px;
+}
+.dial > .lbl b{margin-left:auto;font-family:var(--num);font-size:15px;
+  letter-spacing:-.02em;color:var(--rose)}
+.dial .why{font-size:11.5px;color:var(--faint);line-height:1.45;margin-top:8px}
+
+/* the intensity ladder: five rungs that fill like a temperature gauge */
+.rungs{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}
+.rung{
+  appearance:none;border:2px solid var(--rule);background:var(--paper-2);
+  cursor:pointer;padding:10px 4px 8px;font-family:var(--mono);font-size:9px;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--faint);
+  transition:background var(--t-tap),border-color var(--t-tap),
+             color var(--t-tap),transform var(--t-tap) var(--ease-spring);
+}
+.rung:hover{transform:translateY(-2px);border-color:var(--sakura-deep)}
+.rung[data-lit="1"]{color:#fff;border-color:transparent}
+.rung[data-lit="1"]:nth-child(1){background:#5C8A6A}
+.rung[data-lit="1"]:nth-child(2){background:#7FA65C}
+.rung[data-lit="1"]:nth-child(3){background:var(--gold-ink)}
+.rung[data-lit="1"]:nth-child(4){background:#C4703A}
+.rung[data-lit="1"]:nth-child(5){background:var(--danger)}
+.rung[aria-pressed="true"]{
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--rose) 32%,transparent);
+  transform:translateY(-3px);
+}
+
+/* category crests — tri-state, click to prefer, again to ban */
+.catgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.catmon{
+  position:relative;appearance:none;border:2px solid var(--rule);cursor:pointer;
+  background:var(--paper-2);padding:11px 6px 9px;display:flex;flex-direction:column;
+  align-items:center;gap:5px;min-height:76px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--mid);overflow:hidden;
+  transition:border-color var(--t-tap),background var(--t-tap),color var(--t-tap),
+             transform var(--t-tap) var(--ease-spring);
+}
+.catmon:hover{transform:translateY(-2px);border-color:var(--sakura-deep)}
+.catmon .crest{
+  width:27px;height:27px;border-radius:50%;display:grid;place-items:center;
+  font-size:14px;line-height:1;background:var(--card);border:2px solid var(--rule);
+  transition:transform var(--t-move) var(--ease-spring),background var(--t-tap),
+             border-color var(--t-tap);
+}
+.catmon[data-state="1"]{background:var(--rose);border-color:var(--rose);color:#fff}
+.catmon[data-state="1"] .crest{background:var(--gold);border-color:var(--gold);
+  transform:rotate(14deg) scale(1.12)}
+.catmon[data-state="2"]{background:var(--rule-2);border-color:var(--rule);
+  color:var(--faint)}
+.catmon[data-state="2"] .crest{transform:rotate(-14deg)}
+.catmon[data-state="2"]::after{
+  content:"";position:absolute;left:8%;right:8%;top:50%;height:2px;
+  background:var(--danger);transform:rotate(-16deg);
+}
+.catmon .n{font-family:var(--num);font-weight:800;font-size:10px;opacity:.8}
+
+/* --- the reel ------------------------------------------------- */
+.reel{border:var(--edge) solid var(--slab-bg);background:var(--card);overflow:hidden;
+  box-shadow:var(--lift-1)}
+.reelrow{
+  display:flex;align-items:center;gap:11px;padding:9px 12px;
+  border-bottom:1.5px solid var(--rule-2);min-height:54px;position:relative;
+  transition:background var(--t-tap),transform var(--t-tap) var(--ease-out);
+}
+.reelrow:last-child{border-bottom:0}
+.reelrow:hover{background:var(--sakura-soft);transform:translateX(3px)}
+.reelrow.held{background:var(--gold-soft)}
+.reelrow.held::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:var(--gold)}
+.reelrow .ico{width:30px;height:30px;flex:none;border:2px solid var(--rule);
+  object-fit:cover;background:var(--paper-2)}
+.reelrow .who{flex:1;min-width:0}
+.reelrow .nm{font-family:var(--num);font-weight:700;font-size:13.5px;overflow-wrap:anywhere}
+.reelrow .sub{font-family:var(--mono);font-size:10px;color:var(--faint);overflow-wrap:anywhere}
+html.js-motion .reel.dealing .reelrow{animation:dealIn .3s var(--ease-out) both}
+@keyframes dealIn{from{transform:translateX(26px) rotate(1.2deg)}
+  to{transform:none}}
+
+.seedbox{
+  font-family:var(--mono);font-size:19px;font-weight:700;letter-spacing:.18em;
+  text-align:center;padding:13px;border:var(--edge) solid var(--slab-bg);
+  background:var(--gold-leaf);background-size:220% 100%;
+  animation:foil 7s linear infinite;color:#241B28;text-transform:uppercase;
+  box-shadow:var(--lift-1);
+}
+
+/* ============================================================
+   CONFIGS — the editor beside the list, not in a dialog
+   ============================================================ */
+.cfg{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);
+  gap:16px;align-items:start}
+.cfg-list{border:var(--edge) solid var(--slab-bg);background:var(--card);
+  box-shadow:var(--lift-1);display:flex;flex-direction:column;min-height:0}
+.cfg-list .rows{overflow-y:auto;max-height:min(60vh,620px)}
+.cfgrow{
+  display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;
+  cursor:pointer;text-align:left;padding:9px 12px;min-height:46px;
+  border-bottom:1.5px solid var(--rule-2);color:var(--text);position:relative;
+  transition:background var(--t-tap),padding-left var(--t-tap) var(--ease-out);
+}
+.cfgrow:last-child{border-bottom:0}
+.cfgrow:hover{background:var(--sakura-soft);padding-left:16px}
+.cfgrow[aria-current="true"]{background:var(--rose-soft)}
+.cfgrow[aria-current="true"]::before{content:"";position:absolute;left:0;top:0;
+  bottom:0;width:3px;background:var(--rose)}
+.cfgrow .nm{flex:1;min-width:0;font-size:13px;overflow-wrap:anywhere;line-height:1.3}
+.cfgrow .own{font-family:var(--mono);font-size:9.5px;color:var(--faint);display:block}
+.cfgrow.dirty .nm::after{content:" \25CF";color:var(--gold-ink)}
+
+.cfg-editor{border:var(--edge) solid var(--slab-bg);background:var(--card);
+  box-shadow:var(--lift-1);display:flex;flex-direction:column;min-width:0}
+.cfg-editor > header{display:flex;align-items:center;gap:10px;padding:10px 13px;
+  background:var(--slab-bg);color:var(--slab-fg);flex-wrap:wrap}
+.cfg-editor > header .nm{font-family:var(--mono);font-size:11.5px;flex:1;min-width:0;
+  overflow-wrap:anywhere}
+.cfg-editor .empty-slot{padding:44px 22px;text-align:center;color:var(--faint)}
+@media (max-width:1080px){ .cfg{grid-template-columns:minmax(0,1fr)} }
+
+/* --- the editor itself ----------------------------------------- */
+.editor{display:grid;grid-template-columns:54px minmax(0,1fr);min-width:0}
+.editor .gut{
+  background:var(--paper-2);color:var(--faint);font-family:var(--mono);font-size:12.5px;
+  line-height:1.55;padding:12px 8px;text-align:right;overflow:hidden;
+  border-right:2px solid var(--rule);user-select:none;white-space:pre;
+}
+.editor textarea{
+  border:0;background:var(--card);font-family:var(--mono);font-size:12.5px;
+  line-height:1.55;padding:12px;resize:vertical;min-height:min(50vh,520px);
+  white-space:pre;overflow-wrap:normal;overflow-x:auto;tab-size:2;
+}
+.editor textarea:focus{outline:none;box-shadow:none}
+
+/* --- diagnose --------------------------------------------------- */
+.finding{position:relative;padding-left:16px}
+.finding::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px}
+.finding.sev-critical::before{background:var(--danger);
+  animation:sevPulse 2.4s ease-in-out infinite}
+.finding.sev-warn::before{background:var(--gold)}
+.finding.sev-info::before{background:var(--info)}
+@keyframes sevPulse{0%,100%{opacity:1}50%{opacity:.45}}
+.evidence{
+  background:var(--paper-2);padding:10px;overflow:auto;max-height:220px;
+  font-size:11.5px;font-family:var(--mono);white-space:pre-wrap;
+  overflow-wrap:anywhere;margin-top:8px;border-left:3px solid var(--rule);
+}
+.scorebar{display:flex;height:9px;border:2px solid var(--slab-bg);overflow:hidden;
+  background:var(--rule-2)}
+.scorebar i{display:block;height:100%;transition:width .5s var(--ease-out)}
+.scorebar i.pos{background:linear-gradient(90deg,var(--danger),#ff6b78)}
+.scorebar i.neg{background:linear-gradient(90deg,var(--sage),
+  color-mix(in srgb,var(--sage) 65%,#fff))}
+
+/* --- source marks ---------------------------------------------
+   The catalogue a mod came from, as its logo rather than the word.
+   Sized to sit on the same baseline as the pills beside it.      */
+.srcmark{
+  display:inline-flex;align-items:center;gap:5px;padding:3px 9px;
+  background:var(--paper-2);border:2px solid var(--rule);
+  font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--mid);white-space:nowrap;
+}
+.srcmark img{width:13px;height:13px;object-fit:contain;flex:none}

@@ -121,60 +121,95 @@ async def healthz() -> dict:
     return {"status": "ok", "app": "BlessForge"}
 
 
+# Health is three network round trips and a disk probe, and the front end
+# asks for it on every load and then once a minute. Run sequentially and
+# awaited before the first paint -- which is how this was written -- that is
+# most of a second of blank page on a LAN and several seconds on a slow link,
+# for a banner most people never see because everything is fine.
+#
+# So: the three checks run concurrently, and the result is held briefly.
+# The TTL is short enough that fixing a compose file and hitting reload still
+# shows the change, and long enough that a burst of callers costs one probe.
+_HEALTH_TTL = 8.0
+_health_cache: tuple[float, dict] | None = None
+_health_lock = asyncio.Lock()
+
+
+async def _check_crafty(state: dict) -> dict:
+    if not state["crafty"]:
+        return {"ok": False, "error": "CRAFTY_URL / CRAFTY_TOKEN not set"}
+    try:
+        started = time.perf_counter()
+        servers = await asyncio.wait_for(crafty.list_servers(), timeout=5.0)
+        # Worth showing: the round trip is the difference between "the
+        # controller is on this box" and "the controller is across a link",
+        # which changes what every other number here means.
+        return {"ok": True, "servers": len(servers),
+                "latency_ms": round((time.perf_counter() - started) * 1000)}
+    except Exception as e:      # noqa: BLE001 -- reported, not raised
+        return {"ok": False, "error": str(e)}
+
+
+async def _check_curseforge(state: dict) -> dict:
+    if not state["curseforge"]:
+        return {"ok": False, "error": "CURSEFORGE_API_KEY not set"}
+    try:
+        await asyncio.wait_for(curseforge.search(query="", page_size=1), timeout=5.0)
+        return {"ok": True}
+    except Exception as e:      # noqa: BLE001 -- reported, not raised
+        error = str(e)
+        # A mangled key looks exactly like a wrong key, so say which it is.
+        warning = state.get("curseforge_key_warning")
+        if warning and "403" in error:
+            error = warning
+        return {"ok": False, "error": error}
+
+
+async def _check_modrinth(state: dict) -> dict:
+    if not state["modrinth"]:
+        return {"ok": False, "error": "disabled"}
+    try:
+        await asyncio.wait_for(modrinth.search(query="", page_size=1), timeout=5.0)
+        return {"ok": True}
+    except Exception as e:      # noqa: BLE001 -- reported, not raised
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/api/health")
-async def health() -> dict:
-    state = config.configured()
-    checks: dict[str, Any] = {"crafty": None, "curseforge": None, "modrinth": None}
+async def health(fresh: bool = False) -> dict:
+    global _health_cache
+    now = time.time()
+    if not fresh and _health_cache and now - _health_cache[0] < _HEALTH_TTL:
+        return _health_cache[1]
 
-    if state["crafty"]:
-        try:
-            started = time.perf_counter()
-            servers = await asyncio.wait_for(crafty.list_servers(), timeout=5.0)
-            # Round-trip to Crafty. Worth showing: it is the difference
-            # between "the controller is on this box" and "the controller is
-            # across a link", which changes what every other number means.
-            checks["crafty"] = {
-                "ok": True,
-                "servers": len(servers),
-                "latency_ms": round((time.perf_counter() - started) * 1000),
-            }
-        except Exception as e:
-            checks["crafty"] = {"ok": False, "error": str(e)}
-    else:
-        checks["crafty"] = {"ok": False, "error": "CRAFTY_URL / CRAFTY_TOKEN not set"}
+    async with _health_lock:
+        # Someone may have filled it while this call waited for the lock.
+        if not fresh and _health_cache and time.time() - _health_cache[0] < _HEALTH_TTL:
+            return _health_cache[1]
 
-    if state["curseforge"]:
-        try:
-            await asyncio.wait_for(curseforge.search(query="", page_size=1), timeout=5.0)
-            checks["curseforge"] = {"ok": True}
-        except Exception as e:
-            error = str(e)
-            # A mangled key looks exactly like a wrong key, so say which it is.
-            warning = state.get("curseforge_key_warning")
-            if warning and "403" in error:
-                error = warning
-            checks["curseforge"] = {"ok": False, "error": error}
-    else:
-        checks["curseforge"] = {"ok": False, "error": "CURSEFORGE_API_KEY not set"}
-
-    if state["modrinth"]:
-        try:
-            await asyncio.wait_for(modrinth.search(query="", page_size=1), timeout=5.0)
-            checks["modrinth"] = {"ok": True}
-        except Exception as e:
-            checks["modrinth"] = {"ok": False, "error": str(e)}
-    else:
-        checks["modrinth"] = {"ok": False, "error": "disabled"}
-
-    # A /data that the app cannot write is invisible until the first install
-    # dies half-way through: the cache silently fails, imports have nowhere to
-    # land, and nothing in the UI ever says why. It happens whenever the mount
-    # is pointed at a root-owned folder -- most often the wrong folder picked
-    # in the CasaOS install dialog -- so it gets checked and reported.
-    checks["storage"] = _storage_check()
-
-    ready = bool(checks["crafty"] and checks["crafty"].get("ok"))
-    return {"ready": ready, "config": state, "checks": checks}
+        state = config.configured()
+        crafty_check, cf_check, mr_check = await asyncio.gather(
+            _check_crafty(state), _check_curseforge(state), _check_modrinth(state),
+        )
+        checks: dict[str, Any] = {
+            "crafty": crafty_check,
+            "curseforge": cf_check,
+            "modrinth": mr_check,
+            # A /data the app cannot write is invisible until the first install
+            # dies half-way through: the cache silently fails, imports have
+            # nowhere to land, and nothing ever says why. It happens whenever
+            # the mount is pointed at a root-owned folder -- most often the
+            # wrong folder picked in the CasaOS install dialog.
+            "storage": _storage_check(),
+        }
+        result = {
+            "ready": bool(checks["crafty"] and checks["crafty"].get("ok")),
+            "config": state,
+            "checks": checks,
+            "cached_for": _HEALTH_TTL,
+        }
+        _health_cache = (time.time(), result)
+        return result
 
 
 def _storage_check() -> dict:
@@ -379,8 +414,17 @@ async def instances() -> dict:
             "auto_start": s.get("auto_start"),
             "created": s.get("created"),
         }
+        # The manifest and the stats are two independent Crafty round trips,
+        # and this runs once per server on a poll. Sequentially that is two
+        # RTTs per server per refresh; concurrently it is one.
+        manifest_r, stats_r = await asyncio.gather(
+            crafty.read_studio_manifest(sid), crafty.get_stats(sid),
+            return_exceptions=True,
+        )
         try:
-            manifest = await crafty.read_studio_manifest(sid)
+            if isinstance(manifest_r, BaseException):
+                raise manifest_r
+            manifest = manifest_r
             info["pack"] = manifest.get("pack")
             info["minecraft"] = manifest.get("minecraft")
             info["loader"] = manifest.get("loader")
@@ -407,7 +451,9 @@ async def instances() -> dict:
                     info["loader"] = fam
                     break
         try:
-            stats = await crafty.get_stats(sid)
+            if isinstance(stats_r, BaseException):
+                raise stats_r
+            stats = stats_r
             info["running"] = bool(stats.get("running"))
             info["players"] = stats.get("online")
             info["max_players"] = stats.get("max")
@@ -767,54 +813,123 @@ async def write_config(server_id: str, body: dict = Body(...)) -> dict:
 # --- diagnostics -------------------------------------------------------
 
 
+def _dedupe_findings(findings: list[dict]) -> list[dict]:
+    """Collapse findings that say the same thing twice.
+
+    Three passes look at the same instance from different angles and they
+    overlap: the quick check reads eula.txt while the log parser sees the
+    server refusing to start over the EULA, and both are right. Reported
+    twice it reads as two problems, and a list that inflates its own count is
+    one people stop believing.
+    """
+    out: list[dict] = []
+    seen: dict[tuple, dict] = {}
+    for f in findings:
+        key = (f.get("category"), (f.get("title") or "").strip().lower())
+        first = seen.get(key)
+        if first is None:
+            seen[key] = f
+            out.append(f)
+            continue
+        # Keep the more severe of the two, and remember that both saw it --
+        # two independent passes agreeing is worth more than one.
+        if (diagnostics.SEVERITY_ORDER.get(f.get("severity"), 9)
+                < diagnostics.SEVERITY_ORDER.get(first.get("severity"), 9)):
+            first.update({k: v for k, v in f.items() if v})
+        first["corroborated"] = True
+        if f.get("evidence") and not first.get("evidence"):
+            first["evidence"] = f["evidence"]
+    return out
+
+
 @app.get("/api/instances/{server_id}/diagnose")
 async def diagnose(server_id: str) -> dict:
-    try:
-        quick, logs = await asyncio.gather(
-            diagnostics.quick_check(server_id),
-            diagnostics.analyse_logs(server_id),
-            return_exceptions=True,
-        )
-        result: dict[str, Any] = {"findings": []}
-        if isinstance(quick, dict):
-            result.update(quick)
-        if isinstance(logs, dict):
-            result["findings"] = (result.get("findings") or []) + logs["findings"]
-            result["log_tail"] = logs.get("log_tail")
-            result["crash_tail"] = logs.get("crash_tail")
-            result["log_path"] = logs.get("log_path")
-            result["crash_path"] = logs.get("crash_path")
-            result["has_logs"] = logs.get("has_logs")
-        result["findings"].sort(
-            key=lambda f: diagnostics.SEVERITY_ORDER.get(f.get("severity"), 9)
-        )
+    """Everything three passes can say about why an instance misbehaves.
 
-        # "The server crashed" is not a useful answer on its own. Whenever a
-        # crash report exists, the log is read end to end and the jars it
-        # actually implicates are named, with the line that implicates each.
-        if isinstance(logs, dict) and logs.get("crash_path"):
-            try:
-                review = await diagnostics.crash_review(server_id)
-                result["crash"] = review
-                if review.get("culprits"):
-                    top = review["culprits"][:4]
-                    result["findings"].insert(0, {
-                        "severity": "critical",
-                        "category": "mods",
-                        "title": f"Crash traced to {len(review['culprits'])} mod(s)",
-                        "detail": "; ".join(
-                            f"{c['file']} — {c['why']}" for c in top
-                        ),
-                        "fix": {"action": "disable_mods",
-                                "files": [c["file"] for c in top
-                                          if c["confidence"] != "low"]},
-                        "evidence": "\n".join(c["evidence"] for c in top)[:1500],
-                    })
-            except Exception:
-                pass
-        return result
-    except Exception as e:
-        raise _err(e)
+    The passes run concurrently and are reported individually. That last part
+    is the point: when the log could not be read, the old shape simply
+    returned fewer findings and the screen said "nothing looks wrong" -- which
+    is a different claim from "we could not look", and the wrong one. Every
+    pass now reports whether it ran, so the UI can distinguish a clean bill of
+    health from an incomplete examination.
+    """
+    quick, logs = await asyncio.gather(
+        diagnostics.quick_check(server_id),
+        diagnostics.analyse_logs(server_id),
+        return_exceptions=True,
+    )
+
+    result: dict[str, Any] = {"findings": []}
+    passes: list[dict] = []
+
+    if isinstance(quick, dict):
+        result.update(quick)
+        passes.append({"name": "checks", "ok": True,
+                       "what": "EULA, Java, memory, mods on the wrong version"})
+    else:
+        passes.append({"name": "checks", "ok": False, "error": str(quick),
+                       "what": "EULA, Java, memory, mods on the wrong version"})
+
+    if isinstance(logs, dict):
+        result["findings"] = (result.get("findings") or []) + logs["findings"]
+        result["log_tail"] = logs.get("log_tail")
+        result["crash_tail"] = logs.get("crash_tail")
+        result["log_path"] = logs.get("log_path")
+        result["crash_path"] = logs.get("crash_path")
+        result["has_logs"] = logs.get("has_logs")
+        passes.append({"name": "logs", "ok": True,
+                       "what": "latest.log and the newest crash report",
+                       "note": None if logs.get("has_logs")
+                       else "this instance has produced no log at all"})
+    else:
+        result["has_logs"] = None
+        passes.append({"name": "logs", "ok": False, "error": str(logs),
+                       "what": "latest.log and the newest crash report"})
+
+    # "The server crashed" is not a useful answer on its own. Whenever a crash
+    # report exists, the whole of it is read and the jars it implicates are
+    # named, with the line that implicates each.
+    if isinstance(logs, dict) and logs.get("crash_path"):
+        try:
+            review = await diagnostics.crash_review(server_id)
+            result["crash"] = review
+            passes.append({"name": "crash", "ok": True,
+                           "what": "which jars the crash report blames"})
+            if review.get("culprits"):
+                top = review["culprits"][:4]
+                confident = [c["file"] for c in top if c["confidence"] != "low"]
+                result["findings"].insert(0, {
+                    "severity": "critical",
+                    "category": "mods",
+                    "title": f"Crash traced to {len(review['culprits'])} mod(s)",
+                    "detail": "; ".join(f"{c['file']} — {c['why']}" for c in top),
+                    # Only offer the button when there is something safe to
+                    # act on. A "disable 0 mods" button is worse than none.
+                    "fix": {"action": "disable_mods", "files": confident}
+                    if confident else None,
+                    "evidence": chr(10).join(c["evidence"] for c in top)[:1500],
+                    "confidence": top[0].get("confidence"),
+                })
+        except Exception as e:      # noqa: BLE001 -- reported, not raised
+            passes.append({"name": "crash", "ok": False, "error": str(e),
+                           "what": "which jars the crash report blames"})
+
+    result["findings"] = _dedupe_findings(result["findings"])
+    result["findings"].sort(
+        key=lambda f: diagnostics.SEVERITY_ORDER.get(f.get("severity"), 9))
+
+    result["passes"] = passes
+    failed = [p for p in passes if not p["ok"]]
+    result["complete"] = not failed
+    result["note"] = (
+        "Some checks could not run, so this is not a clean bill of health — "
+        + "; ".join(f"{p['what']} ({p.get('error')})" for p in failed)
+    ) if failed else None
+    result["counts"] = {
+        sev: sum(1 for f in result["findings"] if f.get("severity") == sev)
+        for sev in ("critical", "warn", "info")
+    }
+    return result
 
 
 @app.post("/api/instances/{server_id}/deep-scan")

@@ -52,7 +52,7 @@ environment variable is *required*. `STATE_DIR` exists and defaults to
 
 | Area | Files | What to know |
 |---|---|---|
-| **Front end** | `app/static/**` (all of it) | Rebuilt from scratch. The design-canvas runtime is gone — no `<x-dc>`, no `support.js`, no vendored React. Plain ES modules. Pink shrine fox theme shared with the Project Fox page. |
+| **Front end** | `app/static/**` (all of it) | Rebuilt from scratch. The design-canvas runtime is gone — no `<x-dc>`, no `support.js`, no vendored React. Plain ES modules. Pink shrine fox theme shared with the Project Fox page. Reworked again the same day — see §1A. |
 | **Loader failures** | `provision.py` (new), `installer.py` | A three-rung ladder: Crafty → Crafty's jar index → the loader's own project. Shared by blank creates and modpack installs. Plus **Finish setup** to retry without losing the instance. |
 | **Blank instances** | `provision.py`, `loaders.py` (new) | `New server`: seven loaders, real upstream version lists, the right mod folder each. |
 | **Paper plugins** | `plugins.py` (new) | Modrinth catalogue, compatibility checking, dependency preview, starter list, `plugins/` audit. |
@@ -83,6 +83,59 @@ are `dev/tools/check_bindings.py` and `dev/tools/audit_placeholders.py` — they
 audited the runtime that no longer exists. `dev/ui-tests/ui.mjs` is retired and
 **will fail**; it asserts against markup that is gone. Do not treat that as a
 regression.
+
+---
+
+## 1A. The second UI pass (same day, after the first report)
+
+The rebuild in §1 was correct but read flat, and the first thing anyone said
+about it was that it felt slow. Both were true and both are fixed. Nothing
+here changes an endpoint, a payload or a file on disk — it is the front end
+plus three server-side changes that exist only to make it load faster.
+
+**The layering was wrong, and it is the part most worth understanding.** The
+wiggling polygon was a `z-index:-1` pseudo-element, which paints behind its
+parent's background *only while the parent is not a stacking context*. The
+entrance animation put a `transform` on every card, every card became a
+stacking context, and the blob started painting **over** the card and under
+the text. The fix is to stop relying on that trick: every card, button and
+loader tile now isolates on purpose and holds three explicit layers.
+
+    .p5-hl    z-index 0    the blob, bleeding ~17px past the card edge
+    ::after   z-index 1    the fill and the border
+    content   z-index 2    everything you read
+
+`dev/tools/check_frontend.py` enforces all of it — including that no blanket
+`.card > *` rule exists, because that selector outranks `.p5-hl`'s own
+`position:absolute` on specificity and silently collapses the blob to nothing.
+If you touch the CSS, run that check.
+
+**Why it was slow, and what it actually was.** Not the JavaScript. `/api/health`
+made its three upstream calls in sequence and the boot sequence *awaited* it
+before the first paint, so the page waited on CurseForge and Modrinth before
+drawing anything. Now the checks run under `asyncio.gather` behind an 8-second
+cache, and boot does not await them at all — the shell paints, then health
+fills in.
+
+| | before | after |
+|---|---|---|
+| `/api/health` | 1.3 s sequential | 665 ms concurrent, 2 ms cached |
+| DOMContentLoaded | 248 ms | 118 ms |
+| load | 589 ms | 387 ms |
+
+The rest, briefly:
+
+| Area | What to know |
+|---|---|
+| **Mod side tags** | Every mod row says `client only` / `server only` / `both`, from the same scored evidence the install review uses. A jar with nothing recorded says so rather than guessing. |
+| **Config editor** | Side by side in the tab, not a modal. Unsaved text survives switching files; leaving the page with unsaved work warns. |
+| **Mod Roulette** | The constraint system is rebuilt — a recklessness ladder, an intensity dial, a catalogue monitor. "Pull the lever" is a **rope you actually drag**, with resistance, a release, and a petal burst. Clicking it still works, for keyboards and phones. |
+| **Diagnose** | Returns named passes with counts and a `complete` flag, and de-duplicates findings, so "no problems found" now means the checks ran rather than that nothing reported. |
+| **Sidebar, logo, icons** | The rail buttons have state and motion; the app icon and favicon are the fox; the loader tiles on **New server** are all one size, and Paper and Purpur have their own marks. |
+| **Motion safety** | Every entrance animation is translate-only and gated on `html.js-motion`. Nothing animates *from* `opacity:0` — a stalled timeline used to mean a blank page. `prefers-reduced-motion` turns all of it off. |
+
+None of this needs anything from you on the box beyond the same hard reload
+§2 already asks for.
 
 ---
 
@@ -117,7 +170,7 @@ old cache. Ctrl-Shift-R once.
 
 ## 3. Verification, in order
 
-Ordered by risk, cheapest first. Roughly 45 minutes end to end. Tick as you go
+Ordered by risk, cheapest first. Roughly an hour end to end. Tick as you go
 and report §4.
 
 ### A — it starts, and nothing is obviously wrong (5 min)
@@ -259,11 +312,42 @@ If you would rather not, that is reasonable; the ladder's individual rungs are
 each exercised by `/api/loaders`, which is already proven to work with **no
 Crafty at all** (that is how the version lists in §C were produced).
 
+### G — the UI pass (10 min, and the cheapest of the lot)
+
+Everything here is visual or local; none of it touches an instance, so it is
+safe to run on the live box at any time.
+
+- [ ] **The polygon is behind the card, not on it.** Hover a fleet card. A
+      pink blob swells *behind* the card, bleeding past its edges, and the
+      title and the numbers stay fully readable on top of it. If the blob
+      covers the card, the layering broke — run `check_frontend.py`.
+- [ ] Do the same in light mode (moon button, bottom left). Text must stay
+      readable in both.
+- [ ] **It paints fast.** Reload with the network tab open. The shell should
+      draw before `/api/health` finishes; the connection dot bottom-left fills
+      in a moment later. If the page is blank until health returns, the boot
+      order regressed.
+- [ ] **Mod side tags.** Open an instance → Mods. Each row carries a side tag.
+      If a jar has never been scanned it says so; running the scan fills them
+      in.
+- [ ] **Config editor.** Instance → Configs. Click a file — it opens *beside*
+      the list, not in a modal. Type, switch to another file, switch back: your
+      text is still there and the row is marked unsaved.
+- [ ] **The rope.** Mod Roulette → drag the rope down and let go. It resists,
+      snaps back, bursts petals, and the roll starts. Click it instead — that
+      must also work.
+- [ ] **Diagnose.** Instance → Diagnose. It should list the passes it ran with
+      counts, not just a verdict. "Nothing found" with no passes listed means
+      it did not complete.
+- [ ] **The icon.** The browser tab and the CasaOS tile show the fox.
+- [ ] Phone or narrow window: rail collapses to the ☰ drawer, no horizontal
+      scrolling, the rope still pulls with a finger.
+
 ---
 
 ## 4. What to report back
 
-For each of A–E: passed, or what happened instead. For anything that failed:
+For each of A–G: passed, or what happened instead. For anything that failed:
 
 ```bash
 docker compose logs --tail=200 blessforge
@@ -293,10 +377,11 @@ So you know what is being tested rather than re-tested. From
 | Any destructive button pressed for real | §E |
 | Below 900 px on a real phone | §E |
 | The AI assistant producing a plan | not covered — unchanged since August, still untested |
+| The UI pass on a real browser other than Chromium | §G |
 
 Everything else in 2.1 was driven against a mock Crafty and the live
 CurseForge, Modrinth, Mojang, FabricMC, NeoForged, PaperMC and PurpurMC APIs:
-16 routes with zero console errors, both themes, 141 backend checks and 107
+15 routes with zero console errors, both themes, 141 backend checks and 125
 front-end checks.
 
 Two real bugs were found by driving the UI rather than reading it, and both are
@@ -339,7 +424,7 @@ done
 .venv/bin/python dev/tools/check_frontend.py | tail -2
 ```
 
-Expected: 39, 10, 31, 35, 26 backend checks and 107 front-end checks, all
+Expected: 39, 10, 31, 35, 26 backend checks and 125 front-end checks, all
 passing. `check_frontend.py` wants `node` on PATH for its parse check and skips
 it cleanly if node is absent — but that is the check worth having, because
 `node --check <file>` alone parses an ES module as a *script* and will accept a

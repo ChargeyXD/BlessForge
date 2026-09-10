@@ -274,6 +274,10 @@ list built over months survives moving to another machine.
 - **Identify unknown jars** by hashing them: CurseForge murmur2 fingerprints,
   then Modrinth SHA-1, then the jar's own metadata. Works on servers that
   existed long before this app.
+- **Every row says which side it runs on** — `client only`, `server only`
+  or `both` — from the same scored evidence the install review uses, not from
+  the name. A jar nobody has scanned yet says so rather than guessing, and one
+  scan fills in the whole list.
 - Bulk enable/disable/delete, update checks, and whole-modpack version switching.
 
 ### Edit configs
@@ -281,6 +285,12 @@ list built over months survives moving to another machine.
 Browse `config/`, `defaultconfigs/`, `kubejs/`, `scripts/` and the usual root
 files, grouped by owning mod. World data and binaries are excluded from the
 editor.
+
+The editor is **beside the list, not on top of it**: click a file and it opens
+in the other half of the tab with a line gutter and its type, size and line
+count in the status line. Unsaved text survives switching to another file and
+back — the row stays marked until you save it — and leaving the page with
+unsaved work warns first.
 
 ### Troubleshoot
 
@@ -305,11 +315,18 @@ editor.
   that noticed.
 - **One-click fixes** — accept EULA, set Java, disable the offending mods,
   search for a missing dependency, or swap mods to a compatible version.
+- **It tells you what it checked**, not just what it found. Every run reports
+  the passes it ran and how many findings each produced, and says plainly when
+  one could not complete — so a clean report means the checks ran and found
+  nothing, rather than possibly meaning they never ran. Findings that several
+  passes each notice are reported once.
 
 ### Mod Roulette
 
 Set constraints — Minecraft version, loader, how many mods, how reckless to be,
-which of nine categories to prefer or ban — and pull the lever. BlessForge
+which of nine categories to prefer or ban — then **pull the shrine rope**. It
+resists as you drag it, snaps back when you let go, and scatters petals. (It is
+also just a button, for keyboards and anyone in a hurry.) BlessForge
 deals a **hand**: a specific set of mods drawn from the live CurseForge and
 Modrinth catalogues, which it can then install as a real server and hand back
 as a **CurseForge modpack zip** you can share or open in the CurseForge app.
@@ -774,7 +791,7 @@ images are served `immutable` for a year. Redeploy the container and the
 browser has the new code; there is no stale-asset failure mode to reason
 about.
 
-Four things in there are less obvious than they look:
+Six things in there are less obvious than they look:
 
 * **Nothing is built from an HTML string.** `h()` returns real DOM nodes and
   handlers are attached to the node they belong to. The previous front end
@@ -787,12 +804,26 @@ Four things in there are less obvious than they look:
   followed at once. Every terminal frame carries the result, because a client
   closes its stream on the first frame reporting a terminal status and there
   is more than one such frame.
-* **The wiggling polygon is a `z-index:-1` child**, which only paints behind
-  its parent's background while the parent is *not* a stacking context. So
-  nothing carrying a highlight may take a `transform`, an `opacity` below 1,
-  a `filter` or an `isolation` — the hover lift is done with `box-shadow`,
-  and disabled buttons are drawn with colour rather than transparency, for
-  exactly this reason. `dev/tools/check_frontend.py` enforces it.
+* **The wiggling polygon lives in an explicit layer**, and the layer order is
+  the whole trick. Each card, button and loader tile isolates its own stacking
+  context and holds three: the blob at `z-index:0` bleeding past the element's
+  edges, the fill and border at `1`, everything you read at `2`. It was a
+  `z-index:-1` child once — which paints behind the parent's background only
+  while the parent is *not* a stacking context, so the first animated
+  `transform` put the blob in front of the fill and under the text. Two rules
+  keep it honest and `dev/tools/check_frontend.py` enforces both: no blanket
+  `.card > *` selector (it outranks `.p5-hl`'s own `position:absolute` and
+  collapses the blob to nothing), and no new `z-index:-1` anywhere.
+* **No entrance animation starts from `opacity:0`.** They translate, they are
+  gated on `html.js-motion`, and `prefers-reduced-motion` turns them off. If a
+  document timeline stalls — a background tab, a throttled preview — a
+  `fill:both` animation that begins invisible never runs, and the content is
+  invisible for good. A page that does not animate beats a page that is blank.
+* **Boot does not wait on the network.** `paintNav()` and `route()` run first
+  and `refreshHealth()` resolves into the UI afterwards; `/api/health` runs its
+  three upstream probes concurrently behind an 8-second cache. Awaiting it made
+  the shell wait on CurseForge and Modrinth before drawing anything, which cost
+  about 200 ms of DOMContentLoaded and a second of perceived load.
 * **The editor's gutter is a plain `<pre>`** sharing the textarea's font
   metrics with `scrollTop` mirrored. No highlighting overlay: it drifts on
   wrap and is a maintenance trap.
@@ -820,8 +851,8 @@ python dev/tools/check_frontend.py
 modes: a module that only parses as a script (`node --check` accepts a broken
 string literal in one — only `--input-type=module` is a real check), an
 import or an asset that does not resolve, an API path no route serves, an
-icon name that is not in the set, and any CSS rule that would turn a
-highlight-bearing element into a stacking context.
+icon name that is not in the set, and any change that breaks the polygon's
+layering contract. 125 checks.
 
 ## Licence
 

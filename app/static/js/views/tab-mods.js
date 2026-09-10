@@ -15,7 +15,7 @@
 import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num, compact,
   empty, loadingFox, confirmDialog, modal, close, field, debounce, segmented,
-  frag, prefs, qs, copyText,
+  frag, prefs, qs, copyText, sideTag, spinner, reveal, sourceMark,
 } from '../core.js';
 import { run, runAwait } from '../jobs.js';
 
@@ -47,12 +47,18 @@ export async function render(ctx) {
     paint();
   }
 
+  const sideOk = (v) => v === 'required' || v === 'optional';
+
   const filtered = () => {
     const q = query.trim().toLowerCase();
     return (listing?.mods || []).filter((m) => {
       if (filter === 'enabled' && !m.enabled) return false;
       if (filter === 'disabled' && m.enabled) return false;
-      if (filter === 'client' && !m.client_only) return false;
+      if (filter === 'client'
+        && !(m.client_only || m.server_side === 'unsupported')) return false;
+      if (filter === 'server' && m.client_side !== 'unsupported') return false;
+      if (filter === 'both'
+        && !(sideOk(m.server_side) && sideOk(m.client_side))) return false;
       if (filter === 'unknown' && m.identified) return false;
       if (filter === 'updates') {
         const u = updates?.items?.find((x) => x.file === m.file);
@@ -84,7 +90,12 @@ export async function render(ctx) {
           ? [{ value: 'updates',
             label: `Updates ${updates.items.filter((u) => u.has_update).length}` }]
           : []),
-        ...(all.some((m) => m.client_only) ? [{ value: 'client', label: 'Client' }] : []),
+        ...(all.some((m) => m.client_only || m.server_side === 'unsupported')
+          ? [{ value: 'client', label: 'Client only' }] : []),
+        ...(all.some((m) => m.client_side === 'unsupported')
+          ? [{ value: 'server', label: 'Server only' }] : []),
+        ...(all.some((m) => sideOk(m.server_side) && sideOk(m.client_side))
+          ? [{ value: 'both', label: 'Both' }] : []),
         ...(all.some((m) => !m.identified) ? [{ value: 'unknown', label: 'Unknown' }] : []),
       ], filter, (v) => { filter = v; prefs.set(`mods.filter.${dir}`, v); paint(); },
         'Filter'),
@@ -138,7 +149,39 @@ export async function render(ctx) {
       return;
     }
 
-    mount(listHost, h('div.modlist', ...rows.map(row)));
+    const unknownSides = all.filter((m) => !m.server_side && !m.client_side).length;
+    mount(listHost,
+      unknownSides && !ctx.plugins
+        ? h('div.note', { style: { marginBottom: '12px' } },
+          h('b', `${unknownSides} of ${all.length} jars have no side recorded`),
+          'Which half of the game a mod runs on is stated by its publisher, '
+          + "and the only reliable way to ask is by the file's hash. ",
+          h('button.btn.xs', {
+            style: { marginTop: '8px' },
+            onclick: () => detectSides(),
+          }, icon('shieldCheck', 12), h('span', 'Look them up')))
+        : null,
+      h('div.modlist', ...rows.map(row)));
+  }
+
+  /* Reuses the client-only scan, which already downloads every jar and asks
+     Modrinth by SHA-1 — and now writes the answer into the instance manifest,
+     so this is a one-time cost per instance rather than per visit. */
+  function detectSides() {
+    run(`/api/instances/${ctx.id}/client-scan?directory=${dir}`, {}, {
+      title: `Identify mod sides — ${ctx.name}`,
+      onEnd: (rec) => {
+        if (rec.status !== 'done') return;
+        const n = (rec.result?.items || [])
+          .filter((i) => i.modrinth_side).length;
+        toast(n
+          ? `${n} jars matched a Modrinth project and now carry a side tag.`
+          : 'No jar could be matched — these are probably CurseForge '
+            + 'exclusives, which publish no side information.',
+        n ? 'ok' : 'warn', { timeout: 8000 });
+        load(true);
+      },
+    });
   }
 
   function row(m) {
@@ -160,13 +203,12 @@ export async function render(ctx) {
         h('div.nm', m.name || m.file),
         h('div.fn', m.file, m.size ? ` · ${m.size}` : ''),
         h('div.tags',
+          // The side tag leads, because it is the question this tab exists
+          // to answer and every other chip is metadata by comparison.
+          sideTag(m),
           m.version ? pill(m.version, 'ghost') : null,
-          m.source ? pill(m.source, 'ghost') : null,
+          sourceMark(m.source),
           !m.enabled ? pill('disabled', 'dead') : null,
-          m.client_only
-            ? pill('client-side', 'warn',
-              (m.client_only_reasons || []).join('; ') || 'flagged client-only')
-            : null,
           u?.has_update ? pill(`update → ${u.latest_version || 'newer'}`, 'info') : null,
           !m.identified && !ctx.plugins ? pill('unidentified', 'dead') : null,
           m.required_by ? pill(`needed by ${m.required_by}`, 'plum') : null,
@@ -239,7 +281,7 @@ export async function render(ctx) {
       body: frag(
         h('div.chiprow', { style: { marginBottom: '14px' } },
           m.version ? pill(m.version, 'ghost') : null,
-          m.source ? pill(m.source, 'ghost') : null,
+          sourceMark(m.source),
           pill(m.enabled ? 'enabled' : 'disabled', m.enabled ? 'ok' : 'dead')),
         h('div.mono.wrapany.muted', { style: { marginBottom: '14px' } }, m.file),
         (m.client_only_reasons || []).length

@@ -106,6 +106,15 @@ async def list_mods(server_id: str, directory: str = "mods") -> dict:
             "client_only": bool(record.get("client_only")),
             "client_only_reasons": record.get("client_only_reasons") or [],
             "client_only_guess": packs.is_client_only_jar(base),
+            # Which half of the game this jar actually runs on, in the
+            # publisher's own words. Recorded at install time where the
+            # catalogue states it, and filled in for everything else by the
+            # client-only scan, which already hashes every jar to ask.
+            # Absent means nobody has asked yet -- which the UI says, rather
+            # than guessing and being wrong.
+            "server_side": record.get("server_side"),
+            "client_side": record.get("client_side"),
+            "sides_from": record.get("sides_from"),
             "dependencies": record.get("dependencies") or [],
             "identified": bool(record.get("project_id")),
         })
@@ -115,6 +124,7 @@ async def list_mods(server_id: str, directory: str = "mods") -> dict:
         "count": len(mods),
         "enabled": sum(1 for m in mods if m["enabled"]),
         "client_only": sum(1 for m in mods if m["client_only"]),
+        "sides_known": sum(1 for m in mods if m.get("server_side")),
         "mods": mods,
         "pack": manifest.get("pack"),
         "minecraft": manifest.get("minecraft"),
@@ -263,6 +273,14 @@ async def add_mod(
         "logo": logo,
         "added_at": time.time(),
     }
+    # Modrinth states which side a project runs on; CurseForge does not, and
+    # those jars get their sides from the client-only scan instead. Recording
+    # it here means a mod installed today is tagged the moment it appears in
+    # the list rather than after a scan nobody thought to run.
+    if source == "modrinth" and project:
+        record["server_side"] = project.get("server_side")
+        record["client_side"] = project.get("client_side")
+        record["sides_from"] = "modrinth"
     if required_by:
         record["required_by"] = required_by
     if dependency_files:

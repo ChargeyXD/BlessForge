@@ -48,6 +48,15 @@
 
 <a href="#main" class="skiplink">Skip to the main content</a>
 
+<!-- The module graph, declared up front. Without these the browser learns
+     about core.js only after parsing app.js, and about the first view only
+     after parsing core.js — three round trips in a chain where one would do.
+     Only the modules EVERY route needs are listed; the views stay lazy. -->
+<link rel="modulepreload" href="/static/js/app.js">
+<link rel="modulepreload" href="/static/js/core.js">
+<link rel="modulepreload" href="/static/js/jobs.js">
+<link rel="modulepreload" href="/static/js/petals.js">
+
 <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

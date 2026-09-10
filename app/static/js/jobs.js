@@ -265,6 +265,22 @@ function paint() {
   mount(bodyEl, ...jobs.map(jobCard));
 }
 
+/* The art a job wears while it runs. Not decoration: an install that spends
+   four minutes on "Uploading pack files" looks identical to one that has
+   hung, and a thing that is visibly moving is the cheapest possible answer
+   to "is this still going". */
+function jobArt(rec) {
+  if (rec.status !== 'running') return null;
+  const step = (rec.step || '').toLowerCase();
+  const art = /upload|download|fetch|batch|pack file/.test(step)
+    ? 'pig-loadbar.gif'          // something is being carried across
+    : 'bee-working.gif';         // something is being worked on
+  return h('img', {
+    src: `/assets/${art}`, alt: '', width: 26, height: 26,
+    style: { imageRendering: 'pixelated', flex: 'none' },
+  });
+}
+
 function jobCard(rec) {
   const state = rec.status === 'done' ? 'done'
     : rec.status === 'error' ? 'error'
@@ -273,6 +289,7 @@ function jobCard(rec) {
 
   return h(`div.jobcard.${state}`,
     h('div.t',
+      jobArt(rec),
       h('span.grow', rec.title),
       h('span.mono.muted', duration(elapsed)),
       rec.status === 'running'

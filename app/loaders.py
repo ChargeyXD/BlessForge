@@ -407,15 +407,16 @@ CATALOGUE = [
      "blurb": "The Forge fork most 1.20.2+ packs moved to. Takes NeoForge "
               "mods; 1.20.1 also reads Forge ones."},
     {"key": "paper", "title": "Paper", "kind": "plugins",
-     "logo": None,
+     "logo": "/assets/loader-paper.png",
      "blurb": "No mods — Bukkit/Spigot plugins, and no client install for "
               "your players. The usual choice for a survival server."},
     {"key": "purpur", "title": "Purpur", "kind": "plugins",
-     "logo": None,
+     "logo": "/assets/loader-purpur.png",
      "blurb": "Paper with several hundred extra gameplay toggles. Runs "
               "every Paper plugin."},
     {"key": "folia", "title": "Folia", "kind": "plugins",
-     "logo": None,
+     # Folia has no mark of its own; it is Paper's fork and wears Paper's.
+     "logo": "/assets/loader-paper.png",
      "blurb": "Paper's regionised-threading fork, for very large player "
               "counts. Not every plugin supports it."},
     {"key": "vanilla", "title": "Vanilla", "kind": "none",
