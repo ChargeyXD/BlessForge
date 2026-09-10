@@ -732,6 +732,30 @@ async def download_file(server_id: str, rel_path: str) -> bytes:
         return resp.content
 
 
+async def stream_file(server_id: str, rel_path: str):
+    """Yield a file's bytes without ever holding all of them.
+
+    `download_file` buffers, which is correct for a mod jar being hashed and
+    wrong for a file manager: this container is capped at 1 GB and a world
+    region folder or a server jar is happily larger than that. A buffered
+    download of one of those is not a slow response, it is the container
+    being killed mid-request with nothing in the log to say why.
+    """
+    quoted = urllib.parse.quote(rel_path, safe="")
+    client = _client(timeout=1800)
+    try:
+        async with client.stream(
+            "GET", f"/api/v2/servers/{server_id}/files/{quoted}/download",
+            headers=_headers(),
+        ) as resp:
+            if resp.status_code >= 400:
+                raise CraftyError(f"download {rel_path} failed", resp.status_code)
+            async for chunk in resp.aiter_bytes(1024 * 256):
+                yield chunk
+    finally:
+        await client.aclose()
+
+
 async def wait_for_path(
     server_id: str, rel_path: str, timeout: float, poll: float = 3.0
 ) -> bool:

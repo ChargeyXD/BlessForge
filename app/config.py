@@ -87,6 +87,41 @@ DEFAULT_MEM_MAX = _int("DEFAULT_MEM_MAX", 6)
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", str(DATA_DIR / "cache")))
+
+# Small persistent state -- the client-only decision list, the chosen AI
+# endpoint, the update-sweep record.
+#
+# It lives in a SUBDIRECTORY, and that is the whole point. CasaOS creates the
+# bind mount as root and the app runs as uid 1000, so a file written straight
+# into DATA_DIR cannot be created at all -- and every one of these writes is
+# wrapped in a try/except, so the failure was silent. The entrypoint chowns
+# the subdirectories this app owns and deliberately never chowns DATA_DIR
+# itself (pointing the mount at Crafty's folder and then taking ownership of
+# it would turn a misconfiguration into someone else's outage), so anything
+# that must survive a restart belongs under here.
+STATE_DIR = Path(os.environ.get("STATE_DIR", str(DATA_DIR / "state")))
+
+
+def state_path(name: str) -> Path:
+    """Where a small state file lives, migrating one from the old location.
+
+    Versions before 2.1 wrote these into DATA_DIR directly. On a host where
+    that worked, the file is still there and still the user's data, so it is
+    moved rather than abandoned.
+    """
+    target = STATE_DIR / name
+    if target.exists():
+        return target
+    legacy = DATA_DIR / name
+    if legacy.exists():
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            legacy.replace(target)
+            return target
+        except OSError:
+            # Could not move it, but it is readable where it is.
+            return legacy
+    return target
 # Keep downloaded modpack archives after install (useful for re-installs).
 KEEP_CACHE = _bool("KEEP_CACHE", True)
 

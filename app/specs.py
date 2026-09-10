@@ -241,6 +241,33 @@ def recommend_memory(
     total = host.get("total_ram_gb") or 0
     available = host.get("available_ram_gb") or total
 
+    # Nothing was measured. This happens on a host whose /proc is not
+    # readable, and it used to end in a 1 GB heap being proposed with a
+    # straight face -- which is worse than not tuning at all, because a
+    # modded server on a 1 GB heap dies during load and blames the pack.
+    # Fall back to the configured default and say plainly that the number is
+    # a guess, so HOST_RAM_GB gets set rather than the pack getting blamed.
+    unmeasured = not total
+    if unmeasured:
+        heap = float(config.DEFAULT_MEM_MAX)
+        return {
+            "heap_gb": heap,
+            "requested_gb": round(pack_recommended_mb / 1024, 1)
+            if pack_recommended_mb else heap,
+            "ceiling_gb": heap,
+            "reserve_gb": 0.0,
+            "unmeasured": True,
+            "basis": "the configured default, because this host's memory "
+                     "could not be read",
+            "warnings": [
+                "BlessForge could not measure how much memory this machine "
+                f"has, so it is proposing the default {heap:g} GB rather than "
+                "guessing. Set HOST_RAM_GB (and HOST_CPU_COUNT) to describe "
+                "the machine Crafty runs on, and this becomes a real "
+                "calculation."
+            ],
+        }
+
     # Reserve for OS + other services: 25% of total, at least 1.5 GB, at most 4.
     reserve = min(4.0, max(1.5, total * 0.25))
     ceiling = max(1.0, min(total - reserve, available - 0.5 if available else total))
@@ -284,6 +311,8 @@ def recommend_memory(
         "requested_gb": round(wanted, 1),
         "ceiling_gb": round(ceiling, 1),
         "reserve_gb": round(reserve, 1),
+        "unmeasured": False,
+        "capped_by_host": heap < wanted,
         "basis": basis,
         "warnings": warnings,
     }

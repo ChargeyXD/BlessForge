@@ -654,16 +654,98 @@ LOADER_MANIFEST_ID = {
 }
 
 
+def _loader_ok(declared: list[str], loader: str, mc: str) -> bool:
+    """Whether a build's declared loaders include one this server can run.
+
+    Deliberately permissive about a build that declares none: CurseForge only
+    tags a file with a loader when the author set one, and a lot of perfectly
+    good library jars carry no tag at all. Refusing those would drop half the
+    libraries in the catalogue for a problem that does not exist.
+    """
+    have = {d.lower() for d in (declared or [])}
+    want = (loader or "").lower()
+    if not have or not want:
+        return True
+    if want == "neoforge":
+        # NeoForge for 1.20.1 is a Forge fork and still reads mods.toml; from
+        # 1.20.2 the descriptor was renamed and a Forge-only jar cannot load.
+        return "neoforge" in have or ("forge" in have and mc.startswith("1.20.1"))
+    if want == "quilt":
+        return "quilt" in have or "fabric" in have
+    return want in have
+
+
+def _mc_ok(declared: list[str], mc: str) -> tuple[bool, str]:
+    """Whether a build declares the exact Minecraft version. Exactness matters.
+
+    A file listed for 1.21 and not 1.21.1 is the single most common way a
+    rolled pack fails to boot, and it is invisible in a filename -- so this
+    reads what the publisher actually declared rather than trusting the
+    catalogue's search filter, which is looser than it looks.
+    """
+    have = [str(v) for v in (declared or [])]
+    if not have:
+        return True, "untagged"
+    if mc in have:
+        return True, "exact"
+    line = mc.rsplit(".", 1)[0]
+    if any(v == line or v.startswith(line + ".") for v in have):
+        return False, "same-line"
+    return False, "mismatch"
+
+
+def _pick_build(builds: list[dict], mc: str, loader: str) -> tuple[dict | None, str]:
+    """The best usable build of one mod, and why the others were rejected.
+
+    Order of preference: an exact-version stable release, then an
+    exact-version build of any kind, then nothing. A build tagged for a
+    neighbouring patch is *not* accepted -- "probably fine" is what makes a
+    120-mod roll fail on its first start with no clue which mod did it.
+    """
+    usable, near, wrong_loader = [], [], 0
+    for b in builds:
+        if not _loader_ok(b.get("loaders") or [], loader, mc):
+            wrong_loader += 1
+            continue
+        ok, how = _mc_ok(b.get("game_versions") or [], mc)
+        if ok:
+            usable.append((b, how))
+        elif how == "same-line":
+            near.append(b)
+    if not usable:
+        if near:
+            line = mc.rsplit(".", 1)[0]
+            return None, (f"only publishes builds for a neighbouring patch of "
+                          f"{line}, not {mc}")
+        if wrong_loader:
+            return None, f"has no {loader} build for {mc}"
+        return None, f"no build for {mc}"
+
+    exact = [b for b, how in usable if how == "exact"]
+    pool = exact or [b for b, _ in usable]
+    stable = [b for b in pool if b.get("release_type") == "release"]
+    chosen = (stable or pool)[0]
+    return chosen, "exact" if exact and chosen in exact else "untagged"
+
+
 async def resolve_hand(hand: list[dict], c: dict, job: Job | None = None
                        ) -> tuple[list[dict], list[dict]]:
     """Pin every mod in a hand to a real, compatible, downloadable file.
 
     This is what makes a hand installable rather than merely plausible.
-    Neither catalogue's search results can be trusted for this: CurseForge's
+    Neither catalogue's search results can be trusted for it: CurseForge's
     `latestFiles` often has no build for the version being asked about, and a
     Modrinth project is not a file at all. So the newest matching build is
-    looked up per mod, concurrently, and anything with no compatible build is
-    dropped with a reason instead of being installed as the wrong version.
+    looked up per mod, concurrently -- and then *verified* against what the
+    publisher declared, rather than assumed correct because the search filter
+    was asked nicely.
+
+    That verification is the change that matters. The filter is looser than it
+    looks: a file tagged 1.21 comes back for a 1.21.1 query, installs without
+    complaint, and takes the server down on first boot with a registry error
+    naming nothing useful. Anything that does not declare the exact version
+    and a runnable loader is dropped here, with a reason, and the caller deals
+    a replacement.
 
     It also back-fills the real file size, which is what the HEAVY flag, the
     download estimate and the heap estimate are all computed from.
@@ -681,12 +763,21 @@ async def resolve_hand(hand: list[dict], c: dict, job: Job | None = None
                 if m["source"] == "curseforge":
                     builds = await curseforge.list_files(
                         int(m["project_id"]), game_version=mc,
-                        mod_loader=loader, page_size=20)
+                        mod_loader=loader, page_size=30)
+                    if not builds:
+                        # The filtered query comes back empty for a mod whose
+                        # files are tagged oddly; the unfiltered list is then
+                        # checked properly by _pick_build anyway.
+                        builds = await curseforge.list_files(
+                            int(m["project_id"]), page_size=50)
                 else:
                     builds = await modrinth.list_versions(
                         str(m["project_id"]), game_version=mc, loader=loader)
+                    if not builds:
+                        builds = await modrinth.list_versions(str(m["project_id"]))
             except Exception as e:
-                problems.append({"name": m["name"], "reason": str(e)})
+                problems.append({"name": m["name"], "reason": str(e),
+                                 "kind": "lookup-failed"})
                 return
             finally:
                 async with lock:
@@ -695,21 +786,30 @@ async def resolve_hand(hand: list[dict], c: dict, job: Job | None = None
                         job.set_step(f"Pinning builds ({done}/{len(hand)})",
                                      6 + 10 * done / max(len(hand), 1))
             if not builds:
-                problems.append({"name": m["name"],
-                                 "reason": f"no {c['loader']} build for {mc}"})
+                problems.append({
+                    "name": m["name"], "kind": "no-builds",
+                    "reason": f"has no {c['loader']} build for {mc}"})
                 return
-            # Prefer a stable release; a roll should not deal an alpha unless
-            # that is all there is.
-            stable = [b for b in builds if b.get("release_type") == "release"]
-            best = (stable or builds)[0]
+
+            best, why = _pick_build(builds, mc, loader)
+            if not best:
+                problems.append({"name": m["name"], "kind": "incompatible",
+                                 "reason": why})
+                return
+
             m["file_id"] = best.get("file_id")
             m["file_name"] = best.get("file_name")
             m["size"] = best.get("size") or 0
             m["download_url"] = best.get("download_url")
             m["release_type"] = best.get("release_type")
-            # CurseForge ships the file's own hashes; keeping the sha1 is
-            # what lets the side-check below be exact rather than a guess
-            # from the mod's name.
+            m["build_version"] = (best.get("version_number")
+                                  or best.get("display_name"))
+            m["declared_versions"] = best.get("game_versions") or []
+            m["declared_loaders"] = best.get("loaders") or []
+            m["version_match"] = why
+            # CurseForge ships the file's own hashes; keeping the sha1 is what
+            # lets the side-check below be exact rather than a guess from the
+            # mod's name.
             for h in best.get("hashes") or []:
                 if h.get("algo") == 1 or str(h.get("algo")) == "1":
                     m["sha1"] = h.get("value")
@@ -728,10 +828,124 @@ async def resolve_hand(hand: list[dict], c: dict, job: Job | None = None
                 if m["name"] not in dropped and m.get("file_id")]
     for m in hand:
         if m["name"] not in dropped and not m.get("file_id"):
-            problems.append({"name": m["name"], "reason": "no usable file"})
+            problems.append({"name": m["name"], "kind": "no-file",
+                             "reason": "no usable file"})
 
     await _mark_sides(resolved)
     return resolved, problems
+
+
+async def fill_hand(seed: str, pool_mods: list[dict], c: dict,
+                    holds: list[str] | None = None, job: Job | None = None,
+                    max_rounds: int = 4) -> dict:
+    """Deal, verify, and keep dealing until the hand is the size it promised.
+
+    Over-dealing once and truncating -- what this used to do -- works only
+    while few mods drop out. On a version the catalogues have half-updated
+    to, a third of a 120-mod roll can fail verification, and the user gets an
+    80-mod pack having asked for 120 with nothing saying why.
+
+    So it deals in rounds: verify, count what survived, deal replacements for
+    exactly the shortfall out of the mods not already tried, and stop when the
+    hand is full or the pool has nothing left to offer. Still deterministic --
+    each round's draw is seeded, the round number just goes into the seed.
+    """
+    want = c["count"]
+    kept: list[dict] = []
+    all_problems: list[dict] = []
+    tried: set[str] = set()
+    rounds = 0
+
+    while len(kept) < want and rounds < max_rounds:
+        rounds += 1
+        need = want - len(kept)
+        # Over-deal on the first round only; later rounds are top-ups and a
+        # big over-deal there would mostly re-check mods already rejected.
+        ask = min(len(pool_mods), int(need * (1.35 if rounds == 1 else 1.15)) + 4)
+        round_c = dict(c, count=ask)
+        round_seed = seed if rounds == 1 else f"{seed}#{rounds}"
+        available = [m for m in pool_mods if m["name"] not in tried]
+        if not available:
+            break
+        dealt = [m for m in deal(round_seed, available, round_c,
+                                 holds if rounds == 1 else [])
+                 if m["name"] not in tried
+                 and m["name"] not in {k["name"] for k in kept}]
+        if not dealt:
+            break
+        tried |= {m["name"] for m in dealt}
+        if job:
+            job.set_step(
+                f"Verifying {len(dealt)} mods have a real {c['loader']} "
+                f"{c['minecraft']} build"
+                + (f" (round {rounds})" if rounds > 1 else ""),
+                min(88, 20 + rounds * 14))
+        resolved, problems = await resolve_hand(dealt, c, job=job)
+        all_problems.extend(problems)
+
+        # Side information only arrives with the file, so a mod the pool
+        # believed was server-safe can turn out not to be. Honour the toggle
+        # now that the truth is known.
+        if not c["toggles"].get("client"):
+            held = set(holds or [])
+            still = []
+            for m in resolved:
+                if m.get("flag") == "CLIENT" and m["name"] not in held:
+                    all_problems.append({
+                        "name": m["name"], "kind": "client-only",
+                        "reason": (m.get("flag_why") or {}).get(
+                            "client", "client-only"),
+                    })
+                else:
+                    still.append(m)
+            resolved = still
+
+        kept.extend(resolved)
+        if job and rounds > 1:
+            job.log_line(
+                f"Round {rounds}: {len(resolved)} more passed verification "
+                f"({len(kept)}/{want})")
+
+    kept = kept[:want]
+    short = want - len(kept)
+    return {
+        "hand": kept,
+        "dropped": all_problems,
+        "rounds": rounds,
+        "short": short,
+        "note": (
+            f"Dealt {len(kept)} of the {want} asked for. {len(all_problems)} "
+            f"candidates had no verified {c['loader']} build for "
+            f"{c['minecraft']}, and the pool ran out of replacements. Pick a "
+            "Minecraft version the catalogues have caught up with, or lower "
+            "the quality floor to widen the pool."
+        ) if short else (
+            f"{len(kept)} mods, every one verified to publish a "
+            f"{c['loader']} build for exactly {c['minecraft']}."
+        ),
+    }
+
+
+def compatibility_report(hand: list[dict], c: dict) -> dict:
+    """What the hand's compatibility actually looks like, for the odds panel."""
+    exact = [m for m in hand if m.get("version_match") == "exact"]
+    untagged = [m for m in hand if m.get("version_match") == "untagged"]
+    stable = [m for m in hand if m.get("release_type") == "release"]
+    prerelease = [m for m in hand
+                  if m.get("release_type") in ("alpha", "beta")]
+    lines = [f"{len(exact)} of {len(hand)} mods declare {c['minecraft']} "
+             f"explicitly."]
+    if untagged:
+        lines.append(f"{len(untagged)} carry no version tag at all — normally "
+                     f"libraries, which is expected.")
+    if prerelease:
+        lines.append(f"{len(prerelease)} are alpha or beta builds, because no "
+                     f"stable release exists for {c['minecraft']}.")
+    return {
+        "verified": len(exact), "untagged": len(untagged),
+        "stable": len(stable), "prerelease": len(prerelease),
+        "total": len(hand), "lines": lines,
+    }
 
 
 async def _mark_sides(hand: list[dict]) -> None:

@@ -38,10 +38,14 @@ COPY app/ ./app/
 # The app runs unprivileged as uid 1000. The container still STARTS as root so
 # the entrypoint can hand it a writable /data -- CasaOS creates bind-mount
 # directories as root, and an image that drops privileges in the Dockerfile can
-# never fix that from the inside. entrypoint.sh chowns only the three
-# directories this app owns and then drops to studio via setpriv.
+# never fix that from the inside. entrypoint.sh chowns only the
+# directories this app owns and then drops to studio via setpriv. Every
+# directory the app writes into has to appear in both lists -- those writes
+# are wrapped in try/except, so one left off is not an error anybody sees,
+# it is a feature that silently never persists.
 RUN useradd -u 1000 -m studio \
- && mkdir -p /data/cache /data/downloads /data/uploads /app \
+ && mkdir -p /data/cache /data/downloads /data/uploads /data/state \
+            /data/backups /data/exports /data/roulette-exports /app \
  && chown -R studio:studio /data /app
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

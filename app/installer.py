@@ -26,7 +26,6 @@ Flow, whichever archive shape we get:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import posixpath
 import re
@@ -40,7 +39,7 @@ from typing import Any
 import httpx
 
 from app import (cache, config, crafty, curseforge, jarmeta, modrinth,
-                 optimizer, packs, properties, uploads)
+                 optimizer, packs, properties, provision, uploads)
 from app import preflight as preflight_mod
 from app import specs
 from app.jobs import Job
@@ -418,19 +417,19 @@ async def _download_manifest_mods(
                     blob = None if cached else await curseforge.download_cached(
                         meta, client)
 
-                    # With no review to go on, fall back to the jar's own
-                    # declaration: Fabric/Quilt state their side outright, and
-                    # a client-only mod left enabled takes the server down.
+                    # With no review to go on, judge the jar on the same
+                    # evidence the review would have used. It used to be a
+                    # two-line fallback (environment=client, then the name
+                    # list), which meant an unreviewed install and a reviewed
+                    # one could disagree about the same jar.
                     if not client_only and disable_files is None and skip_client_only:
                         probe = blob if blob is not None else cached.read_bytes()
-                        info = jarmeta.parse(probe, fname)
+                        verdict = preflight_mod.quick_verdict(fname, probe)
                         del probe
-                        if info.get("side") == "client":
+                        if verdict["verdict"] == "client":
                             client_only = True
-                            why = ["the jar declares environment=client"]
-                        elif packs.is_client_only_jar(fname):
-                            client_only = True
-                            why = ["name matches a known client-only mod"]
+                            why = verdict.get("reasons") or [
+                                "judged client-only from the jar's contents"]
 
                     # A jar built for another loader is not a judgement call:
                     # Forge cannot read neoforge.mods.toml and will silently
@@ -597,157 +596,17 @@ async def _push_batches(
             job.log_line(f"Could not remove temp archive {zip_name}", "warn")
 
 
-# Crafty's create call points `execution_command` at the loader INSTALLER
-# (`-jar forge-installer-1.20.1.jar --installServer`) and only rewrites it to
-# the real launch command once its own installer thread has finished. So the
-# presence of a command means nothing; the absence of this marker is what
-# says the loader is actually installed.
-INSTALLER_MARKER = "--installServer"
-MODDED_LOADERS = ("forge-installer", "neoforge-installer")
-
-# Crafty sleeps 3s before starting the download, then allows three retries
-# with a 2/4/8s backoff -- about 17s to fail. Past this the jar is not coming.
-LOADER_DOWNLOAD_GRACE = 75
-
-# Crafty streams the jar straight to its final path, so a download in flight
-# shows up as a file whose mtime keeps advancing. If nothing in the directory
-# has moved for this long and the loader still is not installed, whatever was
-# happening has stopped -- including the case where the connection died
-# mid-stream and left a truncated jar behind, which "is there a .jar" cannot
-# see on its own.
-#
-# Three minutes, not one: Crafty reports mtimes at minute resolution, so a
-# perfectly healthy install can look motionless for a while.
-LOADER_STALL = 180
+# The loader ladder -- "Crafty said 201" is not the same as "this instance can
+# start" -- lives in app/provision.py, because a blank instance needs exactly
+# the same recovery and a second copy of it would drift. These are the thin
+# adapters that turn a PackPlan into the arguments it wants.
 
 
-def _loader_installed(loader_type: str, command: str, names: set[str],
-                      executable: str) -> bool:
-    if loader_type in MODDED_LOADERS:
-        # Forge and NeoForge are done when Crafty has replaced the installer
-        # command, which it only does after the install actually succeeded.
-        return bool(command) and INSTALLER_MARKER not in command
-    # Fabric, vanilla, Paper and friends run the downloaded jar directly.
-    return bool(executable) and (executable in names
-                                 or any(n.endswith(".jar") for n in names))
-
-
-async def _wait_for_loader(job: Job, server_id: str, plan: PackPlan) -> None:
-    """Block until Crafty has finished installing the loader -- or fix it.
-
-    Crafty downloads the loader jar on a daemon thread and, when that download
-    fails, logs a single line to its own console and stops. Nothing reaches the
-    API: the create returned 201, the record still names an executable, and the
-    server directory holds nothing but eula.txt and server.properties. Waiting
-    politely for that instance means waiting forever, which is exactly what
-    this function used to do.
-
-    So: watch for the jar, and if it never arrives, fetch it from the same
-    index Crafty uses and finish the install ourselves.
-    """
-    job.set_step("Waiting for Crafty to install the loader", 60)
-    deadline = time.time() + config.SERVER_READY_TIMEOUT
-    grace_until = time.time() + LOADER_DOWNLOAD_GRACE
-    last_sig: dict[str, str] = {}
-    last_change = time.time()
-    repaired = False
-    announced = False
-
-    while time.time() < deadline:
-        try:
-            entries = await crafty.list_dir(server_id, ".")
-            names = {k for k in entries if k != "root_path"}
-            server = await crafty.get_server(server_id)
-            executable = server.get("executable") or ""
-            command = server.get("execution_command") or ""
-
-            if _loader_installed(plan.crafty_loader, command, names, executable):
-                job.log_line(f"Loader install complete ({len(names)} entries)")
-                return
-
-            jar_here = any(n.endswith(".jar") for n in names)
-            if jar_here and not announced:
-                announced = True
-                job.set_step("Crafty is installing the loader", 62)
-
-            # Names plus mtimes: a jar still being written moves, an abandoned
-            # one does not.
-            sig = {n: str((entries.get(n) or {}).get("modified", "")) for n in names}
-            if sig != last_sig:
-                last_sig = sig
-                last_change = time.time()
-
-            stalled = time.time() - last_change > LOADER_STALL
-            # Either the download never started, or it started and stopped
-            # without finishing. Both mean the loader is not coming.
-            if (not jar_here and time.time() > grace_until) or stalled:
-                if repaired:
-                    raise RuntimeError(
-                        "Crafty could not download the "
-                        f"{plan.crafty_loader} jar for {plan.mc_version}, and "
-                        "installing it directly did not work either. Its jar "
-                        "mirror (jars.arcadiatech.org) may be down -- try again "
-                        "in a few minutes."
-                    )
-                repaired = True
-                await _repair_loader_jar(job, server_id, plan, executable)
-                grace_until = time.time() + LOADER_DOWNLOAD_GRACE
-                last_change = time.time()
-                last_sig = {}
-                continue
-        except crafty.CraftyError:
-            pass
-        await asyncio.sleep(5)
-
-    raise RuntimeError(
-        f"Crafty never finished installing {plan.crafty_loader} for "
-        f"{plan.mc_version} (waited {config.SERVER_READY_TIMEOUT}s). The "
-        "instance exists but has no launcher; delete it in Crafty and retry."
+async def _wait_for_loader(job: Job, server_id: str, plan: PackPlan) -> dict:
+    return await provision.ensure_loader(
+        job, server_id, family=plan.loader or plan.crafty_loader,
+        mc_version=plan.mc_version, crafty_loader=plan.crafty_loader,
     )
-
-
-async def _repair_loader_jar(
-    job: Job, server_id: str, plan: PackPlan, executable: str
-) -> None:
-    """Supply the loader jar Crafty failed to download, then install it.
-
-    Uses Crafty's own jar index, so the file is byte-for-byte what Crafty
-    would have fetched, sha256 included.
-    """
-    job.log_line(
-        "Crafty's loader download failed (its jar mirror did not answer). "
-        "Fetching the jar directly instead.",
-        "warn",
-    )
-    job.set_step("Fetching the loader jar Crafty could not", 61)
-
-    catalog = await crafty.jar_catalog()
-    src = crafty.jar_source(catalog, "mc_java_servers", plan.crafty_loader,
-                            plan.mc_version)
-    if not src:
-        raise RuntimeError(
-            f"Crafty's jar index has no {plan.crafty_loader} build for "
-            f"Minecraft {plan.mc_version}."
-        )
-
-    async with httpx.AsyncClient(timeout=600, follow_redirects=True) as client:
-        payload = await _get_with_retries(client, src["url"])
-
-    if src.get("sha256"):
-        digest = hashlib.sha256(payload).hexdigest()
-        if digest != src["sha256"]:
-            raise RuntimeError(
-                "The loader jar downloaded from Crafty's mirror is corrupt "
-                f"(sha256 {digest[:12]}… expected {src['sha256'][:12]}…)."
-            )
-
-    name = executable or f"{plan.crafty_loader}-{plan.mc_version}.jar"
-    name = name.split("/")[-1]
-    await crafty.upload_file(server_id, ".", name, payload)
-    job.log_line(f"Uploaded {name} ({len(payload) / 1048576:.1f} MB)")
-
-    if plan.crafty_loader in MODDED_LOADERS:
-        await _run_loader_installer(job, server_id, plan)
 
 
 async def _get_with_retries(client: httpx.AsyncClient, url: str,
@@ -762,76 +621,6 @@ async def _get_with_retries(client: httpx.AsyncClient, url: str,
             last = e
             await asyncio.sleep(2 ** i)
     raise RuntimeError(f"Could not download {url}: {last}")
-
-
-async def _run_loader_installer(job: Job, server_id: str, plan: PackPlan) -> None:
-    """Run the loader installer the way Crafty would have, then fix the command.
-
-    Crafty's create call already left the instance pointing at
-    `-jar <installer>.jar --installServer`, so starting the server *is* running
-    the installer. What Crafty normally does afterwards -- rewrite `executable`
-    and `execution_command` to the real launch line -- lives on the thread that
-    died with the download, so it has to be done here.
-    """
-    job.set_step("Running the loader installer", 63)
-    await crafty.server_action(server_id, "start_server")
-
-    deadline = time.time() + min(900, config.SERVER_READY_TIMEOUT)
-    while time.time() < deadline:
-        await asyncio.sleep(5)
-        try:
-            entries = await crafty.list_dir(server_id, ".")
-            names = {k for k in entries if k != "root_path"}
-        except crafty.CraftyError:
-            continue
-        if "libraries" in names and ("run.sh" in names or "run.bat" in names):
-            await asyncio.sleep(5)      # let the installer flush its last writes
-            break
-    else:
-        raise RuntimeError(
-            "The loader installer did not finish. Check the instance's console "
-            "in Crafty for what it reported."
-        )
-
-    await _rewrite_modded_command(job, server_id, plan)
-
-
-# Mirrors Crafty's own post-install rewrite (app/classes/installers/modded.py):
-# read the run script the installer generated and turn it into the launch
-# command. Getting this wrong means the next start re-runs the installer
-# instead of the server.
-_RUN_SCRIPT = re.compile(
-    r"java @([a-zA-Z0-9_.]+) @([a-z./\-]+)([0-9.\-]+(?:-[a-zA-Z0-9]+)?)/([a-z_0-9]+\.txt)"
-)
-
-
-async def _rewrite_modded_command(job: Job, server_id: str, plan: PackPlan) -> None:
-    script = ""
-    for candidate in ("run.sh", "run.bat"):
-        try:
-            script = await crafty.read_file(server_id, candidate)
-            if script:
-                break
-        except crafty.CraftyError:
-            continue
-
-    match = _RUN_SCRIPT.search(script or "")
-    if not match:
-        job.log_line(
-            "The loader installed, but its run script could not be parsed -- "
-            "the instance may need its launch command set by hand in Crafty.",
-            "warn",
-        )
-        return
-
-    args_file, lib_path, version, txt = match.groups()
-    exec_path = f"{lib_path}{version}/"
-    loader = "neoforge" if "neoforge" in plan.crafty_loader else "forge"
-    await crafty.patch_server(server_id, {
-        "executable": f"{exec_path}{loader}-{version}-server.jar",
-        "execution_command": f"java @{args_file} @{exec_path}{txt} nogui",
-    })
-    job.log_line(f"Launch command set for {loader} {version}")
 
 
 async def _apply_server_settings(

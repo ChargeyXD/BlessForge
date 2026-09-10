@@ -1,6 +1,6 @@
 import os, pathlib, sys
 sys.path.insert(0, os.environ.get("BF_REPO", str(pathlib.Path(__file__).resolve().parents[2])))
-from app.installer import _loader_installed, _RUN_SCRIPT
+from app.provision import loader_installed as _loader_installed, _RUN_SCRIPT
 from app.crafty import java_in_command, required_java_major, uptime_seconds
 
 ok = []

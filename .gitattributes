@@ -1,0 +1,24 @@
+# Line endings.
+#
+# `core.autocrlf` already normalises to LF *in the index*, so what is pushed is
+# always correct. The risk is the working copy: on Windows these files get CRLF
+# on checkout, and `docker build` copies the working tree rather than the
+# index — so an image built on Windows ships an entrypoint whose shebang reads
+# `#!/bin/sh\r` and dies with "bad interpreter". Pinning the ones that are
+# executed by a shell inside the container makes that impossible rather than
+# unlikely.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+entrypoint.sh text eol=lf
+
+# Everything else is normalised in the index and left to the platform in the
+# working copy, which is the sane default.
+* text=auto
+
+# Binary, so git never tries.
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.woff2 binary
+*.zip  binary
+*.ico  binary

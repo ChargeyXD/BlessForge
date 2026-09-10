@@ -124,7 +124,7 @@ def is_safe_target(rel: str) -> bool:
 
 
 def mc_from_neoforge(version: str) -> str:
-    """'21.1.249' -> '1.21.1'.
+    """'21.1.249' -> '1.21.1'; '26.2.0.84' -> '26.2'.
 
     NeoForge dropped Forge's `<mc>-<loader>` compound version and encodes the
     game version in its own instead: major is Minecraft's minor, minor is
@@ -136,11 +136,16 @@ def mc_from_neoforge(version: str) -> str:
     path is the only thing standing between it and "could not determine the
     Minecraft version for this pack".
     """
-    m = re.match(r"^(\d+)\.(\d+)(?:\.\d+)?", (version or "").strip())
-    if not m:
+    parts = (version or "").strip().split(".")
+    if len(parts) < 3 or not all(p.isdigit() for p in parts[:3]):
         return ""
-    minor, patch = m.group(1), m.group(2)
-    return f"1.{minor}" if patch == "0" else f"1.{minor}.{patch}"
+    a, b, c = parts[0], parts[1], parts[2]
+    # Four parts is the year-based scheme NeoForge moved to alongside
+    # Minecraft: 26.2.0.84 is for Minecraft 26.2, 26.1.2.108 for 26.1.2. Three
+    # parts is the 1.x era, where the leading 1 is implied.
+    if len(parts) >= 4:
+        return f"{a}.{b}" if c == "0" else f"{a}.{b}.{c}"
+    return f"1.{a}" if b == "0" else f"1.{a}.{b}"
 
 
 def parse_loader_id(loader_id: str) -> tuple[str, str]:

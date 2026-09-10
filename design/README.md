@@ -1,5 +1,14 @@
 # design/ — the Claude Design source for the 2026-08-28 UI rebuild
 
+> **HISTORICAL.** The front end this specified was replaced on 2026-09-10 by a
+> hand-built one on the pink shrine fox theme (`app/static/css` +
+> `app/static/js`). The canvas runtime it describes — `<x-dc>`, `support.js`,
+> the vendored React — is gone from the repo. This is kept for two reasons:
+> the art in `app/static/img` came from here, and the "Where the design
+> guessed wrong" section below is still an accurate list of things that are
+> not true about this app. Do not read it as a description of the current UI.
+
+
 `BlessForge.dc.html` is the canvas export from the Claude Design project
 `2a040811-41d8-40af-84c2-f94597e9d192` ("BlessForge Server Diagnostics"),
 fetched through the DesignSync MCP. It is the **specification** for the new

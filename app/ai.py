@@ -189,7 +189,7 @@ def _action_catalogue() -> str:
 # because it depends on what is running on the box today.
 
 LOCAL_URL = os.environ.get("OLLAMA_LOCAL_URL", "http://localhost:11434").rstrip("/")
-_ENDPOINT_FILE = config.DATA_DIR / "ai-endpoint.txt"
+_ENDPOINT_FILE = config.state_path("ai-endpoint.txt")
 _endpoint: str | None = None
 
 

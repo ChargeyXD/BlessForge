@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-import hashlib
 import json
 import re
 import shutil
@@ -19,6 +18,7 @@ from app import (
     ai,
     backups,
     cache,
+    clientscan,
     config,
     configs,
     crafty,
@@ -26,11 +26,16 @@ from app import (
     deps,
     diagnostics,
     exporter,
+    files,
     installer,
+    loaders,
     modrinth,
     mods as modmgr,
     optimizer,
+    players,
+    plugins,
     properties,
+    provision,
     roulette,
     smoketest,
     specs,
@@ -54,7 +59,7 @@ async def _lifespan(_app: FastAPI):
             pass
 
 
-app = FastAPI(title="BlessForge", version="2.0.0", lifespan=_lifespan)
+app = FastAPI(title="BlessForge", version="2.1.0", lifespan=_lifespan)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -173,25 +178,53 @@ async def health() -> dict:
 
 
 def _storage_check() -> dict:
-    probe = config.CACHE_DIR / ".write-probe"
-    try:
-        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        probe.write_text("ok")
-        probe.unlink()
-    except Exception as e:
-        looks_like_crafty = any(
-            (config.DATA_DIR / name).exists()
-            for name in ("crafty.sqlite", "servers", "data/servers")
-        )
-        hint = (
-            f"{config.DATA_DIR} looks like Crafty's own data directory. "
-            "BlessForge needs a folder of its own -- point the mount at "
-            "/DATA/AppData/blessforge/data."
-            if looks_like_crafty
-            else f"{config.DATA_DIR} is not writable by the app (uid 1000)."
-        )
-        return {"ok": False, "error": f"{hint} ({e.__class__.__name__})",
-                "path": str(config.DATA_DIR)}
+    """Can this app write the two places it has to write?
+
+    Both, not just the cache. They fail independently: the entrypoint chowns
+    each directory by name, so one left off the list leaves exactly that one
+    unwritable -- and every write into them is wrapped in a try/except, which
+    means the symptom is not an error anybody sees, it is a feature that
+    quietly never persists. `state` holds the client-only decision list, the
+    chosen AI endpoint and the update-sweep record.
+    """
+    targets = (
+        ("cache", config.CACHE_DIR,
+         "downloads will not be cached, so every install re-fetches "
+         "everything"),
+        ("state", config.STATE_DIR,
+         "your client-only decisions, the chosen AI endpoint and the "
+         "update-sweep record will not survive a restart"),
+    )
+    for label, directory, consequence in targets:
+        probe = directory / ".write-probe"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            probe.write_text("ok")
+            probe.unlink()
+        except Exception as e:      # noqa: BLE001 -- reported, not raised
+            # A mount pointed at Crafty's own data directory is the one
+            # mistake worth naming out loud, because BlessForge would
+            # otherwise look merely broken.
+            looks_like_crafty = any(
+                (config.DATA_DIR / name).exists()
+                for name in ("crafty.sqlite", "servers", "data/servers")
+            )
+            if looks_like_crafty:
+                hint = (
+                    f"{config.DATA_DIR} looks like Crafty's own data "
+                    "directory. BlessForge needs a folder of its own -- point "
+                    "the mount at /DATA/AppData/blessforge/data."
+                )
+            else:
+                hint = (
+                    f"{directory} is not writable by the app (uid 1000), so "
+                    f"{consequence}. Recreate the container so the entrypoint "
+                    "can take ownership of it."
+                )
+            return {"ok": False,
+                    "error": f"{hint} ({e.__class__.__name__})",
+                    "path": str(directory), "which": label}
+
     free = None
     try:
         free = round(shutil.disk_usage(str(config.DATA_DIR)).free / 1024 ** 3, 1)
@@ -1249,39 +1282,31 @@ async def roulette_roll(body: dict = Body(default={})) -> dict:
         allowed = roulette.eligible(pool["mods"], c)
         if len(allowed) < 5:
             raise RuntimeError(
-                f"Only {len(allowed)} mods pass these constraints — not enough to "
+                f"Only {len(allowed)} mods pass these constraints - not enough to "
                 "deal a hand. Un-ban a category or drop the quality floor."
             )
-        # Deal generously, then pin real builds and drop whatever has none, so
-        # the hand shown is one that can actually be installed. Over-dealing
-        # first means a few unavailable mods do not silently shrink the pack.
-        wide = dict(c, count=min(len(allowed), int(c["count"] * 1.35) + 4))
-        dealt = roulette.deal(seed, pool["mods"], wide, holds)
-        j.set_step(f"Pinning a build for {len(dealt)} mods", 20)
-        hand, dropped = await roulette.resolve_hand(dealt, c, job=j)
+        # Deal in rounds rather than over-dealing once: every mod is verified
+        # against what its publisher actually declares, and on a version the
+        # catalogues have half-updated to a third of a hand can fail that. A
+        # single over-deal silently hands back a short pack; rounds top it up.
+        filled = await roulette.fill_hand(seed, pool["mods"], c, holds, job=j)
+        hand, dropped = filled["hand"], filled["dropped"]
+        for p in dropped[:12]:
+            j.log_line(f"Dropped {p['name']}: {p['reason']}", "warn")
+        if len(dropped) > 12:
+            j.log_line(f"...and {len(dropped) - 12} more", "warn")
+        j.log_line(filled["note"])
 
-        # Side information only arrives with the file, so a mod the pool
-        # believed was server-safe can turn out not to be. Honour the toggle
-        # now that the truth is known, and use the over-deal to replace what
-        # leaves rather than handing back a short pack.
-        if not c["toggles"].get("client"):
-            kept = []
-            for m in hand:
-                if m.get("flag") == "CLIENT" and m["name"] not in holds:
-                    dropped.append({
-                        "name": m["name"],
-                        "reason": (m.get("flag_why") or {}).get("client", "client-only"),
-                    })
-                else:
-                    kept.append(m)
-            hand = kept
-        hand = hand[: c["count"]]
         j.set_step("Reading the odds", 94)
         return {
             "seed": seed,
             "constraints": c,
             "hand": hand,
             "dropped": dropped,
+            "short": filled["short"],
+            "rounds": filled["rounds"],
+            "fill_note": filled["note"],
+            "compatibility": roulette.compatibility_report(hand, c),
             "summary": roulette.summarise(hand, c, specs.effective_host()),
             "pool": _pool_view(pool, allowed, c),
         }
@@ -1814,27 +1839,81 @@ async def ai_set_endpoint(body: dict = Body(...)) -> dict:
     return {"active": url, "items": ai.endpoints(), "status": await ai.status()}
 
 
-# --- the client-only whitelist -----------------------------------------
+# --- the client-only allow / block list --------------------------------
+#
+# Two directions, one list. "This mod is fine on a server whatever the check
+# says" and "this mod is client-only whatever it claims" are both decisions
+# only the operator can make, and both have to survive a version bump.
 
 
 @app.get("/api/whitelist")
-async def whitelist_list() -> dict:
-    """Mods the operator has said are safe on a server, whatever the check says."""
-    return {"items": whitelist.items()}
+async def whitelist_list(server_id: str | None = None,
+                         verdict: str | None = None) -> dict:
+    """Every decision the operator has recorded about the review."""
+    return {
+        "items": whitelist.items(server_id=server_id, verdict=verdict),
+        "counts": {
+            "allow": len(whitelist.items(verdict=whitelist.ALLOW)),
+            "block": len(whitelist.items(verdict=whitelist.BLOCK)),
+        },
+        "verdicts": [whitelist.ALLOW, whitelist.BLOCK],
+    }
 
 
 @app.post("/api/whitelist")
 async def whitelist_add(body: dict = Body(...)) -> dict:
     file_name = (body.get("file") or body.get("file_name") or "").strip()
-    if not file_name:
-        raise HTTPException(400, "file is required")
-    return whitelist.add(file_name, name=body.get("name") or "",
-                         reason=body.get("reason") or "")
+    if not (file_name or body.get("mod_id") or body.get("project_id")):
+        raise HTTPException(
+            400, "a file name, mod id or project id is required")
+    try:
+        return whitelist.add(
+            file_name,
+            name=body.get("name") or "",
+            reason=body.get("reason") or "",
+            verdict=(body.get("verdict") or whitelist.ALLOW),
+            scope=body.get("scope") or whitelist.GLOBAL,
+            mod_id=body.get("mod_id"),
+            project_id=body.get("project_id"),
+            source=body.get("source"),
+            evidence=body.get("evidence") or [],
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.delete("/api/whitelist/{key}")
-async def whitelist_remove(key: str) -> dict:
-    return {"removed": whitelist.remove(key)}
+async def whitelist_remove(key: str, scope: str | None = None) -> dict:
+    return {"removed": whitelist.remove(key, scope=scope)}
+
+
+@app.post("/api/whitelist/clear")
+async def whitelist_clear(body: dict = Body(default={})) -> dict:
+    return {"removed": whitelist.clear(scope=body.get("scope"))}
+
+
+@app.get("/api/whitelist/export")
+async def whitelist_export() -> dict:
+    """The whole list, for backing up or moving between installs."""
+    return whitelist.export()
+
+
+@app.post("/api/whitelist/import")
+async def whitelist_import(body: dict = Body(...)) -> dict:
+    try:
+        return whitelist.import_entries(body.get("payload") or body,
+                                        replace=bool(body.get("replace")))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/whitelist/check")
+async def whitelist_check(body: dict = Body(...)) -> dict:
+    """What the list currently says about one jar. Drives the row's badge."""
+    entry = whitelist.decide(
+        body.get("file") or "", mod_id=body.get("mod_id"),
+        project_id=body.get("project_id"), server_id=body.get("server_id"))
+    return {"entry": entry, "verdict": (entry or {}).get("verdict")}
 
 
 @app.get("/api/ai/models")
@@ -1944,6 +2023,468 @@ async def switch_pack_version(server_id: str, body: dict = Body(...)) -> dict:
     return {"job_id": job.id}
 
 
+# --- creating an instance from nothing ---------------------------------
+
+
+@app.get("/api/loaders")
+async def loader_catalogue() -> dict:
+    """What can be created, and which Minecraft versions each one has.
+
+    Crafty's own jar index is asked first because a version it knows about is
+    one it can install with no fallback needed; the loaders' upstream
+    projects fill in whatever the index is missing, which on a fresh
+    Minecraft release is most of it.
+    """
+    catalog = {}
+    try:
+        catalog = await crafty.jar_catalog()
+    except Exception:
+        pass
+    try:
+        return {"items": await loaders.catalogue(catalog),
+                "crafty_index": bool(catalog)}
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/loaders/{family}/versions")
+async def loader_versions(family: str) -> dict:
+    try:
+        return {"family": loaders.family_of(family),
+                "items": await loaders.versions_for(family),
+                "mod_directory": loaders.mod_directory(family),
+                "takes_plugins": loaders.takes_plugins(family)}
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/provision/server")
+async def provision_server(body: dict = Body(...)) -> dict:
+    """Create an empty instance: a loader, a version, an empty mod folder."""
+    name = (body.get("name") or body.get("server_name") or "").strip()
+    if not name:
+        raise HTTPException(400, "a server name is required")
+    loader = (body.get("loader") or "").strip()
+    mc = (body.get("minecraft") or "").strip()
+    if not loader or not mc:
+        raise HTTPException(400, "loader and minecraft are both required")
+
+    job = registry.create("provision", f"Create {name}", server_name=name)
+    registry.start(job, lambda j: provision.create_empty(
+        j, name=name, loader=loader, mc_version=mc,
+        port=int(body.get("port", 25565)),
+        mem_min=body.get("mem_min"), mem_max=body.get("mem_max"),
+        motd=body.get("motd"), optimize=bool(body.get("optimize", True)),
+        difficulty=body.get("difficulty"), gamemode=body.get("gamemode"),
+        max_players=body.get("max_players"),
+        online_mode=bool(body.get("online_mode", True)),
+        seed_mods=body.get("seed_mods") or [],
+    ))
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/loader/reinstall")
+async def loader_reinstall(server_id: str) -> dict:
+    """Retry the loader on an instance that was left without one.
+
+    The only recovery an interrupted create used to have was "delete it and
+    start again", which throws away the port, the name and anything already
+    uploaded.
+    """
+    job = await _job_for("loader", "Reinstall loader", server_id)
+    registry.start(job, lambda j: provision.reinstall_loader(j, server_id))
+    return {"job_id": job.id}
+
+
+# --- the file manager --------------------------------------------------
+
+
+@app.get("/api/instances/{server_id}/files")
+async def files_browse(server_id: str, path: str = ".") -> dict:
+    try:
+        return await files.browse(server_id, path)
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/instances/{server_id}/files/read")
+async def files_read(server_id: str, path: str = Query(...)) -> dict:
+    try:
+        return await files.read_text(server_id, path)
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/files/write")
+async def files_write(server_id: str, body: dict = Body(...)) -> dict:
+    path = body.get("path") or ""
+    try:
+        # The bytes that were there are the one thing no catalogue can hand
+        # back, so they are kept before they are replaced.
+        snap = None
+        try:
+            before = await files.read_text(server_id, path)
+            snap = await backups.snapshot(
+                server_id, f"before editing {path}",
+                files={path: (before.get("content") or "").encode()})
+        except Exception:
+            pass
+        result = await files.write_text(
+            server_id, path, body.get("content") or "",
+            allow_world=bool(body.get("allow_world")))
+        return {**result, "snapshot": (snap or {}).get("id")}
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/files/create")
+async def files_create(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        return await files.create(server_id, body.get("parent") or ".",
+                                  body.get("name") or "",
+                                  bool(body.get("directory")))
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/files/rename")
+async def files_rename(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        return await files.rename(server_id, body.get("path") or "",
+                                  body.get("new_name") or "")
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/files/delete")
+async def files_delete(server_id: str, body: dict = Body(...)) -> dict:
+    paths = body.get("paths") or ([body["path"]] if body.get("path") else [])
+    try:
+        # A delete is the one file operation with no undo in Crafty, so the
+        # instance's mod state is snapshotted first whenever more than one
+        # thing is going.
+        if len(paths) > 1:
+            try:
+                await backups.snapshot(server_id,
+                                       f"before deleting {len(paths)} files")
+            except Exception:
+                pass
+        return await files.delete(server_id, paths,
+                                  allow_world=bool(body.get("allow_world")))
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/files/upload")
+async def files_upload(server_id: str, folder: str = Query("."),
+                       file: UploadFile = File(...)) -> dict:
+    """Spooled to disk, then handed to Crafty in chunks.
+
+    Reading the upload into memory would cost its full size at once, and this
+    container is capped at 1 GB -- a 400 MB world zip would not fail, it
+    would get the process killed with nothing in the log.
+    """
+    async def chunks():
+        while True:
+            chunk = await file.read(4 * 1024 * 1024)
+            if not chunk:
+                return
+            yield chunk
+
+    try:
+        return await files.upload_stream(
+            server_id, folder, file.filename or "upload.bin", chunks())
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+    finally:
+        await file.close()
+
+
+@app.get("/api/instances/{server_id}/files/download")
+async def files_download(server_id: str, path: str = Query(...)):
+    """Streamed straight through, so a 4 GB region file costs no memory."""
+    try:
+        stream, name = files.download(server_id, path)
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+    safe = re.sub(r'[^A-Za-z0-9._ -]+', "_", name) or "download"
+    return StreamingResponse(
+        stream, media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+    )
+
+
+@app.post("/api/instances/{server_id}/files/extract")
+async def files_extract(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        return await files.extract(server_id, body.get("path") or "")
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/instances/{server_id}/files/search")
+async def files_search(server_id: str, q: str = Query(...),
+                       root: str = ".") -> dict:
+    try:
+        return await files.search(server_id, q, root)
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/instances/{server_id}/files/usage")
+async def files_usage(server_id: str) -> dict:
+    try:
+        return await files.usage(server_id)
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+# --- players -----------------------------------------------------------
+
+
+@app.get("/api/instances/{server_id}/players")
+async def players_list(server_id: str) -> dict:
+    try:
+        return await players.snapshot(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/players/action")
+async def players_action(server_id: str, body: dict = Body(...)) -> dict:
+    """One action on one player, routed by whether the server is running."""
+    action = (body.get("action") or "").strip()
+    name = body.get("name") or ""
+    reason = body.get("reason") or ""
+    try:
+        if action == "op":
+            return await players.set_op(server_id, name, True,
+                                        level=int(body.get("level", 4)))
+        if action == "deop":
+            return await players.set_op(server_id, name, False)
+        if action == "whitelist":
+            return await players.set_whitelist(server_id, name, True)
+        if action == "unwhitelist":
+            return await players.set_whitelist(server_id, name, False)
+        if action == "ban":
+            return await players.set_ban(server_id, name, True, reason=reason)
+        if action == "pardon":
+            return await players.set_ban(server_id, name, False)
+        if action == "kick":
+            return await players.kick(server_id, name, reason)
+        if action == "ban-ip":
+            return await players.set_ip_ban(server_id, body.get("ip") or "",
+                                            True, reason=reason)
+        if action == "pardon-ip":
+            return await players.set_ip_ban(server_id, body.get("ip") or "",
+                                            False)
+        raise HTTPException(400, f"'{action}' is not a player action")
+    except players.PlayerError as e:
+        raise HTTPException(400, str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/players/bulk")
+async def players_bulk(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        return await players.bulk(server_id, body.get("action") or "",
+                                  body.get("names") or [],
+                                  reason=body.get("reason") or "")
+    except players.PlayerError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/players/whitelist-mode")
+async def players_whitelist_mode(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        if body.get("reload"):
+            return await players.reload_whitelist(server_id)
+        return await players.toggle_whitelist(server_id,
+                                              bool(body.get("enabled")))
+    except players.PlayerError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/players/note")
+async def players_note(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        return await players.set_note(server_id, body.get("name") or "",
+                                      body.get("note") or "")
+    except players.PlayerError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/players/lookup")
+async def players_lookup(name: str = Query(...), online_mode: bool = True) -> dict:
+    """Resolve a username to a UUID before it is written anywhere."""
+    try:
+        return await players.resolve_profile(name, online_mode=online_mode)
+    except players.PlayerError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+# --- plugins (Paper family, from Modrinth) -----------------------------
+
+
+@app.get("/api/browse/plugins")
+async def browse_plugins(q: str = "", family: str = "paper",
+                         game_version: str | None = None,
+                         category: str | None = None,
+                         index: int = 0, page_size: int = 30,
+                         sort: str = "relevance") -> dict:
+    try:
+        return await plugins.search(
+            query=q, family=family, game_version=game_version,
+            category=category, index=index, page_size=page_size, sort=sort)
+    except plugins.PluginError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/plugins/meta")
+async def plugins_meta() -> dict:
+    return {"categories": plugins.CATEGORIES,
+            "families": sorted(plugins.COMPATIBLE_LOADERS),
+            "sorts": ["relevance", "downloads", "follows", "newest", "updated"]}
+
+
+@app.get("/api/plugins/{project_id}/versions")
+async def plugin_versions(project_id: str, family: str = "paper",
+                          game_version: str | None = None) -> dict:
+    try:
+        return await plugins.versions(project_id, family=family,
+                                      game_version=game_version)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.get("/api/plugins/starter")
+async def plugins_starter(family: str = "paper",
+                          game_version: str | None = None) -> dict:
+    try:
+        return await plugins.starter_pack(family=family,
+                                          game_version=game_version)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/plugins/resolve")
+async def plugins_resolve(server_id: str, body: dict = Body(...)) -> dict:
+    """Preview what installing a plugin would pull in, before committing."""
+    try:
+        listing = await modmgr.list_mods(server_id, "plugins")
+        installed = {m["file"].lower() for m in listing.get("mods", [])}
+    except Exception:
+        installed = set()
+    manifest = await crafty.read_studio_manifest(server_id)
+    try:
+        return await plugins.resolve(
+            str(body["project_id"]),
+            family=body.get("family") or manifest.get("loader") or "paper",
+            game_version=body.get("game_version") or manifest.get("minecraft"),
+            installed=installed,
+        )
+    except plugins.PluginError as e:
+        raise HTTPException(400, str(e))
+    except KeyError:
+        raise HTTPException(400, "project_id is required")
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/plugins/add")
+async def plugins_add(server_id: str, body: dict = Body(...)) -> dict:
+    if not body.get("project_id"):
+        raise HTTPException(400, "project_id is required")
+    manifest = await crafty.read_studio_manifest(server_id)
+    job = await _job_for("plugin", f"Install {body.get('name') or 'plugin'}",
+                         server_id)
+    registry.start(job, lambda j: plugins.install(
+        j, server_id,
+        project_id=str(body["project_id"]),
+        file_id=body.get("file_id"),
+        family=body.get("family") or manifest.get("loader") or "paper",
+        game_version=body.get("game_version") or manifest.get("minecraft"),
+        with_dependencies=bool(body.get("with_dependencies", True)),
+        skip_projects=body.get("skip_dependencies") or [],
+    ))
+    return {"job_id": job.id}
+
+
+@app.get("/api/instances/{server_id}/plugins/audit")
+async def plugins_audit(server_id: str) -> dict:
+    """Open every jar in plugins/ and say what is wrong with it."""
+    try:
+        return await plugins.audit(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+# --- the client-only scan on a live instance ---------------------------
+
+
+@app.post("/api/instances/{server_id}/client-scan")
+async def client_scan(server_id: str, directory: str = "mods") -> dict:
+    """Re-run the client-only analysis over what is actually installed.
+
+    The pre-install review only ever sees a pack at the moment it lands. This
+    is the same detector pointed at the jars on disk now -- which is where it
+    matters most, because that set includes hand-added jars, imports, and
+    anything installed before these checks existed.
+    """
+    job = await _job_for("client_scan", "Client-only scan", server_id)
+    registry.start(job, lambda j: clientscan.scan_instance(j, server_id,
+                                                           directory))
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/client-scan/apply")
+async def client_scan_apply(server_id: str, body: dict = Body(...)) -> dict:
+    try:
+        return await clientscan.apply_scan(
+            server_id, body.get("files") or [],
+            enabled=bool(body.get("enabled", False)),
+            directory=body.get("directory", "mods"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _err(e)
+
+
 # --- jobs --------------------------------------------------------------
 
 
@@ -1998,63 +2539,65 @@ async def job_events(job_id: str) -> StreamingResponse:
 
 
 # --- static ------------------------------------------------------------
+#
+# The front end is plain ES modules, no build step: index.html, two
+# stylesheets and a directory of modules, served verbatim. Which means the
+# browser's cache is the only thing standing between a redeployed container
+# and a user still running last week's JavaScript -- and a `?v=` fingerprint
+# cannot help, because a module's own `import './core.js'` carries no query
+# string and nothing rewrites it.
+#
+# So the answer is a header rather than a filename: code and markup are
+# revalidated on every load (a few hundred bytes of 304s on a LAN), and the
+# things that genuinely never change under a given name -- fonts, images --
+# are cached for a year.
+
+
+class _StaticCache(StaticFiles):
+    """StaticFiles that caches assets hard and code not at all."""
+
+    IMMUTABLE = (".woff2", ".woff", ".ttf", ".png", ".jpg", ".jpeg", ".gif",
+                 ".svg", ".webp", ".ico")
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope,
+                                         status_code)
+        name = str(full_path).lower()
+        if name.endswith(self.IMMUTABLE):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            # .js, .css, .html and anything else we might add later.
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
 
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    # The design canvas addresses its images as `assets/NAME`, and index.html
-    # is that canvas with its markup untouched. Serving img/ at /assets is what
-    # lets the template keep its own paths rather than being rewritten.
+    app.mount("/static", _StaticCache(directory=str(STATIC_DIR)), name="static")
+    # Images are addressed as `/assets/NAME` throughout the front end, which
+    # keeps every art reference short and lets the folder be reorganised
+    # without touching a hundred call sites.
     if (STATIC_DIR / "img").is_dir():
-        app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "img")),
+        app.mount("/assets", _StaticCache(directory=str(STATIC_DIR / "img")),
                   name="assets")
-
-
-# Everything the browser caches and that changes when the app is rebuilt.
-# support.js and the vendored React are content-addressed by their own
-# immutability -- they are pinned versions and never change -- but they are
-# fingerprinted anyway so one stale copy cannot outlive a redeploy.
-_VERSIONED = ("index.html", "support.js",
-              "vendor/react.production.min.js",
-              "vendor/react-dom.production.min.js",
-              "vendor/fonts.css")
-
-
-def _asset_version() -> str:
-    """Fingerprint of the built frontend, used to bust browser caches.
-
-    Without this, a rebuilt container still serves the browser's cached
-    scripts: the fix is deployed but the user sees the old behaviour and
-    concludes it did not work. Derived from file mtimes so it changes on
-    every build without needing a manual version bump.
-    """
-    stamp = 0.0
-    for name in _VERSIONED:
-        try:
-            stamp = max(stamp, (STATIC_DIR / name).stat().st_mtime)
-        except OSError:
-            continue
-    return hashlib.sha1(f"{app.version}:{stamp}".encode()).hexdigest()[:10]
 
 
 @app.get("/")
 async def index() -> Response:
-    """Serve the SPA shell with cache-busted asset URLs."""
+    """Serve the shell."""
     try:
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     except OSError:
         raise HTTPException(500, "frontend is missing from this image")
-
-    version = _asset_version()
-    html = re.sub(
-        r'(/static/(?:support\.js|vendor/[A-Za-z0-9._/-]+?\.(?:js|css)))'
-        r'(\?v=[^"\']*)?',
-        lambda m: f"{m.group(1)}?v={version}",
-        html,
-    )
     return Response(
         content=html,
         media_type="text/html",
-        # The shell itself must never be cached, or it would keep pointing at
-        # the previous version string.
         headers={"Cache-Control": "no-cache, must-revalidate"},
     )
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    path = STATIC_DIR / "icon.png"
+    if not path.is_file():
+        raise HTTPException(404, "no icon")
+    return FileResponse(path, media_type="image/png")

@@ -24,7 +24,7 @@ _STATE = "update-checks.json"
 
 
 def _path():
-    return config.DATA_DIR / _STATE
+    return config.state_path(_STATE)
 
 
 def load() -> dict:

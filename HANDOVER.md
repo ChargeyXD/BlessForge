@@ -129,124 +129,149 @@ override.
 
 ```
 app/
-  main.py         1838  FastAPI: every route, static serving, cache-busting fingerprint
-  installer.py    1281  the install pipeline; loader wait + repair (§6.3)
-  diagnostics.py  1165  health checks, crash-log parsing, findings
-  crafty.py        850  Crafty API client — the only thing that talks to Crafty, and
-                        the only place that interprets what it says back
-  mods.py          657  mod listing, toggle, delete, identify
-  ai.py           1114  Ollama client, action vocabulary, re-validation
-  packs.py         468  pack plans, archive shape detection, loader mapping
-  preflight.py     569  client-only mod review + dependency protection
-  properties.py    422  server.properties model
-  specs.py         441  host specs, heap sizing
-  curseforge.py    415  CurseForge API + download cache
+  main.py         2575  FastAPI: every route, static serving with cache headers
+  diagnostics.py  1285  health checks, crash-log parsing, findings
+  roulette.py     1274  Mod Roulette: pool, seeded deal, verify, top-up, export
+  installer.py    1224  the install pipeline (loader ladder lives in provision)
+  ai.py           1179  Ollama client, action vocabulary, re-validation
+  crafty.py        898  Crafty API client — the only thing that talks to Crafty,
+                        and the only place that interprets what it says back
+  mods.py          765  mod listing, toggle, delete, identify
+  clientscan.py    731  the client-only detector: evidence, scoring, overrides
+  provision.py     606  create a blank instance; THE loader retry ladder
+  players.py       588  ops, whitelist, bans — routed by whether it is running
+  curseforge.py    573  CurseForge API + download cache
+  files.py         518  the file manager: path guards, streaming, classification
+  packs.py         498  pack plans, archive shape detection, loader mapping
+  plugins.py       486  Paper-family plugins, from Modrinth, compatibility-checked
+  specs.py         475  host specs, heap sizing
+  loaders.py       458  upstream loader sources — Mojang, Fabric, NeoForged,
+                        Forge, PaperMC, PurpurMC — and the version schemes
+  properties.py    426  server.properties model
+  jarmeta.py       409  jar fingerprinting
   deps.py          332  recursive dependency resolution
-  modrinth.py      232  Modrinth API
-  jarmeta.py       232  jar fingerprinting
-  uploads.py       246  imported .zip exports
-  roulette.py     1030  Mod Roulette: pool, seeded deal, export  [2026-08-28]
-  optimizer.py     222  Aikar flags, heap, property presets
+  whitelist.py     328  the operator's allow / block decisions
+  preflight.py     277  pre-install review — a thin shell over clientscan now
   jobs.py          266  job model + SSE
-  configs.py       168  config file tree
-  config.py        164  env parsing, paths
+  modrinth.py      253  Modrinth API
+  uploads.py       246  imported .zip exports
+  backups.py       223  undo snapshots
+  optimizer.py     222  Aikar flags, heap, property presets
+  config.py        185  env parsing, paths
+  configs.py       176  config file tree
+  exporter.py      157  write an instance out as a CurseForge pack
+  smoketest.py     152  boot once, watch, stop, report
+  watcher.py       101  the scheduled update sweep
+  cache.py          69  download cache pruning
   static/
-    index.html    the Claude Design canvas, markup untouched, with its logic
-                  rewritten to read the API. THE front end -- see §4.
-    support.js    Claude Design's runtime, vendored from the zip. Never edit.
-    vendor/       react@18.3.1 + react-dom + both fonts, served from this box
-                  because a LAN install has no route to a CDN
-    img/          the design's assets, downscaled; mounted at /assets so the
-                  canvas keeps its own paths — see design/README.md
-dev/              test tooling — see dev/README.md
-design/           the Claude Design canvas the new UI is built from, and its
-                  README — READ IT, it lists what the design got wrong about
-                  this app. The previous front end is in git history, not here.
-design-prompt.md  the brief that produced that design  [2026-08-28]
-BlessForge Server New GUI.zip
-                  the design delivery: the canvas, support.js and the original
-                  full-size assets. Gitignored. It is the source of truth for
-                  the front end -- see §5C.
-design-brief.md   HISTORICAL. Described the front end replaced on 2026-08-29;
-                  its §4.3 DOM contract no longer applies to anything. Kept
-                  only because it explains why the old UI looked as it did.
-entrypoint.sh     starts root, chowns /data subdirs, drops to uid 1000
+    index.html      the shell: stylesheet links and one module script
+    css/            theme.css (tokens, ornament, motion) + app.css (the shell)
+    js/             core.js, app.js, jobs.js, petals.js, views/*.js — plain
+                    ES modules, no build step, every screen a dynamic import
+    vendor/         Space Grotesk + JetBrains Mono, served from this box
+                    because a LAN install has no route to a CDN
+    img/            art, mounted at /assets
+dev/                test tooling — see dev/README.md
+design/             the 2026-08-28 Claude Design canvas. HISTORICAL: the front
+                    end it specified was replaced on 2026-09-10. Kept for its
+                    README, which lists what that design got wrong about this
+                    app, and because the art in static/img came from it.
+entrypoint.sh       starts root, chowns /data subdirs, drops to uid 1000
 ```
 
 Backend is FastAPI + httpx, no database. State lives in Crafty (a
-`crafty_managed.txt` manifest per instance) and in `/data`.
+`.blessforge.json` manifest per instance) and in `/data`.
+
+### The three modules added on 2026-09-10, and why each exists
+
+* **`provision.py`** — "Crafty answered 201" and "this instance can start" are
+  not the same claim, and the gap between them was a hang. The loader ladder
+  moved here out of `installer.py` so a blank instance and a modpack install
+  share one implementation; a second copy would have drifted.
+* **`clientscan.py`** — the client-only decision was three yes/no questions
+  split across two functions that disagreed with each other. It is now one
+  scored judgement with the evidence attached, used by the pre-install review
+  *and* by a scan against an instance that already exists.
+* **`loaders.py`** — everything upstream of Crafty. It exists because Crafty's
+  mirror going down should cost a retry, not an instance, and because
+  Minecraft's version scheme changed underneath both of them (see §8).
 
 ---
 
 ## 4. Front end — how it actually works now
 
-**`app/static/index.html` IS the design canvas.** It is
-`design/BlessForge.dc.html` with the markup unchanged: every animation
-(`bfReel`, `bfCrit`, `bfBreathe`, `bfLever`, `bfPeek`, `bfDraw`, `bfStripe`…),
-every token, every piece of copy is the designer's. Do not rewrite it. If a
-screen needs to say something different, change what the binding *returns*,
-not the markup that renders it.
+**Rebuilt from scratch on 2026-09-10.** The design-canvas runtime is gone:
+no `<x-dc>`, no `support.js`, no vendored React, no 316-binding contract, and
+none of the six runtime traps that used to be listed here. What replaced it is
+plain ES modules and real DOM.
 
-**The runtime is `app/static/support.js`**, shipped from the same zip. It is a
-generated build of Claude Design's own renderer — treat it as a vendored
-dependency and never edit it. It:
+```
+static/index.html   the shell — stylesheet links, one <script type="module">
+static/css/theme.css   tokens, ornament, motion (shared with Project Fox)
+static/css/app.css     the shell and the screens
+static/js/core.js      h(), icons, api, toasts, modals, formatting
+static/js/app.js       the router, the rail, boot
+static/js/jobs.js      long operations and the activity drawer
+static/js/petals.js    the falling sakura
+static/js/views/*.js   one module per screen, loaded on demand
+```
 
-- parses `<x-dc>…</x-dc>` into a template supporting `{{ expr }}`, `<sc-if>`
-  and `<sc-for list="{{ xs }}" as="x">`;
-- evaluates the `<script type="text/x-dc" data-dc-script>` body with
-  `new Function`, expecting it to define `class Component extends DCLogic`;
-- re-renders `renderVals()` against the template on every `setState`.
+**Nothing is built from an HTML string.** `h(tag, props, ...kids)` returns
+real nodes and handlers are attached to the node they belong to, which is the
+direct answer to the worst trap of the old runtime: a handler on a static
+element was bound once and never rebound, so a control that closed over a
+render-time value kept using the first one forever. That bug class cannot
+occur here — a row's handler is created with the row.
 
-**`renderVals()` is the whole contract.** The template reads **316 named
-bindings** out of it. Every one must exist and keep its shape; a missing one
-renders blank with no error and no console message. `dev/tools/check_bindings.py`
-diffs the two and is the fastest way to catch one you forgot.
+**Routing is hashes**, so the whole app is one static document any reverse
+proxy serves without rewrite rules. `#/i/<id>/<tab>` means a link to a crashed
+server's Diagnose tab is a link someone can send.
 
-**Three traps in that runtime, each of which cost real time here:**
+**Caching is a header, not a filename.** A `?v=` fingerprint cannot work for
+ES modules: a module's own `import './core.js'` carries no query string and
+nothing rewrites it. `_StaticCache` in `main.py` serves `.js`/`.css`/`.html`
+as `no-cache, must-revalidate` and fonts/images as `immutable`. There is no
+stale-asset failure mode left to reason about, and `_VERSIONED` and
+`_asset_version()` are gone with it.
 
-- **`componentDidUpdate(prevProps)` takes ONE argument, and it is props.**
-  There is no `prevState`. Code that compared against a second argument
-  returned early every time, and *no screen ever fetched anything* — every tab
-  rendered its empty state and looked merely unfinished. Track what changed
-  yourself; `this._seen` does that now.
-- **Job frames carry `percent`, not `progress`.** Reading the wrong name
-  leaves every progress bar at 0% while the job runs perfectly well.
-- **The first SSE frame is a `snapshot`**, and for an already-finished job it
-  reports a terminal status. Treat that as the end, or a view re-attached to a
-  finished job sits at RUNNING forever.
-- **A `<textarea>` takes `value`, not children.** An interpolated child renders
-  as `[object Object]`.
-- **A `<select>` nested inside an outer `<sc-for>` is dropped entirely.** Each
-  one has to own the only loop in its subtree.
-- **A static element's `onClick` is bound once and never rebound.** Attribute
-  bindings update on every render; handlers do not, so a handler that closes
-  over a render-time value keeps using the first one forever. Handlers on
-  static elements must read `this.state` or ask the server. `<sc-for>` rows do
-  get fresh closures. This one produced a bug that looked like a backend
-  fault — suspect it whenever a control does nothing, or does the same thing
-  twice.
+**The wiggling polygon has one hard rule.** The highlight is a `z-index:-1`
+child, which paints behind its parent's *background* only while the parent is
+not a stacking context. So nothing carrying a highlight may take a
+`transform`, an `opacity` below 1, a `filter` or an `isolation` — the hover
+lift is `box-shadow`, and disabled buttons are drawn with colour rather than
+transparency for exactly this reason. Break it and the blob paints between
+the card fill and the card text, which reads as a colour bug rather than a
+layering one. `dev/tools/check_frontend.py` enforces it.
 
-**Offline by design.** This box is usually on a LAN with no route out, so
-`react@18.3.1` + `react-dom` and both Google fonts are vendored under
-`app/static/vendor/`. `support.js` falls back to unpkg only when
-`window.React` is absent, and both vendored files match the SRI digests it
-carries. Do not "simplify" this back to a CDN.
+**Fonts degrade rather than block.** Archivo Black and Plus Jakarta Sans come
+from Google Fonts on a non-blocking link; Space Grotesk and JetBrains Mono are
+vendored. When the Google link cannot be reached, `app.js` finds Archivo Black
+missing and stamps `no-archivo` on `<html>`, and the CSS gives the fallback
+the display weight it needs. A LAN box with no route out paints immediately
+instead of waiting out a DNS timeout on a font.
 
-**Assets keep the canvas's own paths.** The template says `assets/NAME`;
-`main.py` mounts `app/static/img` at `/assets`, so the markup never had to be
-rewritten. The images there are the design's, downscaled.
+**A job owns its stream; the drawer is only a view onto it.** Closing the
+drawer closes the view, never the `EventSource`, and several jobs are followed
+at once — the old front end followed one and silently stopped showing the
+second. A reload adopts whatever is still running server-side.
 
-**Cache busting** hashes `index.html`, `support.js` and the vendored files
-(`_VERSIONED` in `main.py`). Add a served file, add it there.
+**Two ordering traps, both found by driving the real UI:**
 
-**Where a screen's data comes from:** `loadFor(view)` fetches when a view is
-opened, into `state.d.<key>`; `renderVals()` only reads. Never fetch from
-`renderVals()` — it runs on every render.
+- **`confirmDialog` must resolve before it closes.** `close()` runs `onClose`,
+  which resolves `false`; calling `close()` first meant every confirmation in
+  the app resolved false and silently did nothing. Both dialogs now decide,
+  then tear down.
+- **A class token with a trailing space kills the screen.** `bar(v, 'thin ')`
+  from an empty interpolated variant produced `classList.add('thin ')`, which
+  throws. `h()` now trims and splits tokens rather than trusting call sites.
 
-**Corrections of fact are marked `DESIGN:`** in the logic, and only where the
-canvas asserted something untrue (no TPS tile, Memory not Heap, the real
-remote Ollama endpoint, the real published port range, the real server paths).
-Layout, copy and motion are left alone — that was the whole point.
+**`dev/tools/check_frontend.py` replaces `check_bindings.py` and
+`audit_placeholders.py`**, which audited the runtime that no longer exists. It
+checks that every module parses *as a module* (`node --check` alone accepts a
+file with a broken string literal in it — only `--input-type=module` is a real
+check), that every import and asset resolves, that every API path the front
+end names is a route the server serves, that every `icon()` name exists, and
+the stacking-context rule above.
 
 ---
 

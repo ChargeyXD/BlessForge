@@ -46,13 +46,28 @@ def _facets(
     game_version: str | None,
     loader: str | None,
     categories: list[str] | None = None,
+    loaders: list[str] | None = None,
+    game_versions: list[str] | None = None,
 ) -> str:
+    """Build Modrinth's facet expression.
+
+    The nesting is the whole API here and it is easy to get backwards: the
+    outer list is ANDed, each inner list is ORed. A single `loader` is one
+    group of one; `loaders` is one group of many, which is how "any
+    Bukkit-family plugin" is expressed -- most plugins tag `paper` OR
+    `spigot` OR `bukkit` and never all three, so ANDing them returns almost
+    nothing.
+    """
     facets: list[list[str]] = []
     if project_type:
         facets.append([f"project_type:{project_type}"])
-    if game_version:
+    if game_versions:
+        facets.append([f"versions:{v}" for v in game_versions])
+    elif game_version:
         facets.append([f"versions:{game_version}"])
-    if loader:
+    if loaders:
+        facets.append([f"categories:{l.lower()}" for l in loaders])
+    elif loader:
         facets.append([f"categories:{loader.lower()}"])
     for cat in categories or []:
         facets.append([f"categories:{cat}"])
@@ -66,6 +81,8 @@ async def search(
     game_version: str | None = None,
     loader: str | None = None,
     categories: list[str] | None = None,
+    loaders: list[str] | None = None,
+    game_versions: list[str] | None = None,
     index: int = 0,
     page_size: int = 30,
     sort: str = "relevance",
@@ -78,7 +95,8 @@ async def search(
     }
     if query:
         params["query"] = query
-    facets = _facets(project_type, game_version, loader, categories)
+    facets = _facets(project_type, game_version, loader, categories,
+                     loaders=loaders, game_versions=game_versions)
     if facets != "[]":
         params["facets"] = facets
 
@@ -180,12 +198,15 @@ def _slim_version(v: dict) -> dict:
 
 
 async def list_versions(
-    id_or_slug: str, *, game_version: str | None = None, loader: str | None = None
+    id_or_slug: str, *, game_version: str | None = None,
+    loader: str | None = None, loaders: list[str] | None = None,
 ) -> list[dict]:
     params = {}
     if game_version:
         params["game_versions"] = json.dumps([game_version])
-    if loader:
+    if loaders:
+        params["loaders"] = json.dumps([l.lower() for l in loaders])
+    elif loader:
         params["loaders"] = json.dumps([loader.lower()])
     data = await _get(f"/project/{id_or_slug}/version", params) or []
     return [_slim_version(v) for v in data]

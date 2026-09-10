@@ -26,7 +26,7 @@ import zipfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from app import installer, optimizer, packs, preflight, properties  # noqa: E402
+from app import clientscan, installer, optimizer, packs, preflight, properties, whitelist  # noqa: E402
 from app.jobs import Job  # noqa: E402
 
 results = []
@@ -245,43 +245,83 @@ async def main():
     # client-only by its own author, and a hard requirement of Chipped, which is
     # not -- was a confident "remove". The pack installed and then refused to
     # boot with "requires version 4.0.0 or later of athena, which is missing".
-    jars = [
-        {"file_name": "chipped.jar", "name": "Chipped", "mod_id": "chipped",
-         "dependencies": ["athena"]},
-        {"file_name": "athena.jar", "name": "Athena", "mod_id": "athena",
-         "dependencies": []},
-        {"file_name": "iris.jar", "name": "Iris", "mod_id": "iris", "dependencies": []},
-        {"file_name": "zoom.jar", "name": "Zoomer", "mod_id": "zoom",
-         "dependencies": ["iris"]},
+    #
+    # The scoring now lives in clientscan; these build scored items directly
+    # rather than going through a jar, because what is under test is the
+    # override pass, not the reading of a zip.
+    def scored(file_name, name, mod_id, verdict, deps=(), score=100):
+        return {"file_name": file_name, "name": name, "mod_id": mod_id,
+                "provides": [], "hard_dependencies": list(deps),
+                "verdict": verdict, "score": score, "confidence": "high",
+                "reasons": ["the author declares it client-only"],
+                "project_id": None}
+
+    items = [
+        scored("chipped.jar", "Chipped", "chipped", "server", ["athena"], -20),
+        scored("athena.jar", "Athena", "athena", "client"),
+        scored("iris.jar", "Iris", "iris", "client"),
+        scored("zoom.jar", "Zoomer", "zoom", "client", ["iris"]),
     ]
-    cands = [
-        {"file_name": "athena.jar", "name": "Athena", "mod_id": "athena",
-         "reasons": ["the author declares it client-only"], "confidence": "declared"},
-        {"file_name": "iris.jar", "name": "Iris", "mod_id": "iris",
-         "reasons": ["the author declares it client-only"], "confidence": "declared"},
-        {"file_name": "zoom.jar", "name": "Zoomer", "mod_id": "zoom",
-         "reasons": ["name matches a known client-only mod"], "confidence": "name"},
-    ]
-    preflight.decide_with_protection(cands, jars)
-    by = {c["file_name"]: c for c in cands}
+    clientscan.apply_overrides(items)
+    by = {c["file_name"]: c for c in items}
     check("a dependency of a server mod is held back, not removed",
-          by["athena.jar"]["recommendation"] == "keep", by["athena.jar"]["recommendation"])
+          by["athena.jar"]["verdict"] == "keep", by["athena.jar"]["verdict"])
     check("and it names who needs it",
           by["athena.jar"].get("required_by_others") == ["Chipped"],
           by["athena.jar"].get("required_by_others"))
     check("a client mod nothing depends on is still removed",
-          by["iris.jar"]["recommendation"] == "remove", by["iris.jar"]["recommendation"])
+          by["iris.jar"]["verdict"] == "client", by["iris.jar"]["verdict"])
     check("a client mod required only by ANOTHER client mod is not protected",
           by["iris.jar"].get("required_by_others") is None,
           "Zoomer needs Iris, but Zoomer is going too")
-    check("a name-only match is offered for review, never removed outright",
-          by["zoom.jar"]["recommendation"] == "review", by["zoom.jar"]["recommendation"])
 
-    cands2 = [{"file_name": "sound.jar", "name": "Sound Physics", "mod_id": "sp",
-               "reasons": ["mixed signals"], "confidence": "contradicted"}]
-    preflight.decide_with_protection(cands2, [])
-    check("contradicted evidence is a review, not a removal",
-          cands2[0]["recommendation"] == "review", cands2[0]["recommendation"])
+    # --- the scoring itself ---------------------------------------------------
+    only_name = clientscan.evaluate(file_name="zoomify-1.2.jar", name_listed=True)
+    check("a name-list match alone is a review, never a removal",
+          only_name["verdict"] == "review", only_name["verdict"])
+
+    declared = clientscan.evaluate(
+        file_name="figura.jar", meta={"side": "client"}, exact_hash_match=True)
+    check("a declared environment=client is decisive",
+          declared["verdict"] == "client", declared["verdict"])
+
+    author_says_server = clientscan.evaluate(
+        file_name="anything.jar", modrinth_side="required",
+        name_listed=True, meta={"side": None}, exact_hash_match=True)
+    check("the author saying server_side: required outranks every heuristic",
+          author_says_server["verdict"] == "server", author_says_server["verdict"])
+
+    # The signal the old detector had no equivalent of: a Forge jar that
+    # declares nothing at all, whose every class lives under a client package.
+    forge_client = clientscan.evaluate(
+        file_name="someforgemod.jar", meta={"loader": "forge"},
+        archive={"readable": True, "classes": 40, "client_classes": 40,
+                 "client_ratio": 1.0, "has_assets": True})
+    check("an all-client package tree catches a Forge mod that declares nothing",
+          forge_client["verdict"] == "client", forge_client["verdict"])
+
+    balanced = clientscan.evaluate(
+        file_name="bigmod.jar", meta={"loader": "forge"},
+        archive={"readable": True, "classes": 200, "client_classes": 12,
+                 "client_ratio": 0.06, "has_data": True, "has_recipes": True})
+    check("a mod with real server code and datapack content is left alone",
+          balanced["verdict"] == "server", balanced["verdict"])
+
+    # --- the operator's own decisions -----------------------------------------
+    whitelist._reset_for_tests()
+    whitelist.add("figura-0.1.4.jar", name="Figura", verdict="allow")
+    allowed = [scored("figura-0.1.5.jar", "Figura", "figura", "client")]
+    clientscan.apply_overrides(allowed)
+    check("an allow survives a version bump (the stem is what matches)",
+          allowed[0]["verdict"] == "server", allowed[0]["verdict"])
+
+    whitelist._reset_for_tests()
+    whitelist.add("somemod-1.0.jar", name="Some mod", verdict="block")
+    blocked = [scored("somemod-2.0.jar", "Some mod", "somemod", "server", (), -50)]
+    clientscan.apply_overrides(blocked)
+    check("a block overrides a clean score",
+          blocked[0]["verdict"] == "client", blocked[0]["verdict"])
+    whitelist._reset_for_tests()
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")

@@ -60,6 +60,128 @@ Notes:
 - A client export names its mods by CurseForge id, so a CurseForge API key is
   required for this — the same one the rest of the app uses.
 
+### Start a server from nothing
+
+Most servers do not begin life as a downloaded pack: somebody picks a loader,
+picks a version, and puts their own mods in. **New server** does exactly that
+— a loader, a Minecraft version, a port, and an empty folder waiting for you.
+
+Seven choices, each with the version list its own project publishes: Fabric,
+Forge, NeoForge, **Paper**, **Purpur**, **Folia** and Vanilla. The folder the
+wizard promises changes with the loader, because that difference is the most
+consequential one on the whole screen: Fabric, Forge and NeoForge read
+`mods/`, and the Paper family reads `plugins/`. A plugin dropped into `mods/`
+does nothing at all and reports nothing anywhere, so the distinction is made
+loudly rather than left to be discovered.
+
+The version list is not limited to what Crafty has cached. Crafty's own jar
+index is asked first — a version it knows is one it can install with no
+fallback needed — and the loaders' own sites fill in the rest, which on a
+fresh Minecraft release is most of it.
+
+### Plugins, for the Paper family
+
+CurseForge has no plugin catalogue at all: its Minecraft section is mods,
+modpacks and resource packs. So a Paper server shops on **Modrinth**, which
+does carry plugins and needs no key.
+
+Every result is checked against what the server can actually load, and the
+answer is more nuanced than a yes or no:
+
+| Verdict | Meaning |
+|---|---|
+| **exact** | The plugin declares this server by name. |
+| **good** | Built for Spigot or Bukkit; Paper and Purpur run those unchanged. |
+| **risky** | Declares something else. It may work; nothing here can promise it. |
+| **blocked** | On Folia, a plugin that does not declare Folia support. Folia's regionised threading breaks plugins written for a single main thread — it is not untested there, it will fail at load. |
+
+Dependencies are resolved on top and previewed before anything is installed,
+and the build chosen is the one for *your* server: spark publishes Fabric,
+Forge, NeoForge and Bukkit jars against the same Minecraft version, and
+picking the first that merely fits the version puts a mod in `plugins/`.
+
+New Paper servers are offered the short list every one ends up with —
+LuckPerms, EssentialsX, CoreProtect, spark, WorldEdit, Chunky, ViaVersion —
+with a sentence on why each one is there, and anything without a build for
+the chosen version marked plainly rather than offered and then failing.
+
+**Audit `plugins/`** opens every jar in the folder and reports the two
+mistakes that are otherwise invisible: a mod jar sitting where Paper will
+silently ignore it, and a jar with no `plugin.yml` that Paper will refuse to
+load.
+
+### A file manager
+
+The whole server directory, browsable and editable: upload, download,
+rename, create, delete, extract a zip, and a real editor with a line gutter
+for anything that is text.
+
+Two guards run the whole screen, because this is the one place that can
+destroy a world:
+
+- `world/`, `backups/`, `libraries/` and friends are **listed** — knowing a
+  world is 4 GB is exactly what a file manager is for — but writing or
+  deleting inside one needs a second, explicit confirmation.
+- `server.properties`, `eula.txt`, the launcher jar and the instance
+  manifest are **marked**, because deleting one breaks the server in a way
+  that only shows up at the next start.
+
+Uploads are spooled to disk and handed to Crafty in chunks, and downloads are
+streamed straight through. Neither ever holds a whole file in memory, which
+matters when the container is capped at 1 GB and a region folder is not.
+
+A sidebar measures the folders worth measuring — `mods`, `world`, `logs`,
+`backups` — so "where did the disk go" is one glance rather than an
+investigation.
+
+### Manage players
+
+Ops, whitelist, bans, IP bans, and who is connected right now — merged from
+the five JSON files Minecraft keeps them in, so the tab is a list of people
+rather than four lists of files.
+
+The thing this gets right is the one that is normally wrong. A running server
+keeps its own copy of all of this in memory: editing `ops.json` while it is
+up does nothing until it restarts, and running `/op` while it is down is
+impossible. So every button picks its route from the server's actual state —
+the console command when it is running, the file when it is not — and then
+**says which route it took**. "Effective now" and "takes effect at the next
+start" are different facts, and hiding the difference is exactly how "I
+opped them and it didn't work" happens.
+
+Names are resolved to UUIDs through Mojang. When that is unreachable, or the
+server runs in offline mode, the offline UUID is derived locally with the
+same algorithm the server itself uses — so an entry written here matches the
+one the server would have written.
+
+Whitelist enforcement is written to `server.properties` *and* applied to the
+running server together, because writing only one is the classic way to have
+a whitelist that quietly stops applying after a restart.
+
+### When Crafty cannot install the loader
+
+Crafty fetches loader jars from a single mirror on a daemon thread. When that
+mirror is down — and it goes down — Crafty logs one line, gives up, and still
+answers the create call with 201. The instance then exists with no launcher,
+and nothing in the API ever says so.
+
+There is a ladder instead of a hang:
+
+```
+Crafty's own download → Crafty's jar index, fetched by us
+                      → the loader's own project (Mojang, FabricMC,
+                        NeoForged, MinecraftForge, PaperMC, PurpurMC)
+                      → say plainly what is broken, and which mirror
+```
+
+Only the last rung is a failure, and it names the mirror rather than blaming
+the user. The instance is left in place either way, so **Finish setup**
+retries the loader without throwing away the port, the name, or anything
+already uploaded — which used to mean deleting it and starting again.
+
+The same ladder serves modpack installs and blank instances, so a fix to
+either helps both.
+
 ### Review the client-only mods, before it happens
 
 Client-only mods have to be inert on a server, but removing them silently is
@@ -70,11 +192,35 @@ than deletes**: the jar is installed as `<name>.jar.disabled`, tagged
 *client-side* on the Mods tab with the reason it was flagged, and is one click
 from being turned back on.
 
+**The detector was rebuilt around scoring rather than switching.** The old one
+asked three yes/no questions — does Modrinth say `server_side: unsupported`,
+does `fabric.mod.json` say `environment: client`, is the name on a list. That
+works for Fabric and is close to useless for Forge and NeoForge, which declare
+no side at all: roughly half of every real pack was being judged on its
+filename. Four sources that *do* work on every loader were added, and
+everything is now weighed on one axis:
+
+| Evidence | Why it works |
+|---|---|
+| **Package layout** | What fraction of a jar's classes live under a `client` package. A jar that is 100% `.../client/...` has nothing to run on a server, whatever its manifest says — and this is true for Forge, NeoForge and Fabric alike. Costs nothing: only the zip's central directory is read. |
+| **Mixin targets** | Both ecosystems declare mixins per environment. A jar whose every mixin config is registered client-only is client-only. |
+| **Client-only libraries** | A hard dependency on YACL, ModMenu, Sodium, Iris. A mod cannot be server-side and require a library that only exists on a client. |
+| **Content shape** | `assets/` with no datapack content. Weak alone; useful next to the others. |
+
+Three rules override the score outright, because each is a fact rather than an
+inference: an operator decision always wins, a mod another *staying* mod
+hard-requires is never removed, and the author stating `server_side: required`
+outranks every heuristic here.
+
 | Verdict | Meaning |
 |---|---|
-| **remove** | The jar declares `environment=client`, or Modrinth says `server_side: unsupported`. Ticked by default — installed disabled. |
-| **review** | Weaker signals — a known client-mod name, or it requires a client-only library like YACL. Left for you to judge. |
-| **keep** | Looks client-only *but another mod in the pack requires it*. Never disabled automatically. |
+| **client-only** | Score at or above 70 — a declared environment, an all-client package tree, or several signals agreeing. Ticked by default; installed disabled. |
+| **worth a look** | 30 to 69. Left for you to judge. |
+| **protected** | Looks client-only *but another mod that is staying requires it*. Never disabled automatically. |
+| **fine** | Real server-side code. |
+
+Every verdict shows **the points each piece of evidence contributed and the
+sentence behind it**, so it can be argued with rather than only obeyed.
 
 Every jar is checked against Modrinth **by SHA-1 of the file**, before anything
 is flagged — not just the ones with suspicious names, and not by guessing a
@@ -83,8 +229,38 @@ the ones nobody thought to put on a name list. On a real 301-mod export, the
 name list found two client mods and the hash check found six, four of which no
 heuristic had suspected.
 
+The same detector now also runs **against an instance that already exists**
+(Diagnose → Client-only scan), which is where it matters most: that set
+includes jars added by hand, jars from an import, and anything installed before
+these checks existed. It reads every jar on disk, scores it, and offers to
+disable what it finds — never deleting, and never touching anything another
+mod requires.
+
 Unticking the review means exactly that — the pack installs as published, with
 nothing disabled.
+
+### Decisions you only make once
+
+The review is cautious, and cautious is sometimes wrong in both directions. A
+mod whose author writes `server_side: unsupported` usually means "this adds
+nothing on a server", not "this breaks one" — and a mod that declares nothing
+at all can be pure client code that takes the server down on first boot.
+
+So a decision made once is remembered, in **both** directions:
+
+- **allow** — this is safe on a server, stop flagging it
+- **block** — this is client-only whatever it claims, always disable it
+
+Matched three ways, strongest first: the catalogue project id, the mod id out
+of the jar, then the filename with its version stripped. Matching on the
+project id is what makes a decision survive a rename; matching on the stem is
+what makes it survive a version bump. Decisions are **global by default** —
+the reason a mod is fine is a property of the mod, not of the server it
+happens to be on — and can be scoped to one instance when they genuinely are
+situational.
+
+The list lives on the Settings screen, and exports and imports as JSON, so a
+list built over months survives moving to another machine.
 
 ### Manage mods
 
@@ -138,17 +314,35 @@ deals a **hand**: a specific set of mods drawn from the live CurseForge and
 Modrinth catalogues, which it can then install as a real server and hand back
 as a **CurseForge modpack zip** you can share or open in the CurseForge app.
 
-Two things make it more than a shuffle:
+Three things make it more than a shuffle:
 
 - **A pull is reproducible.** Every roll carries a short seed (`QRT-8KM-4Z`).
   Re-enter that seed with the same constraints and you get the same hand,
   exactly — so a roll is something you can send to someone.
-- **The odds are honest.** The panel that says "this will not boot" is
-  computed from the same facts the installer acts on: real file sizes, download
-  counts, how long since anyone touched the mod, and whether it has a
-  server-side code path at all. Mods whose authors state `server_side:
-  unsupported` are dropped before they reach the hand, matched by file hash
-  rather than guessed from a name.
+- **Every mod in the hand is verified, not assumed.** The catalogue's own
+  version filter is looser than it looks: a file tagged 1.21 comes back for a
+  1.21.1 query, installs without complaint, and takes the server down on
+  first boot with a registry error naming nothing useful. So each pinned
+  build is checked against what its publisher actually declares — the exact
+  Minecraft version and a loader this server can run — and anything that
+  fails is dropped **with a reason you can read**.
+- **A short hand is topped up rather than shipped short.** Dealing generously
+  once and truncating works only while few mods drop out; on a version the
+  catalogues have half-updated to, a third of a 120-mod roll can fail
+  verification and you would get 80 mods having asked for 120, with nothing
+  saying why. Instead it deals in rounds — verify, count what survived, deal
+  replacements for exactly the shortfall — and if the pool genuinely runs out
+  it says so and says what to loosen. Still deterministic: the round number
+  goes into the seed.
+
+The odds panel is computed from the same facts the installer acts on: real
+file sizes, download counts, how long since anyone touched the mod, and
+whether it has a server-side code path at all. Mods whose authors state
+`server_side: unsupported` are dropped before they reach the hand, matched by
+file hash rather than guessed from a name. Alongside it, a compatibility
+report says how many of the hand declare your Minecraft version explicitly,
+how many are untagged libraries, and how many are alpha or beta builds
+because no stable release exists yet.
 
 Dependencies are resolved on top of the hand and do not count against your mod
 count. Rows can be **held** through the next pull, or rerolled one slot at a
@@ -409,59 +603,140 @@ the broken form on the Troubleshoot page, and normalises it on every start.
 
 ## API
 
-The UI is a thin client over a plain HTTP API:
+The UI is a thin client over a plain HTTP API. Long operations return
+`{"job_id": ...}`; follow `/api/jobs/{id}/events` for progress.
 
 ```
-GET  /api/health
-GET  /api/ai/status
+GET  /api/health                     connections, storage, key warnings
 GET  /api/host/specs
+GET  /api/ai/status
 
+--- catalogue -------------------------------------------------------------
 GET  /api/browse/modpacks?q=&game_version=&loader=
 GET  /api/browse/mods?q=&source=curseforge|modrinth
+GET  /api/browse/plugins?q=&family=paper&game_version=&category=
 GET  /api/modpacks/{id}/files
+GET  /api/mods/{source}/{project_id}/versions
+GET  /api/plugins/meta                categories and families
+GET  /api/plugins/{project_id}/versions?family=&game_version=
+GET  /api/plugins/starter?family=&game_version=
 
-POST /api/uploads/modpack            multipart "file"       -> imported archive
-GET  /api/uploads                                           -> archives on disk
+--- creating --------------------------------------------------------------
+GET  /api/loaders                     what can be created, with version lists
+GET  /api/loaders/{family}/versions
+POST /api/provision/server            {name, loader, minecraft, port, ...}
+POST /api/instances/{id}/loader/reinstall     retry a failed loader install
+
+--- imports and installs --------------------------------------------------
+POST /api/uploads/modpack             multipart "file"    -> imported archive
+GET  /api/uploads
 DEL  /api/uploads/{upload_id}
-
-POST /api/install/preflight          {mod_id, file_id} | {upload_id}
-                                                            -> client-only review
-POST /api/install/modpack            {mod_id, file_id} | {upload_id},
-                                      server_name, port, exclude_files[], optimize
+POST /api/install/preflight           {mod_id, file_id} | {upload_id}
+POST /api/install/modpack             + server_name, port, exclude_files[],
+                                        disable_files[], optimize
 POST /api/instances/{id}/switch-pack-version
-                                     {mod_id, file_id} | {upload_id}
-GET  /api/jobs/{id}/events           server-sent progress
 
+--- instances -------------------------------------------------------------
 GET  /api/instances
 GET  /api/instances/{id}
-POST /api/instances/{id}/action/{start_server|stop_server|restart_server}
+GET  /api/instances/{id}/stats        just the live numbers
+POST /api/instances/{id}/action/{start_server|stop_server|restart_server|kill_server}
+DEL  /api/instances/{id}?files=true
 
-GET  /api/instances/{id}/mods
-POST /api/instances/{id}/mods/toggle    {file, enabled}
-POST /api/instances/{id}/mods/resolve   {source, project_id}  -> dependency plan
-POST /api/instances/{id}/mods/add       {source, project_id, file_id,
-                                         with_dependencies, skip_dependencies[]}
+--- mods and plugins ------------------------------------------------------
+GET  /api/instances/{id}/mods?directory=mods|plugins
+POST /api/instances/{id}/mods/toggle          {file, enabled}
+POST /api/instances/{id}/mods/bulk-toggle     {files[], enabled}
+POST /api/instances/{id}/mods/delete          {files[]}
+POST /api/instances/{id}/mods/resolve         -> dependency plan
+POST /api/instances/{id}/mods/add             {source, project_id, file_id,
+                                               with_dependencies, replace_file}
 POST /api/instances/{id}/mods/identify
 GET  /api/instances/{id}/mods/updates
+GET  /api/instances/{id}/mods/dependencies
+POST /api/instances/{id}/plugins/resolve      {project_id}  -> install plan
+POST /api/instances/{id}/plugins/add          {project_id, file_id?}
+GET  /api/instances/{id}/plugins/audit        every jar in plugins/, opened
 
+--- files -----------------------------------------------------------------
+GET  /api/instances/{id}/files?path=
+GET  /api/instances/{id}/files/read?path=
+POST /api/instances/{id}/files/write          {path, content, allow_world?}
+POST /api/instances/{id}/files/create         {parent, name, directory}
+POST /api/instances/{id}/files/rename         {path, new_name}
+POST /api/instances/{id}/files/delete         {paths[], allow_world?}
+POST /api/instances/{id}/files/upload?folder= multipart "file"
+GET  /api/instances/{id}/files/download?path= streamed
+POST /api/instances/{id}/files/extract        {path}   .zip only
+GET  /api/instances/{id}/files/search?q=&root=
+GET  /api/instances/{id}/files/usage          per-folder sizes
+
+--- players ---------------------------------------------------------------
+GET  /api/instances/{id}/players
+POST /api/instances/{id}/players/action       {action, name, reason?}
+       action: op | deop | whitelist | unwhitelist | ban | pardon | kick
+             | ban-ip | pardon-ip
+POST /api/instances/{id}/players/bulk         {action, names[], reason?}
+POST /api/instances/{id}/players/whitelist-mode  {enabled} | {reload:true}
+POST /api/instances/{id}/players/note         {name, note}
+GET  /api/players/lookup?name=&online_mode=
+
+--- configs and tuning ----------------------------------------------------
 GET  /api/instances/{id}/configs
 GET  /api/instances/{id}/configs/read?path=
-POST /api/instances/{id}/configs/write  {path, content}
+POST /api/instances/{id}/configs/write        {path, content}
+GET  /api/instances/{id}/properties
+POST /api/instances/{id}/properties           {updates{}}
+GET  /api/instances/{id}/port
+POST /api/instances/{id}/port                 {port, force?}
+GET  /api/instances/{id}/optimize             host specs + proposal
+POST /api/instances/{id}/optimize             {heap_gb, flags[], properties{}}
 
+--- diagnosis -------------------------------------------------------------
 GET  /api/instances/{id}/diagnose
 POST /api/instances/{id}/deep-scan
-POST /api/instances/{id}/ai/analyse     {question?}
-POST /api/instances/{id}/ai/apply       {actions[], confirmed:true}
+POST /api/instances/{id}/client-scan?directory=      every jar, scored
+POST /api/instances/{id}/client-scan/apply    {files[], enabled}
+POST /api/instances/{id}/smoke-test           boot once, watch, stop, report
+GET  /api/instances/{id}/crash-review         deterministic, no model needed
+POST /api/instances/{id}/ai/analyse           {question?}
+POST /api/instances/{id}/ai/crash-review
+POST /api/instances/{id}/ai/apply             {actions[], confirmed:true}
 POST /api/instances/{id}/fix/{accept-eula|java|set-ram|versions}
 
-GET  /api/instances/{id}/optimize       -> host specs + proposal
-POST /api/instances/{id}/optimize       {heap_gb, flags[], properties{}}
-```
+--- console ---------------------------------------------------------------
+GET  /api/instances/{id}/console
+GET  /api/instances/{id}/console/stream       server-sent, diffed
+POST /api/instances/{id}/command              {command}
 
-Long operations return `{"job_id": ...}`; follow `/api/jobs/{id}/events`.
+--- undo, roulette, decisions ---------------------------------------------
+GET  /api/instances/{id}/backups
+POST /api/instances/{id}/backups              {reason}
+POST /api/instances/{id}/backups/{snap}/restore
+GET  /api/roulette/meta
+POST /api/roulette/pool | /roll | /reroll | /install | /preview-export
+GET  /api/roulette/export/{roll_id}
+GET  /api/whitelist?server_id=&verdict=       the allow / block list
+POST /api/whitelist                           {file, verdict, scope, reason}
+DEL  /api/whitelist/{key}
+GET  /api/whitelist/export
+POST /api/whitelist/import                    {payload, replace?}
+POST /api/whitelist/clear
+
+--- jobs ------------------------------------------------------------------
+GET  /api/jobs
+GET  /api/jobs/{id}
+GET  /api/jobs/{id}/events                    server-sent progress
+POST /api/jobs/{id}/cancel
+```
 
 The three install endpoints take **either** CurseForge ids **or** an
 `upload_id` from a previous import — never a mix.
+
+Everything under `files/` refuses an absolute path, a drive letter, a NUL, or
+any `..` segment before the request reaches Crafty. Crafty does reject a
+traversal, but it does it with a 500 and a traceback, and "the component
+downstream happens to refuse" is not a guard.
 
 ## Development
 
@@ -474,32 +749,79 @@ cp .env.example .env.test && $EDITOR .env.test
 
 ### Front end
 
-Three files, served verbatim from `app/static/`: `index.html`, `style.css`,
-`app.js`. No build step, no framework, no runtime network dependency — plain
-ES2020 in one IIFE, every icon inline SVG, and the web font loaded
-non-blocking so a LAN box with no route to the internet still paints
-immediately. `app.js` renders by assigning `innerHTML` from template literals
-and binds by `id` and `[data-*]`, so those names are a contract:
-`design-brief.md` §4.3 lists every hook that must survive a redesign.
+Plain ES modules, served verbatim from `app/static/`. No build step, no
+framework, no bundler:
 
-Do not add a fourth file. The server's cache-busting fingerprint only hashes
-and rewrites those three names, so anything else would be served stale
-forever.
+```
+index.html          the shell — a <link> for each stylesheet, one module script
+css/theme.css       tokens, ornament, motion — shared with the Project Fox page
+css/app.css         the shell and the screens
+js/core.js          h(), icons, the API client, toasts, modals, formatting
+js/app.js           the router, the rail, boot
+js/jobs.js          long operations and the activity drawer
+js/petals.js        the falling sakura
+js/views/*.js       one module per screen, loaded on demand
+```
 
-Three things in there are less obvious than they look:
+Every screen is a dynamic `import()`, so opening the app downloads the shell
+and one view rather than the whole application.
 
-* **The mod list is windowed above 120 rows.** Selection lives in a `Set` of
-  filenames rather than in the DOM, because a row that scrolls out of the
-  window is unmounted and would otherwise lose its checkbox. Toggling patches
-  the data array first and the row only if it happens to be mounted.
-* **A job owns its stream, the modal is only a view onto it.** *Run in
-  Background* closes the view, not the `EventSource`; Activity's **Watch**
-  button re-attaches and replays the buffered log. A job that finishes
-  resolves into a summary the user dismisses, so the warnings that predict a
-  failed first boot outlive the install.
-* **The config editor's gutter is a plain `<pre>`** sharing the textarea's
-  font metrics, with `scrollTop` mirrored. No highlighting overlay: it drifts
-  on wrap and is a maintenance trap.
+**Caching is a header, not a filename.** A `?v=` fingerprint cannot work
+here: a module's own `import './core.js'` carries no query string and nothing
+rewrites it. So `.js`, `.css` and `.html` are served `no-cache,
+must-revalidate` — a few hundred bytes of 304s on a LAN — and fonts and
+images are served `immutable` for a year. Redeploy the container and the
+browser has the new code; there is no stale-asset failure mode to reason
+about.
+
+Four things in there are less obvious than they look:
+
+* **Nothing is built from an HTML string.** `h()` returns real DOM nodes and
+  handlers are attached to the node they belong to. The previous front end
+  assembled markup as text and bound by `id` afterwards, which meant a
+  handler on a static element was attached once and never rebound — a control
+  that closed over a render-time value kept using the first one forever, and
+  the symptom was a button that "did nothing" or did the same thing twice.
+* **A job owns its stream; the drawer is only a view onto it.** Closing the
+  drawer closes the view, never the `EventSource`, and several jobs are
+  followed at once. Every terminal frame carries the result, because a client
+  closes its stream on the first frame reporting a terminal status and there
+  is more than one such frame.
+* **The wiggling polygon is a `z-index:-1` child**, which only paints behind
+  its parent's background while the parent is *not* a stacking context. So
+  nothing carrying a highlight may take a `transform`, an `opacity` below 1,
+  a `filter` or an `isolation` — the hover lift is done with `box-shadow`,
+  and disabled buttons are drawn with colour rather than transparency, for
+  exactly this reason. `dev/tools/check_frontend.py` enforces it.
+* **The editor's gutter is a plain `<pre>`** sharing the textarea's font
+  metrics with `scrollTop` mirrored. No highlighting overlay: it drifts on
+  wrap and is a maintenance trap.
+
+The theme is shared with the Project Fox landing page — the same tokens, the
+same wiggling-polygon highlight, the same shrine motifs (torii, shimenawa,
+chōchin lanterns, sakura mon, ema plaques, falling petals). Archivo Black and
+Plus Jakarta Sans are fetched from Google Fonts on a non-blocking link; when
+that link cannot be reached, the vendored Space Grotesk and JetBrains Mono
+carry the page and `app.js` stamps `no-archivo` on `<html>` so the fallback
+takes the display weight. A box with no route to the internet paints
+immediately rather than waiting out a DNS timeout on a font.
+
+### Checks
+
+```bash
+for t in test_loader_detection test_job_stream test_install_decisions \
+         test_roulette test_boot_verdict; do
+  python dev/tools/$t.py | tail -1
+done
+python dev/tools/check_frontend.py
+```
+
+`check_frontend.py` is the one that catches this front end's own failure
+modes: a module that only parses as a script (`node --check` accepts a broken
+string literal in one — only `--input-type=module` is a real check), an
+import or an asset that does not resolve, an API path no route serves, an
+icon name that is not in the set, and any CSS rule that would turn a
+highlight-bearing element into a stacking context.
 
 ## Licence
 
