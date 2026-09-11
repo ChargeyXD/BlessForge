@@ -103,6 +103,34 @@ _ASSET_TPL = re.compile(r"""`/assets/\$\{[^}]+\}`""")
 _STATIC_REF = re.compile(r"""['"]/static/([A-Za-z0-9._/-]+)['"]""")
 
 
+_CSS_ASSET = re.compile(r"""url\(\s*['"]?/assets/([A-Za-z0-9._/-]+)['"]?\s*\)""")
+
+# Paths under /assets that are served by a ROUTE rather than by the static
+# mount, so there is no file on disk to look for. `backdrop/<theme>` picks
+# whichever scene image is present and redirects to it -- see main.py.
+_ASSET_ROUTES = ("backdrop/light", "backdrop/dark")
+
+
+def check_css_assets() -> None:
+    """Every `/assets/...` a stylesheet names must resolve.
+
+    The JS check below has always covered art referenced from a module.
+    CSS was not scanned because nothing in it referenced an asset -- until
+    the backdrop landed, and a stylesheet URL that 404s is exactly as
+    invisible as a module one: the page simply paints without it.
+    """
+    img = STATIC / "img"
+    for path in sorted((STATIC / "css").glob("*.css")):
+        for ref in sorted(set(_CSS_ASSET.findall(path.read_text(encoding="utf-8")))):
+            if ref in _ASSET_ROUTES:
+                check(f"css asset is a served route: {ref}", True,
+                      "resolved by main.py, not by the static mount")
+                continue
+            check(f"css asset exists: {ref} ({path.name})",
+                  (img / ref).is_file(),
+                  "" if (img / ref).is_file() else "not in app/static/img/")
+
+
 def check_assets() -> None:
     img = STATIC / "img"
     named: set[str] = set()
@@ -126,9 +154,14 @@ def check_assets() -> None:
 # --- 4. every API path the front end calls is a real route -------------
 
 _CALL = re.compile(
-    r"""api\.(?:get|post|put|del|upload|raw)\(\s*[`'"]([^`'"$]*)""")
-_RUN = re.compile(r"""(?:run|runAwait)\(\s*[`'"]([^`'"$]*)""")
-_ES = re.compile(r"""new EventSource\(\s*[`'"]([^`'"$]*)""")
+    r"""api\.(?:get|post|put|del|upload|raw)\(\s*[`'"]([^`'"]*)""")
+_RUN = re.compile(r"""(?:run|runAwait)\(\s*[`'"]([^`'"]*)""")
+_ES = re.compile(r"""new EventSource\(\s*[`'"]([^`'"]*)""")
+# One level of nesting, because call sites interpolate helper calls that
+# take object literals -- `${qs({ folder: path })}`. A plain `[^}]*` stops
+# at the inner brace and leaves `)}` stuck on the end of the path.
+_INTERP = re.compile(r"\$\{(?:[^{}]|\{[^{}]*\})*\}")
+_PARAM = re.compile(r"\{[^}]*\}")
 
 
 def route_patterns() -> set[str]:
@@ -138,27 +171,30 @@ def route_patterns() -> set[str]:
 
 
 def normalise(path: str) -> str:
-    """Turn a call-site path into something comparable with a route.
+    """Turn a call site or a route into one comparable shape.
 
-    Call sites interpolate ids, so the literal prefix is all there is:
-    `/api/instances/${id}/files` arrives here as `/api/instances/`. Compared
-    by prefix for that reason -- a check that demands an exact match would
-    have to reimplement the template.
+    Both sides get their variable parts replaced by the same token:
+    `/api/instances/${id}/files` and `/api/instances/{sid}/files` both
+    become `/api/instances/{}/files`, so they compare equal.
+
+    This used to compare by PREFIX -- a call matched if any route started
+    with it OR it started with any route. That is far too generous: with
+    `/api/fleet/...` calls in the front end and no `/api/fleet` route at
+    all, the check still passed, because `/api` prefixes everything. Ten
+    missing routes went through it green. An exact shape match is the
+    only version of this check worth running.
     """
-    path = path.split("?")[0].rstrip("/")
-    return path
+    path = _INTERP.sub("{}", path)
+    path = _PARAM.sub("{}", path)
+    return path.split("?")[0].rstrip("/")
 
 
 def check_api() -> None:
     try:
-        routes = route_patterns()
+        routes = {normalise(r) for r in route_patterns()}
     except Exception as e:  # noqa: BLE001 -- reported, not raised
         check("the API surface could be imported", False, str(e))
         return
-    # Every route pattern with its parameter placeholders stripped back to
-    # the literal text before the first one.
-    prefixes = {r.split("{")[0].rstrip("/") for r in routes} | {
-        r.rstrip("/") for r in routes}
 
     text = "\n".join(p.read_text(encoding="utf-8") for p in js_files())
     called = {normalise(m) for m in
@@ -166,10 +202,14 @@ def check_api() -> None:
     called = {c for c in called if c.startswith("/api")}
 
     for path in sorted(called):
-        ok = any(path == p or path.startswith(p) or p.startswith(path)
-                 for p in prefixes)
+        # A call site that interpolates a whole path segment can produce a
+        # trailing `{}` the route spells out in full; accept a route that
+        # differs only by having MORE literal text after the last `{}`.
+        ok = path in routes or any(
+            r.startswith(path.rsplit("{}", 1)[0]) and path.endswith("{}")
+            for r in routes)
         check(f"API path is served: {path}", ok,
-              "" if ok else "no route on app.main starts with this")
+              "" if ok else "no route on app.main has this shape")
 
 
 # --- 5. the wiggling-polygon invariant ---------------------------------
@@ -279,6 +319,48 @@ def check_layering() -> None:
           not negatives, ", ".join(negatives[:3]))
 
 
+# --- 5b. every animation names a keyframe that exists -------------------
+
+_ANIM_NAME = re.compile(r"animation(?:-name)?\s*:\s*([^;{}]+)")
+_KEYFRAMES = re.compile(r"@keyframes\s+([A-Za-z_][\w-]*)")
+# Values that can appear in the `animation` shorthand but are not names.
+_ANIM_WORDS = {
+    "none", "infinite", "normal", "reverse", "alternate", "alternate-reverse",
+    "forwards", "backwards", "both", "running", "paused", "linear", "ease",
+    "ease-in", "ease-out", "ease-in-out", "step-start", "step-end", "initial",
+    "inherit", "unset", "revert",
+}
+
+
+def check_keyframes() -> None:
+    """An animation naming a keyframe that does not exist is SILENT.
+
+    No console warning, no error, no fallback -- the element simply keeps
+    its static styles. When the single `p5-wiggle-poly` was replaced by six
+    numbered shapes, four rules in app.css went on naming the old one, and
+    the blobs they belonged to stopped moving and sat there at full opacity
+    instead. The instance tabs lost their labels behind one and nothing
+    anywhere said so.
+    """
+    css = chr(10).join(p.read_text(encoding="utf-8")
+                    for p in sorted((STATIC / "css").glob("*.css")))
+    css = _COMMENT.sub("", css)
+    defined = set(_KEYFRAMES.findall(css))
+    used: set[str] = set()
+    for value in _ANIM_NAME.findall(css):
+        for token in re.split(r"[\s,]+", value.strip()):
+            token = token.strip()
+            if (not token or token in _ANIM_WORDS or token.startswith("var(")
+                    or token.startswith("cubic-bezier") or token.startswith("steps")
+                    or re.match(r"^[-.\d]", token) or token.endswith(")")):
+                continue
+            used.add(token)
+    missing = sorted(used - defined)
+    check("every animation names a keyframe that exists", not missing,
+          ", ".join(missing) if missing
+          else f"{len(defined)} keyframes, {len(used)} named")
+
+
 # --- 6. the icon set is complete ---------------------------------------
 
 def check_icons() -> None:
@@ -298,8 +380,10 @@ def main() -> int:
     check_parses()
     check_imports()
     check_assets()
+    check_css_assets()
     check_icons()
     check_layering()
+    check_keyframes()
     print("--- API contract ---")
     check_api()
     print()

@@ -127,13 +127,10 @@ def _save(data: dict) -> bool:
     """True if it reached disk. The caller decides whether to say so."""
     global _cache
     _cache = data
-    try:
-        _PATH.parent.mkdir(parents=True, exist_ok=True)
-        _PATH.write_text(json.dumps(data, indent=1, sort_keys=True),
-                         encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    # Durable, not merely "written". A direct write_text over the live file
+    # leaves a truncated file if the process dies mid-write, and these are
+    # somebody's client-only decisions. See config.write_state.
+    return config.write_state(_PATH, json.dumps(data, indent=1, sort_keys=True))
 
 
 def items(*, server_id: str | None = None, verdict: str | None = None

@@ -205,6 +205,18 @@ def curseforge_key_warning() -> str | None:
             "CURSEFORGE_API_KEY looks too short; part of it was probably eaten "
             f"by variable expansion. {fix}"
         )
+    # The check above only fires when SOME of the bcrypt prefix survived. A
+    # key eaten completely -- `$2a$10$D3Bo...` sourced by bash, where every
+    # `$...` is a positional parameter -- comes out with no `$` at all and
+    # still passes a length test. That mangled key then fails every request
+    # with a 403 that reads like a revoked key rather than a quoting bug,
+    # which is exactly what happened on 2026-09-11.
+    if not key.startswith("$2"):
+        return (
+            "CURSEFORGE_API_KEY does not start with '$2'. Every CurseForge "
+            "key is bcrypt-shaped, so this one has had its $-segments eaten "
+            f"by shell expansion. {fix}"
+        )
     return None
 
 
@@ -218,3 +230,72 @@ def configured() -> dict:
         "verify_ssl": CRAFTY_VERIFY_SSL,
         "curseforge_key_warning": curseforge_key_warning(),
     }
+
+
+def write_state(path: Path, text: str) -> bool:
+    """Write a small state file so a power cut cannot destroy it.
+
+    Every state writer in this app used to be one `write_text` straight
+    over the live file. That has two failure modes, and a user hit the
+    second one on 2026-09-11:
+
+      1. **Not atomic.** A crash part-way through leaves a truncated file.
+         `json.loads` then rejects it and the data is silently gone --
+         someone's client-only decisions, or their rack layout.
+      2. **Not durable.** Writing to a temp file and renaming fixes (1),
+         but the rename can still reach the disk BEFORE the bytes do.
+         Pull the power and the directory entry points at a correct-length
+         file full of zeros. That is exactly what came back after a hard
+         restart: 559 bytes of NUL where the fleet state had been.
+
+    So: write the temp file, force it to the platform, then rename. The
+    rename itself is atomic on both POSIX and Windows (`Path.replace`).
+    The directory fsync afterwards is what makes the RENAME durable too;
+    it is POSIX-only and simply unavailable on Windows, where the rename
+    is already ordered, hence the guard.
+
+    Returns whether it reached disk. Callers decide whether to tell the
+    user -- most of them can carry on in memory, and refusing to let
+    someone make a rack because /data is read-only would be worse than
+    losing the rack on restart.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(path)
+        if hasattr(os, "O_DIRECTORY"):          # POSIX only
+            fd = os.open(path.parent, os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        return True
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def read_state(path: Path) -> str | None:
+    """Read a state file, treating a corrupt one as absent.
+
+    A file of NUL bytes is what a torn write leaves behind (see
+    `write_state`), and it is not the same as a missing file: it will not
+    parse, and the caller has to decide that "cannot read" means "start
+    empty" rather than crashing the route that touched it.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    # chr(0) rather than an escape: a literal NUL in this source is
+    # exactly the corruption being guarded against.
+    if not text.strip() or not text.strip(chr(0)).strip():
+        return None
+    return text

@@ -111,7 +111,7 @@ async def store(filename: str, chunks: AsyncIterator[bytes]) -> dict:
         "uploaded_at": time.time(),
         "summary": summary,
     }
-    _meta_path(upload_id).write_text(json.dumps(record, indent=2), encoding="utf-8")
+    config.write_state(_meta_path(upload_id), json.dumps(record, indent=2))
     _prune()
     return record
 

@@ -14,10 +14,14 @@
 import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num, compact,
   empty, loadingFox, confirmDialog, modal, close, frag, debounce, segmented,
-  field, toggle, prefs, qs, ago, skeletonGrid,
+  field, toggle, prefs, qs, ago, skeletonGrid, endlessFeed,
 } from '../core.js';
 import { run, runAwait } from '../jobs.js';
 import { state, go, topActions, refreshInstances, bannerIfUnhealthy } from '../app.js';
+// The comic detail panel lives with the mod list it was built for; this
+// screen browses the same catalogue and shows the same panel rather than
+// growing a second one.
+import { komaRow, komaHost } from './tab-mods.js';
 
 export async function render() {
   const node = h('div.wrap.wide');
@@ -25,10 +29,9 @@ export async function render() {
   let query = '';
   let mcVersion = '';
   let loader = '';
-  let page = 0;
   let versions = [];
 
-  const results = h('div');
+  const results = komaHost(h('div'));
 
   topActions(
     h('a.btn.sm.ghost', { href: '#/roulette' }, icon('dice', 14),
@@ -55,7 +58,7 @@ export async function render() {
           { value: 'mods', label: 'Mods' },
           { value: 'import', label: 'Import an export' },
         ], mode, (v) => {
-          mode = v; prefs.set('discover.mode', v); page = 0; paint();
+          mode = v; prefs.set('discover.mode', v); paint();
         }, 'What to browse')),
 
       mode !== 'import'
@@ -64,11 +67,11 @@ export async function render() {
             type: 'search', 'data-search': '1', value: query,
             placeholder: mode === 'packs' ? 'Search modpacks…' : 'Search mods…',
             'aria-label': 'Search',
-            oninput: debounce((e) => { query = e.target.value; page = 0; search(); }, 260),
+            oninput: debounce((e) => { query = e.target.value; search(); }, 260),
           }),
           h('select.inp', {
             style: { maxWidth: '160px' }, 'aria-label': 'Minecraft version',
-            onchange: (e) => { mcVersion = e.target.value; page = 0; search(); },
+            onchange: (e) => { mcVersion = e.target.value; search(); },
           },
             h('option', { value: '' }, 'Any version'),
             ...versions.slice(0, 80).map((v) => h('option', {
@@ -76,22 +79,14 @@ export async function render() {
             }, v))),
           h('select.inp', {
             style: { maxWidth: '150px' }, 'aria-label': 'Loader',
-            onchange: (e) => { loader = e.target.value; page = 0; search(); },
+            onchange: (e) => { loader = e.target.value; search(); },
           },
             h('option', { value: '' }, 'Any loader'),
             ...['Forge', 'NeoForge', 'Fabric', 'Quilt'].map((l) => h('option', {
               value: l, selected: l === loader,
             }, l))),
           h('div.grow'),
-          h('button.btn.icon.sm.ghost', {
-            'aria-label': 'Previous page', disabled: page === 0,
-            onclick: () => { page = Math.max(0, page - 1); search(); },
-          }, icon('chevronLeft', 14)),
-          h('span.mono.muted', `page ${page + 1}`),
-          h('button.btn.icon.sm.ghost', {
-            'aria-label': 'Next page',
-            onclick: () => { page += 1; search(); },
-          }, icon('chevronRight', 14)))
+          h('span.mono.muted.feed-count', { ref: 'count' }, ''))
         : null,
     );
   }
@@ -103,37 +98,44 @@ export async function render() {
     else search();
   }
 
-  const search = debounce(async () => {
-    mount(results, skeletonGrid(8));
-    try {
-      const path = mode === 'packs' ? '/api/browse/modpacks' : '/api/browse/mods';
-      const data = await api.get(path + qs({
-        q: query, game_version: mcVersion, loader,
-        index: page * 24, page_size: 24,
-      }));
-      const items = data.items || data.data || [];
-      if (!items.length) {
-        mount(results, h('div.note',
-          query ? 'Nothing matches that.'
-            : 'The catalogue returned nothing — check the CurseForge key in '
-              + 'Settings.'));
-        return;
-      }
-      mount(results, h('div.grid.gauto.bleed.stagger',
-        ...items.map((m) => packCard(m, mode))));
-    } catch (e) {
-      mount(results, h('div.note.bad', e.message));
-    }
+  /* One feed per search, torn down when the next one starts. Rebuilding it
+     rather than resetting it is deliberate: the grid, the observer and the
+     dedupe set all belong to one query, and carrying any of them across a
+     query is how stale results leak in. */
+  let feed = null;
+
+  const search = debounce(() => {
+    feed?.dispose();
+    const grid = h('div.grid.gauto.bleed');
+    feed = endlessFeed({
+      container: grid,
+      size: 24,
+      fetchPage: (index, size) => api.get(
+        (mode === 'packs' ? '/api/browse/modpacks' : '/api/browse/mods')
+        + qs({ q: query, game_version: mcVersion, loader, index, page_size: size })),
+      render: (m) => packCard(m, mode),
+      empty: () => h('div.note',
+        query ? 'Nothing matches that.'
+          : 'The catalogue returned nothing — check the CurseForge key in '
+            + 'Settings.'),
+    });
+    mount(results, grid, ...feed.nodes);
+    feed.start();
   }, 120);
 
   function packCard(m, kind) {
-    return h('div.card.hoverable.pkcard',
+    const card = h('div.card.hoverable.pkcard',
       h('div.head',
         m.logo ? h('img.art', { src: m.logo, alt: '', loading: 'lazy' })
           : h('div.art', { style: { display: 'grid', placeItems: 'center' } },
             icon('box', 22)),
         h('div', { style: { flex: 1, minWidth: 0 } },
-          h('h3', m.name),
+          // Only the mods half gets a title button: a modpack's own panel is
+          // the release picker, and two ways in would fight over the click.
+          h('h3', kind === 'packs' ? m.name : h('button.koma-open', {
+            type: 'button', 'aria-haspopup': 'dialog',
+            title: `What ${m.name} is, from its catalogue page`,
+          }, m.name)),
           h('div.by', (m.authors || []).slice(0, 2).join(', ')))),
       h('p', m.summary || ''),
       h('div.chiprow',
@@ -148,6 +150,11 @@ export async function render() {
           : h('a.btn.sm.ghost', {
             href: m.url, target: '_blank', rel: 'noopener',
           }, icon('link', 13), h('span', 'Open'))));
+
+    if (kind === 'packs') return card;
+    return komaRow(card, m, {
+      minecraft: mcVersion, loader, kind: 'mod',
+    });
   }
 
   /* --- installing a pack --------------------------------------- */
@@ -526,5 +533,5 @@ export async function render() {
   }
 
   paint();
-  return { node };
+  return { node, dispose: () => feed?.dispose() };
 }

@@ -96,10 +96,9 @@ async def snapshot(server_id: str, reason: str, *,
                 snap["partial"] = True
                 log.warning("snapshot %s: could not store %s: %s", server_id, path, e)
 
-    try:
-        (root / f"{snap['id']}.json").write_text(json.dumps(snap, indent=2))
-    except OSError as e:
-        log.warning("snapshot %s: could not write: %s", server_id, e)
+    if not config.write_state(root / f"{snap['id']}.json",
+                              json.dumps(snap, indent=2)):
+        log.warning("snapshot %s: could not write its manifest", server_id)
         return {**snap, "saved": False}
 
     _prune(server_id)

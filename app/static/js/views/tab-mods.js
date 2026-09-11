@@ -15,14 +15,18 @@
 import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num, compact,
   empty, loadingFox, confirmDialog, modal, close, field, debounce, segmented,
-  frag, prefs, qs, copyText, sideTag, spinner, reveal, sourceMark,
+  frag, prefs, qs, copyText, sideTag, spinner, reveal, sourceMark, ago,
+  endlessFeed,
 } from '../core.js';
 import { run, runAwait } from '../jobs.js';
 
 export async function render(ctx) {
   const dir = ctx.modDir;
   const node = h('div');
-  const listHost = h('div');
+  // One delegated listener for the whole list rather than one per row: the
+  // list is repainted on every filter keystroke and a per-row handler would
+  // be rebuilt hundreds of times for a large mods folder.
+  const listHost = komaHost(h('div'));
   const barHost = h('div');
   mount(node, barHost, listHost);
   mount(listHost, loadingFox(`Reading ${dir}/`));
@@ -187,7 +191,8 @@ export async function render(ctx) {
   function row(m) {
     const u = updates?.items?.find((x) => x.file === m.file);
     const isSel = selected.has(m.file);
-    return h(`div.modrow${m.enabled ? '' : '.off'}${isSel ? '.sel' : ''}`,
+    const title = m.name || m.file;
+    const el = h(`div.modrow${m.enabled ? '' : '.off'}${isSel ? '.sel' : ''}`,
       h('input', {
         type: 'checkbox', checked: isSel,
         'aria-label': `Select ${m.name || m.file}`,
@@ -200,7 +205,15 @@ export async function render(ctx) {
         ? h('img.ico', { src: m.logo, alt: '', loading: 'lazy' })
         : h('div.ico', (m.name || m.file).slice(0, 2).toUpperCase()),
       h('div.who',
-        h('div.nm', m.name || m.file),
+        // A real button, not a clickable div: it keeps the row openable from
+        // the keyboard without inventing a role, and it sits in the tab order
+        // beside the controls instead of in front of them.
+        h('div.nm', m.project_id
+          ? h('button.koma-open', {
+            type: 'button', 'aria-haspopup': 'dialog',
+            title: `What ${title} is, from its ${SOURCE_LABEL[m.source] || 'catalogue'} page`,
+          }, title)
+          : title),
         h('div.fn', m.file, m.size ? ` · ${m.size}` : ''),
         h('div.tags',
           // The side tag leads, because it is the question this tab exists
@@ -228,6 +241,24 @@ export async function render(ctx) {
           onclick: () => rowMenu(m),
         }, icon('sliders', 13)),
       ));
+
+    // An unidentified jar matches no catalogue project, so there is no source
+    // page to open — it stays an ordinary row rather than a dead click.
+    if (m.project_id) {
+      komaRow(el, m, {
+        minecraft: ctx.minecraft,
+        loader: ctx.plugins ? null : ctx.loader,
+        family: ctx.plugins ? (ctx.loader || 'paper') : null,
+        kind: ctx.plugins ? 'plugin' : 'mod',
+        installed: m,
+        update: u,
+        primary: {
+          label: 'Change version', icon: 'layers',
+          onclick: () => openVersions(m),
+        },
+      });
+    }
+    return el;
   }
 
   /* --- single operations --------------------------------------- */
@@ -456,30 +487,37 @@ export async function render(ctx) {
    Add-a-mod browser (CurseForge + Modrinth)
    ============================================================ */
 
-export function openModBrowser(ctx, onDone) {
-  let source = prefs.get('mods.source', 'curseforge');
-  let query = '';
-  let page = 0;
-  const results = h('div');
+export function openModBrowser(ctx, onDone, initial = {}) {
+  // `initial` exists so the detail popup can put the operator back where they
+  // were. Opening a mod's panel replaces this dialog — there is one modal
+  // host — and coming back to an empty search box would lose the search.
+  let source = initial.source || prefs.get('mods.source', 'curseforge');
+  let query = initial.query || '';
+  const results = komaHost(h('div'));
 
-  const search = debounce(async () => {
-    mount(results, loadingFox('Searching'));
-    try {
-      const data = await api.get('/api/browse/mods' + qs({
+  let feed = null;
+
+  const search = debounce(() => {
+    feed?.dispose();
+    const grid = h('div.grid.gauto');
+    // `back` no longer carries a page number: returning from a mod's detail
+    // re-opens the browser on the same query, which re-fetches from the top.
+    // Restoring a scroll offset into a catalogue that re-ranks per request
+    // would land somewhere arbitrary, so it does not pretend to.
+    const back = () => openModBrowser(ctx, onDone, { query, source });
+    feed = endlessFeed({
+      container: grid,
+      size: 20,
+      fetchPage: (index, size) => api.get('/api/browse/mods' + qs({
         q: query, source, game_version: ctx.minecraft,
-        loader: ctx.loader, index: page * 20, page_size: 20,
-      }));
-      const items = data.items || [];
-      if (!items.length) {
-        mount(results, h('div.note',
-          `Nothing on ${source} matches that for ${ctx.loader} ${ctx.minecraft}.`));
-        return;
-      }
-      mount(results, h('div.grid.gauto',
-        ...items.map((m) => catalogueCard(m, source, ctx, onDone))));
-    } catch (e) {
-      mount(results, h('div.note.bad', e.message));
-    }
+        loader: ctx.loader, index, page_size: size,
+      })),
+      render: (m) => catalogueCard(m, source, ctx, onDone, back),
+      empty: () => h('div.note',
+        `Nothing on ${source} matches that for ${ctx.loader} ${ctx.minecraft}.`),
+    });
+    mount(results, grid, ...feed.nodes);
+    feed.start();
   }, 220);
 
   modal({
@@ -489,7 +527,7 @@ export function openModBrowser(ctx, onDone) {
       h('div.listbar', { style: { position: 'static', marginBottom: '14px' } },
         h('input.inp.grow', {
           type: 'search', placeholder: 'Search mods…', autofocus: true,
-          'aria-label': 'Search mods',
+          value: query, 'aria-label': 'Search mods',
           oninput: (e) => { query = e.target.value; page = 0; search(); },
         }),
         segmented([
@@ -509,14 +547,17 @@ export function openModBrowser(ctx, onDone) {
   search();
 }
 
-function catalogueCard(m, source, ctx, onDone) {
-  return h('div.card.hoverable.pkcard',
+function catalogueCard(m, source, ctx, onDone, back) {
+  const card = h('div.card.hoverable.pkcard',
     h('div.head',
       m.logo ? h('img.art', { src: m.logo, alt: '', loading: 'lazy' })
         : h('div.art', { style: { display: 'grid', placeItems: 'center' } },
           icon('box', 20)),
       h('div', { style: { flex: 1, minWidth: 0 } },
-        h('h3', m.name),
+        h('h3', h('button.koma-open', {
+          type: 'button', 'aria-haspopup': 'dialog',
+          title: `What ${m.name} is, from its ${SOURCE_LABEL[source] || source} page`,
+        }, m.name)),
         h('div.by', (m.authors || []).slice(0, 2).join(', ') || source))),
     h('p', m.summary || ''),
     h('div.foot',
@@ -528,6 +569,14 @@ function catalogueCard(m, source, ctx, onDone) {
       h('button.btn.sm.primary', {
         onclick: () => pickVersion(m, source, ctx, onDone),
       }, hl(), icon('plus', 13), h('span', 'Add'))));
+
+  return komaRow(card, { ...m, source }, {
+    minecraft: ctx.minecraft, loader: ctx.loader, kind: 'mod', back,
+    primary: {
+      label: 'Choose a build', icon: 'plus',
+      onclick: () => pickVersion(m, source, ctx, onDone),
+    },
+  });
 }
 
 async function pickVersion(m, source, ctx, onDone) {
@@ -574,11 +623,11 @@ async function pickVersion(m, source, ctx, onDone) {
    Plugin browser — Modrinth only, compatibility checked
    ============================================================ */
 
-export function openPluginBrowser(ctx, onDone) {
-  let query = '';
-  let category = '';
-  let sort = 'relevance';
-  const results = h('div');
+export function openPluginBrowser(ctx, onDone, initial = {}) {
+  let query = initial.query || '';
+  let category = initial.category || '';
+  let sort = initial.sort || 'relevance';
+  const results = komaHost(h('div'));
 
   const search = debounce(async () => {
     mount(results, loadingFox('Searching Modrinth'));
@@ -594,8 +643,10 @@ export function openPluginBrowser(ctx, onDone) {
           + `${ctx.minecraft}.`));
         return;
       }
+      const back = () =>
+        openPluginBrowser(ctx, onDone, { query, category, sort });
       mount(results, h('div.grid.gauto',
-        ...items.map((p) => pluginCard(p, ctx, onDone))));
+        ...items.map((p) => pluginCard(p, ctx, onDone, back))));
     } catch (e) {
       mount(results, h('div.note.bad', e.message));
     }
@@ -603,7 +654,7 @@ export function openPluginBrowser(ctx, onDone) {
 
   api.get('/api/plugins/meta').then((meta) => {
     catSelect.append(...(meta.categories || []).map((c) =>
-      h('option', { value: c.key }, c.title)));
+      h('option', { value: c.key, selected: c.key === category }, c.title)));
   }).catch(() => {});
 
   const catSelect = h('select.inp', {
@@ -618,7 +669,7 @@ export function openPluginBrowser(ctx, onDone) {
       h('div.listbar', { style: { position: 'static', marginBottom: '12px' } },
         h('input.inp.grow', {
           type: 'search', placeholder: 'Search plugins…', autofocus: true,
-          'aria-label': 'Search plugins',
+          value: query, 'aria-label': 'Search plugins',
           oninput: (e) => { query = e.target.value; search(); },
         }),
         catSelect,
@@ -644,14 +695,17 @@ export function openPluginBrowser(ctx, onDone) {
 const COMPAT_TONE = { exact: 'ok', good: 'info', unknown: 'dead',
   risky: 'warn', blocked: 'bad' };
 
-function pluginCard(p, ctx, onDone) {
-  return h('div.card.hoverable.pkcard',
+function pluginCard(p, ctx, onDone, back) {
+  const card = h('div.card.hoverable.pkcard',
     h('div.head',
       p.logo ? h('img.art', { src: p.logo, alt: '', loading: 'lazy' })
         : h('div.art', { style: { display: 'grid', placeItems: 'center' } },
           icon('puzzle', 20)),
       h('div', { style: { flex: 1, minWidth: 0 } },
-        h('h3', p.name),
+        h('h3', h('button.koma-open', {
+          type: 'button', 'aria-haspopup': 'dialog',
+          title: `What ${p.name} is, from its Modrinth page`,
+        }, p.name)),
         h('div.by', (p.authors || []).join(', ') || 'Modrinth'))),
     h('p', p.summary || ''),
     h('div.chiprow',
@@ -665,6 +719,15 @@ function pluginCard(p, ctx, onDone) {
         title: p.compat === 'blocked' ? p.compat_note : null,
         onclick: () => resolvePlugin(p, ctx, onDone),
       }, hl(), icon('plus', 13), h('span', 'Add'))));
+
+  return komaRow(card, p, {
+    minecraft: ctx.minecraft, family: ctx.loader || 'paper', kind: 'plugin',
+    compat: p.compat, compatNote: p.compat_note, back,
+    primary: p.compat === 'blocked' ? null : {
+      label: 'Plan the install', icon: 'plus',
+      onclick: () => resolvePlugin(p, ctx, onDone),
+    },
+  });
 }
 
 async function resolvePlugin(p, ctx, onDone) {
@@ -757,4 +820,391 @@ async function resolvePlugin(p, ctx, onDone) {
         h('span', toInstall.length ? 'Install' : 'Nothing to do')),
     ),
   });
+}
+
+/* ============================================================
+   KOMA — a mod or plugin's source page, as a comic panel.
+
+   A koma is one frame of a manga page, and that is what this
+   is: a hard-edged panel with an offset shadow, action lines
+   radiating from behind it, halftone under the body copy and
+   the summary in a speech balloon with a torn tail. It is built
+   out of the vocabulary the rest of the app already speaks —
+   the 2.5px edge, the -8deg skew, gold leaf, sakura — rather
+   than out of a generic comic template.
+
+   Three things about it are load-bearing rather than styling:
+
+   * It reuses core.js's `modal()`. That is where the focus
+     trap, Escape, the scrim and the scroll lock live, and a
+     second dialog implementation would have to get all four
+     right again. The only thing added on top is a class on the
+     returned panel.
+   * The description NEVER arrives as markup. The server flattens
+     both CurseForge's HTML and Modrinth's Markdown into typed
+     text blocks, and every one of them is passed to `h()` as a
+     string, which becomes a text node. There is no innerHTML on
+     this path and no sanitiser allow-list to get wrong later.
+   * It opens from a click anywhere on the row EXCEPT a control,
+     and from the keyboard through a real button on the title —
+     so the row gains a way in without the controls inside it
+     losing their place in the tab order.
+   ============================================================ */
+
+const KOMA = new WeakMap();
+
+const SOURCE_LABEL = { curseforge: 'CurseForge', modrinth: 'Modrinth' };
+
+/* What a click inside a row may land on without opening the panel:
+   anything interactive. The install button, the enable toggle, the select
+   checkbox, a link out. `.koma-open` — the title — is the one exception,
+   because it exists to open the panel. */
+const KOMA_CONTROLS = 'a[href],button,input,select,textarea,label,summary,'
+  + '[role="button"],[contenteditable]';
+
+/* The one client-side gate on a third-party URL. The Python clients already
+   filter these to http(s); doing it again at the point of use means a link
+   in this panel can never become a `javascript:` because some later caller
+   passed an unfiltered field. */
+function httpUrl(url) {
+  if (!url) return null;
+  const text = String(url).trim();
+  return /^https?:\/\//i.test(text) ? text : null;
+}
+
+/* Mark a row or card as carrying a detail panel. The payload is held in a
+   WeakMap rather than in data- attributes: a row is a live object with an
+   id, a side, a compat verdict and an installed file on it, and stringifying
+   that into the DOM only to parse it back is a way to lose the types. */
+export function komaRow(el, item, opts = {}) {
+  const id = item && (item.project_id ?? item.id);
+  if (id === undefined || id === null || id === '') return el;
+  KOMA.set(el, { item, opts });
+  el.dataset.koma = '1';
+  return el;
+}
+
+/* One delegated listener per list, bound once. These lists repaint on every
+   keystroke, and a handler per row would be rebuilt hundreds of times over
+   for a large mods folder. */
+export function komaHost(host) {
+  if (host.dataset.komaHost) return host;
+  host.dataset.komaHost = '1';
+  host.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-koma]');
+    if (!row || !host.contains(row)) return;
+    const control = e.target.closest(KOMA_CONTROLS);
+    if (control && row.contains(control)
+        && !control.classList.contains('koma-open')) return;
+    const rec = KOMA.get(row);
+    if (rec) openKoma(rec.item, rec.opts);
+  });
+  return host;
+}
+
+export function openKoma(item, opts = {}) {
+  const source = String(item.source || opts.source || 'curseforge').toLowerCase();
+  const id = item.project_id ?? item.id;
+  const name = item.name || item.file || 'This project';
+
+  // What the row already knew. The panel is drawn from this immediately and
+  // upgraded when the catalogue answers — so the wait is never a blank box,
+  // and a catalogue that never answers still leaves something readable.
+  const seed = {
+    source,
+    kind: opts.kind || 'mod',
+    name,
+    summary: item.summary || '',
+    logo: item.logo || null,
+    authors: (item.authors || []).filter(Boolean),
+    categories: item.display_categories || item.categories || [],
+    downloads: item.downloads,
+    date_modified: item.updated || null,
+    url: httpUrl(item.url),
+    client_side: item.client_side || null,
+    server_side: item.server_side || null,
+    client_only: item.client_only,
+    client_only_reasons: item.client_only_reasons,
+  };
+
+  const host = h('div.koma');
+  const state = { seed, detail: null, error: null, loading: true };
+
+  const dialog = modal({
+    title: name,
+    wide: true,
+    body: host,
+    footer: komaFooter(opts),
+  });
+  dialog.panel.classList.add('koma-modal');
+
+  const paint = () => mount(host, komaView(state, opts, load));
+
+  async function load() {
+    state.loading = true;
+    state.error = null;
+    paint();
+    try {
+      const detail = await api.get(
+        `/api/mods/${source}/${encodeURIComponent(id)}/detail`
+        + qs({
+          game_version: opts.minecraft,
+          loader: opts.loader,
+          family: opts.family,
+        }));
+      // The operator may well have closed the panel while this was in
+      // flight; painting into a detached node is harmless but pointless.
+      if (!host.isConnected) return;
+      state.detail = detail;
+    } catch (e) {
+      if (!host.isConnected) return;
+      state.error = e.message || String(e);
+    }
+    state.loading = false;
+    paint();
+  }
+
+  paint();
+  load();
+}
+
+function komaFooter(opts) {
+  const primary = opts.primary;
+  return frag(
+    // There is one modal host, so opening this panel replaced whatever was
+    // behind it. Coming back to an empty search box would lose the search,
+    // so the browser is reopened on the terms it was left on.
+    opts.back
+      ? h('button.btn.sm.ghost', { onclick: () => opts.back() },
+        icon('arrowLeft', 14), h('span', 'Back to results'))
+      : null,
+    h('div.grow'),
+    h('button.btn.sm.ghost', { onclick: () => close() }, h('span', 'Close')),
+    primary
+      ? h('button.btn.sm.primary', { onclick: primary.onclick }, hl(),
+        icon(primary.icon || 'plus', 14), h('span', primary.label))
+      : null,
+  );
+}
+
+function komaView(st, opts, retry) {
+  const d = st.detail || {};
+  const s = st.seed;
+  const wait = (node) => (st.loading
+    ? h('span.skel', { style: { display: 'inline-block', width: '70px' } })
+    : node);
+
+  const name = d.name || s.name;
+  const logo = d.logo_full || d.logo || s.logo;
+  // The caller's word beats the catalogue's here: a Modrinth plugin
+  // searches as `plugin` and reads back as `project_type: mod`, so a
+  // panel that trusted the project would call every plugin a mod.
+  const kind = opts.kind || d.kind || 'mod';
+  const authors = (d.authors || []).length ? d.authors : s.authors;
+  const cats = (d.categories || []).length ? d.categories : s.categories;
+  const downloads = d.downloads ?? s.downloads;
+  const updated = d.date_modified || s.date_modified;
+  const offer = d.offer;
+  const inst = opts.installed;
+  const where = SOURCE_LABEL[s.source] || 'the catalogue';
+  const glyph = kind === 'plugin' ? 'puzzle' : 'box';
+
+  const cell = (label, value, small, extra) => h(`div.koma-cell${extra || ''}`,
+    h('div.k', label), h(`div.v${small ? '.sm' : ''}`, value));
+
+  const links = [
+    ['Project page', d.url || s.url, 'link'],
+    ['Source code', d.source_url, 'terminal'],
+    ['Issues', d.issues_url, 'alert'],
+    ['Wiki', d.wiki_url, 'fileText'],
+    ['Discord', d.discord_url, 'users'],
+  ].filter((row) => httpUrl(row[1]));
+
+  return frag(
+    h('div.koma-burst', { 'aria-hidden': 'true' }),
+    h('div.koma-panel',
+
+      h('div.koma-hero',
+        h('div.koma-artwrap',
+          logo
+            ? h('img.koma-art', {
+              src: logo, alt: '', loading: 'lazy', referrerPolicy: 'no-referrer',
+              onerror: (e) => e.target.replaceWith(
+                h('div.koma-art', icon(glyph, 26))),
+            })
+            : h('div.koma-art', icon(glyph, 26))),
+        h('div', { style: { flex: 1, minWidth: 0 } },
+          h('span.koma-kicker', h('span', `${where} ${kind}`)),
+          h('h2.koma-name', name),
+          h('div.koma-by',
+            sourceMark(s.source),
+            authors.length
+              ? h('span', `by ${authors.slice(0, 3).join(', ')}`)
+              : h('span.muted', 'no author published')))),
+
+      h('div.koma-balloon', d.summary || s.summary
+        || 'This project publishes no summary of itself.'),
+
+      h('div.chiprow',
+        sideTag({
+          server_side: d.server_side ?? s.server_side,
+          client_side: d.client_side ?? s.client_side,
+          client_only: s.client_only,
+          client_only_reasons: s.client_only_reasons,
+        }),
+        opts.compat
+          ? pill(opts.compat, COMPAT_TONE[opts.compat] || 'dead', opts.compatNote)
+          : null,
+        ...cats.slice(0, 7).map((c) => pill(c, 'ghost'))),
+
+      h('div.koma-strip',
+        // Gold leaf needs a dark ground to read as gold rather than as pale
+        // yellow, and --slab-bg inverts between themes. The lacquer cell is
+        // dark in both, which is the only place in this panel the foil is
+        // legible in light mode.
+        cell('Downloads', downloads === undefined || downloads === null
+          ? '—' : h('span.foil', compact(downloads)), false, '.lacquer'),
+        s.source === 'modrinth'
+          ? cell('Followers', wait(compact(d.follows)))
+          : null,
+        cell('Last updated', updated ? ago(updated) : '—', true),
+        cell('Licence', wait(licenceText(d, s)), true),
+        inst ? cell('Installed', inst.version || inst.file, true) : null,
+        d.loaders?.length ? cell('Loaders', d.loaders.join(', '), true) : null),
+
+      h('div.koma-h', 'The build on offer'),
+      komaOffer(st, opts, offer, inst),
+
+      h('div.koma-links',
+        ...links.map(([label, href, glyphName]) => h('a.btn.sm.ghost', {
+          href: httpUrl(href), target: '_blank', rel: 'noopener noreferrer',
+        }, icon(glyphName, 13), h('span', label))),
+        !links.length && !st.loading
+          ? h('span.muted', { style: { fontSize: '12.5px' } },
+            'This project links nowhere else.')
+          : null),
+
+      (d.gallery || []).length ? komaGallery(d.gallery) : null,
+
+      st.error
+        ? komaDead(st.error, s, retry)
+        : frag(
+          h('div.koma-h', `What ${where} says about it`),
+          h('div.koma-read',
+            st.loading
+              ? h('div.koma-skel',
+                spinner('Reading the source page'),
+                ...[88, 96, 72, 92, 60].map((w) => h('div.skel', {
+                  style: { width: `${w}%` },
+                })))
+              : (d.body_blocks || []).length
+                ? frag(...d.body_blocks.map(komaBlock))
+                : h('p.muted', 'This project publishes no description.'))),
+    ),
+  );
+}
+
+/* The whole strip goes when the last screenshot fails, heading and all: a
+   section rule with nothing under it reads as a broken page rather than as
+   a project with no screens. */
+function komaGallery(gallery) {
+  const strip = h('div.koma-gal');
+  const wrap = h('div.koma-galwrap',
+    h('div.koma-h', 'From the project page'), strip);
+  strip.append(...gallery.slice(0, 6).map((g) => h('img', {
+    src: g.thumb || g.url, alt: g.title || '', loading: 'lazy',
+    referrerPolicy: 'no-referrer', title: g.title || '',
+    onerror: (e) => {
+      e.target.remove();
+      if (!strip.childElementCount) wrap.remove();
+    },
+  })));
+  return wrap;
+}
+
+/* Every block is handed to h() as a STRING, which becomes a text node. That
+   is the whole defence: a description written by a third party has no path
+   to being parsed as markup here, because nothing on this path parses. */
+function komaBlock(b) {
+  if (b.t === 'rule') return h('hr');
+  if (b.t === 'h') return h('h4', b.text);
+  if (b.t === 'li') return h('div.koma-li', h('span', b.text));
+  if (b.t === 'quote') return h('div.koma-q', b.text);
+  if (b.t === 'code') return h('pre', b.text);
+  return h('p', b.text);
+}
+
+function licenceText(d, s) {
+  const lic = d.license;
+  if (lic) return lic.name || lic.id || '—';
+  if (!d.source) return '—';
+  // Not a gap in this app: CurseForge's Core API carries no licence field on
+  // a project at all, and an em dash there reads as a failed load.
+  return s.source === 'curseforge' ? 'not in the CurseForge API' : 'none stated';
+}
+
+function komaOffer(st, opts, offer, inst) {
+  if (st.loading) {
+    return h('div.koma-offer',
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div.skel', { style: { width: '46%', height: '15px' } }),
+        h('div.skel', { style: { width: '70%', marginTop: '6px' } })));
+  }
+  if (st.error) {
+    return h('div.note.warn',
+      'Which build fits this server could not be checked while the '
+      + 'catalogue is unreachable.');
+  }
+  if (!offer) {
+    const target = [opts.family || opts.loader, opts.minecraft]
+      .filter(Boolean).join(' ');
+    return h('div.note.warn',
+      h('b', 'Nothing published for this server'),
+      target
+        ? `No build of this ${st.seed.kind} is published for ${target}.`
+        : 'No build of this project could be listed.');
+  }
+  const same = inst && String(offer.file_id) === String(inst.file_id);
+  const update = opts.update;
+  return h('div.koma-offer',
+    h('div', { style: { flex: 1, minWidth: 0 } },
+      h('div.nm', offer.display_name || offer.version_number
+        || offer.file_name || 'A build'),
+      h('div.fn',
+        offer.file_name || '',
+        offer.size ? ` · ${bytes(offer.size)}` : '',
+        offer.date ? ` · ${ago(offer.date)}` : '')),
+    pill(offer.release_type || 'release',
+      offer.release_type === 'release' ? 'ok' : 'warn'),
+    same ? pill('already installed', 'info') : null,
+    !same && update?.has_update
+      ? pill(`update → ${update.latest_version || 'newer'}`, 'plum')
+      : null);
+}
+
+function komaDead(message, seed, retry) {
+  const where = SOURCE_LABEL[seed.source] || 'The catalogue';
+  const noKey = /CURSEFORGE_API_KEY/i.test(message || '');
+  return h('div.koma-dead',
+    h('span.koma-bang', h('span', 'No signal')),
+    h('p', `${where} did not answer, so the description, the licence and the `
+      + 'build on offer are all missing. Everything above came from the '
+      + 'search result itself and is still true.'),
+    noKey
+      ? h('p.muted', 'This one is fixable here: CurseForge needs an API key, '
+        + 'and there is a field for it in Settings.')
+      : null,
+    h('div.mono.wrapany.muted', { style: { fontSize: '11.5px' } }, message),
+    h('div.btnrow',
+      h('button.btn.sm', { onclick: retry }, hl(), icon('refresh', 13),
+        h('span', 'Try again')),
+      noKey
+        ? h('a.btn.sm.ghost', { href: '#/settings', onclick: () => close() },
+          icon('gear', 13), h('span', 'Open settings'))
+        : null,
+      httpUrl(seed.url)
+        ? h('a.btn.sm.ghost', {
+          href: httpUrl(seed.url), target: '_blank', rel: 'noopener noreferrer',
+        }, icon('link', 13), h('span', `Open on ${where}`))
+        : null));
 }

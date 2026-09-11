@@ -105,14 +105,42 @@ export function mount(el, ...kids) {
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-/* The wiggling-polygon highlight, as a child. It must be the FIRST child so
-   it is behind the label in source order, and its parent must never take a
-   transform — a transform makes the parent a stacking context and the blob
-   then paints between the fill and the text instead of behind both. */
+/* The wiggling-polygon highlight, as a child. It must be the FIRST child of
+   a host that isolates its own stacking context, so the layer order is
+   blob (0) / fill (1) / content (2) — see THE WIGGLING POLYGON in theme.css.
+
+   Every blob gets its own motion. One shared keyframe set made the whole
+   fleet screen wiggle in lockstep, which reads as one animation applied
+   many times rather than a page where things are alive. Six shapes, a
+   continuous duration, a random starting phase and a random direction give
+   roughly 6 x 4 x infinity distinct motions, so no two blobs on screen
+   match and none has a loop you can see.
+
+   Stamped here rather than with :nth-child because nth-child is positional:
+   the third card in every grid would share its motion, and a re-render
+   would deal every card a different one. Stamped at creation, it is the
+   element's own for as long as it lives.
+
+   The animation itself only exists while the host is hovered, so an idle
+   screen of forty cards runs nothing at all. */
+const P5_SHAPES = 6;
+const P5_INNER = 4;
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+
 export function hl() {
   const span = document.createElement('span');
   span.className = 'p5-hl';
   span.setAttribute('aria-hidden', 'true');
+  const s = span.style;
+  s.setProperty('--p5-a', `p5-w${1 + Math.floor(Math.random() * P5_SHAPES)}`);
+  s.setProperty('--p5-b', `p5-i${1 + Math.floor(Math.random() * P5_INNER)}`);
+  s.setProperty('--p5-dur', `${rand(0.52, 1.05).toFixed(2)}s`);
+  s.setProperty('--p5-dur-b', `${rand(0.7, 1.4).toFixed(2)}s`);
+  // A negative delay starts the animation part-way through its cycle, so
+  // two blobs with the same duration still do not move together.
+  s.setProperty('--p5-delay', `-${rand(0, 1).toFixed(2)}s`);
+  s.setProperty('--p5-delay-b', `-${rand(0, 1.4).toFixed(2)}s`);
+  s.setProperty('--p5-dir', Math.random() < 0.5 ? 'normal' : 'reverse');
   return span;
 }
 
@@ -534,6 +562,298 @@ export function loadingFox(label = 'Working') {
     h('span', label));
 }
 
+/* The shape of a screen, before its data exists.
+   ------------------------------------------------------------
+   Navigating used to mean: blank the page, show a spinner, wait
+   for a dynamic import AND a network round trip, then drop the
+   entire finished screen in at once. Two jarring moments per
+   navigation, and the second one moves everything.
+
+   A skeleton removes both. It paints SYNCHRONOUSLY -- before the
+   view module has even been fetched -- so the frame after a click
+   already has the right layout in it, and when the real content
+   arrives it replaces boxes that are already the right size and
+   in the right place. Nothing jumps, because nothing moves.
+
+   The spec is deliberately tiny. A skeleton that tries to be an
+   exact copy of a screen is a second implementation of that
+   screen, and it rots the moment someone edits the real one.
+   Matching the SHAPE -- a header, four tiles, a grid of cards --
+   is all that is needed for the swap to read as continuous. */
+const SKEL_PARTS = {
+  head: () => h('div.sk-head',
+    h('div.skel', { style: { width: '180px', height: '11px' } }),
+    h('div.skel', { style: { width: 'min(340px,62%)', height: '34px' } })),
+
+  bar: () => h('div.sk-bar',
+    ...Array.from({ length: 4 }, (_, i) => h('div.skel', {
+      style: { width: `${[68, 54, 62, 88][i]}px`, height: '30px' },
+    }))),
+
+  kpis: (n) => h('div.kpis', ...Array.from({ length: n }, () =>
+    h('div.sk-kpi',
+      h('div.skel', { style: { width: '58%', height: '9px' } }),
+      h('div.skel', { style: { width: '42%', height: '24px' } }),
+      h('div.skel', { style: { width: '70%', height: '10px' } })))),
+
+  cards: (n) => h('div.grid.gauto', ...Array.from({ length: n }, () =>
+    h('div.skelcard',
+      h('div.skel', { style: { width: '55%', height: '18px' } }),
+      h('div.skel', { style: { width: '82%' } }),
+      h('div.skel', { style: { width: '40%' } }),
+      h('div.skel', { style: { width: '68%', marginTop: 'auto' } })))),
+
+  rows: (n) => h('div.sk-rows', ...Array.from({ length: n }, (_, i) =>
+    h('div.sk-row',
+      h('div.skel', { style: { width: '26px', height: '26px', flex: 'none' } }),
+      h('div.skel', { style: { width: `${38 + ((i * 13) % 44)}%` } }),
+      h('div.skel', { style: { width: '64px', marginLeft: 'auto' } })))),
+
+  panels: (n) => h('div.sk-panels', ...Array.from({ length: n }, () =>
+    h('div.sk-panel',
+      h('div.sk-panelhd', h('div.skel', { style: { width: '140px', height: '11px' } })),
+      h('div.sk-panelbody',
+        h('div.skel', { style: { width: '72%' } }),
+        h('div.skel', { style: { width: '48%' } }),
+        h('div.skel', { style: { width: '86%' } }))))),
+
+  instanceHead: () => h('div.sk-inst',
+    h('div.sk-insthd',
+      h('div.skel', { style: { width: '52px', height: '52px', flex: 'none' } }),
+      h('div.sk-insttitle',
+        h('div.skel', { style: { width: 'min(280px,54%)', height: '26px' } }),
+        h('div.skel', { style: { width: 'min(200px,38%)', height: '12px' } }))),
+    h('div.sk-tabs', ...Array.from({ length: 9 }, (_, i) =>
+      h('div.skel', { style: { width: `${[74, 62, 58, 70, 76, 68, 56, 82, 60][i]}px`,
+        height: '20px' } })))),
+
+  racks: (n) => h('div.sk-racks', ...Array.from({ length: n }, () =>
+    h('div.sk-rack',
+      h('div.sk-lintel'),
+      h('div.sk-plaques', ...Array.from({ length: 3 }, () =>
+        h('div.sk-plaque')))))),
+};
+
+export function pageSkeleton(spec = {}) {
+  const wrap = h(`div.wrap${spec.wide ? '.wide' : ''}.sk`);
+  if (spec.head) wrap.append(SKEL_PARTS.head());
+  if (spec.instanceHead) wrap.append(SKEL_PARTS.instanceHead());
+  if (spec.bar) wrap.append(SKEL_PARTS.bar());
+  if (spec.kpis) wrap.append(SKEL_PARTS.kpis(spec.kpis));
+  if (spec.panels) wrap.append(SKEL_PARTS.panels(spec.panels));
+  if (spec.racks) wrap.append(SKEL_PARTS.racks(spec.racks));
+  if (spec.cards) wrap.append(SKEL_PARTS.cards(spec.cards));
+  if (spec.rows) wrap.append(SKEL_PARTS.rows(spec.rows));
+  if (spec.split) {
+    wrap.append(h('div.sk-split',
+      h('div', SKEL_PARTS.cards(spec.split[0] || 4)),
+      h('div', SKEL_PARTS.panels(1))));
+  }
+  return wrap;
+}
+
+/* A skeleton that flashes past is worse than none: the eye catches the
+   change and reads it as a glitch. Once one is on screen it stays for at
+   least this long, so a fast screen and a slow one arrive with the same
+   rhythm instead of one of them stuttering. */
+export const SKEL_MIN_MS = 140;
+
+export function heldFor(startedAt, minimum = SKEL_MIN_MS) {
+  const left = minimum - (Date.now() - startedAt);
+  return left > 0 ? new Promise((r) => setTimeout(r, left)) : Promise.resolve();
+}
+
+/* Put the real content in, under the skeleton, and dissolve the skeleton off
+   it.
+   ------------------------------------------------------------
+   Replacing one with the other in a single frame is a hard cut: the layout
+   is right, but every box changes from grey to text at once and the eye
+   reads the change rather than the content. Laying the skeleton over the
+   top and fading it away turns that cut into a dissolve, and because the
+   two have the same shape, the content appears to develop in place.
+
+   It fades the SKELETON OUT rather than fading the content IN, and that is
+   the whole safety argument. Fading content in means starting it at
+   opacity 0, and a document timeline that never advances would leave the
+   page permanently blank -- the failure this codebase has hit twice. Here a
+   stalled timeline leaves a skeleton sitting on top instead, which is why
+   the removal is ALSO on a timer: whichever of the two fires first wins,
+   so the skeleton is gone within 400ms no matter what the compositor does. */
+export function dissolve(host, next) {
+  const old = host.firstElementChild;
+  if (!old || !old.classList.contains('sk')) {
+    mount(host, next);
+    return;
+  }
+  const h0 = host.getBoundingClientRect().height;
+  host.prepend(next);                    // content first: it defines the size
+  old.classList.add('sk-out');
+  // Hold the old height for one beat so the page cannot jolt while the
+  // skeleton is still on top of a taller or shorter screen.
+  if (h0 > 0) {
+    host.style.minHeight = `${Math.round(h0)}px`;
+    setTimeout(() => { host.style.minHeight = ''; }, 260);
+  }
+  let done = false;
+  const drop = () => {
+    if (done) return;
+    done = true;
+    old.remove();
+  };
+  old.addEventListener('transitionend', drop, { once: true });
+  setTimeout(drop, 400);
+}
+
+/* A catalogue that keeps going.
+   ------------------------------------------------------------
+   Both catalogue screens paged with Prev/Next, which is the wrong
+   shape for browsing: you cannot compare page 1 with page 3, the
+   position resets on every step, and "page 4 of ?" is a question
+   the CurseForge API cannot answer anyway -- it reports neither a
+   total nor a last page, so a Next button is always enabled and
+   the only way to discover the end is to walk off it.
+
+   This appends instead. Four things it has to get right, each of
+   which is a real failure rather than a nicety:
+
+     * A NEW SEARCH MUST CANCEL AN IN-FLIGHT PAGE. Type "create",
+       then "cre" -- without a token the slower first request
+       lands after the second and the grid fills with results for
+       a query nobody asked for.
+     * DUPLICATES. CurseForge pages by offset over a set it
+       re-ranks per request, so the same project genuinely does
+       arrive twice. Two cards with the same key is a React-style
+       bug in plain DOM: the second click acts on the first.
+     * THE END. A page shorter than `size` is the last one. Say so
+       once and stop observing; an observer left watching a
+       sentinel at the bottom of a finished list re-fires on every
+       resize.
+     * CLEANUP. The observer outlives the screen unless something
+       disconnects it, and a route change does not.
+
+   The manual button is not a fallback nobody sees: it is the
+   keyboard path, and it is what works when the sentinel never
+   intersects because the pane is hidden or the list is shorter
+   than the viewport. */
+export function endlessFeed(opts) {
+  const {
+    container, size = 24, fetchPage, itemsOf = (d) => d.items || d.data || [],
+    keyOf = (m) => m.id ?? m.project_id ?? m.slug ?? JSON.stringify(m),
+    render, empty, onFirstPage,
+  } = opts;
+
+  const seen = new Set();
+  const foot = h('div.feed-foot');
+  const sentinel = h('div.feed-sentinel', { 'aria-hidden': 'true' });
+  const status = h('div.sr-only', { role: 'status', 'aria-live': 'polite' });
+
+  let index = 0;
+  let busy = false;
+  let done = false;
+  let token = 0;
+  let io = null;
+
+  const more = h('button.btn.sm.ghost', {
+    onclick: () => load(),
+  }, hl(), icon('chevronDown', 14), h('span', 'Load more'));
+
+  function setFoot(...kids) { mount(foot, ...kids); }
+
+  async function load(reset = false) {
+    if (busy || (done && !reset)) return;
+    if (reset) {
+      token += 1; index = 0; done = false; seen.clear();
+      clear(container);
+    }
+    const mine = token;
+    busy = true;
+    setFoot(spinner(index === 0 ? 'Searching the catalogue' : 'Fetching more'));
+    try {
+      const data = await fetchPage(index, size);
+      if (mine !== token) return;              // a newer search won
+      const batch = itemsOf(data) || [];
+      const fresh = batch.filter((m) => {
+        const k = String(keyOf(m));
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      if (index === 0) {
+        onFirstPage?.(data, batch);
+        if (!batch.length) {
+          setFoot();
+          mount(container, empty ? empty() : h('div.note', 'Nothing matches that.'));
+          done = true;
+          stop();
+          return;
+        }
+      }
+      fresh.forEach((m) => container.append(render(m)));
+      index += batch.length;
+      // A short page is the last page. `fresh` cannot be used for this --
+      // a full page of duplicates would look like the end.
+      if (batch.length < size) {
+        done = true;
+        stop();
+        setFoot(h('div.feed-end',
+          h('span.mono', `${seen.size} shown · that is everything`)));
+      } else {
+        setFoot(more);
+      }
+      status.textContent = `${seen.size} results loaded`;
+    } catch (e) {
+      if (mine !== token) return;
+      setFoot(h('div.note.bad', { style: { margin: 0 } },
+        e.message || 'That page would not load.',
+        h('div.btnrow', { style: { marginTop: '10px' } },
+          h('button.btn.sm', { onclick: () => load() },
+            hl(), h('span', 'Try again')))));
+    } finally {
+      if (mine === token) busy = false;
+    }
+  }
+
+  function stop() {
+    io?.disconnect();
+    io = null;
+  }
+
+  /* The sentinel has to be watched against whatever actually scrolls it.
+     The catalogue screen scrolls the viewport, but the add-mod browser is
+     inside a modal with its own `overflow-y:auto` -- and a sentinel inside
+     an overflow container never intersects the VIEWPORT once it is scrolled
+     past, so a viewport-rooted observer silently never fires there. Walking
+     up to the nearest scrollable ancestor covers both without the caller
+     having to know which it is in. */
+  function scrollRoot(el) {
+    for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      const oy = getComputedStyle(n).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight) {
+        return n;
+      }
+    }
+    return null;      // null means the viewport
+  }
+
+  function start() {
+    stop();
+    if ('IntersectionObserver' in window) {
+      io = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting)) load();
+      }, { root: scrollRoot(sentinel), rootMargin: '700px 0px' });
+      io.observe(sentinel);
+    }
+    return load(true);
+  }
+
+  return {
+    nodes: [foot, sentinel, status],
+    start,
+    reset: () => load(true),
+    dispose: stop,
+  };
+}
+
 export function skeletonGrid(n = 6, cls = 'gauto') {
   return h(`div.grid.${cls}`, ...Array.from({ length: n }, () =>
     h('div.skelcard',
@@ -759,26 +1079,125 @@ export function reveal(el, delay = 0) {
   return el;
 }
 
-/* A ripple from the point of contact. Bound once on the document rather than
-   per button, because there are several hundred buttons in this app and each
-   listener would outlive the screen that made it. */
-function installRipple() {
-  document.addEventListener('pointerdown', (e) => {
-    if (REDUCED.matches) return;
-    const btn = e.target.closest?.('.btn, .navlink, .fleetrow, .tabs button');
-    if (!btn || btn.hasAttribute('disabled')) return;
-    const r = btn.getBoundingClientRect();
-    const ink = document.createElement('span');
-    ink.className = 'ripple';
-    const size = Math.max(r.width, r.height) * 1.6;
-    ink.style.width = ink.style.height = `${size}px`;
-    ink.style.left = `${e.clientX - r.left - size / 2}px`;
-    ink.style.top = `${e.clientY - r.top - size / 2}px`;
-    btn.appendChild(ink);
-    setTimeout(() => ink.remove(), 560);
-  }, { passive: true });
+/* The press, and what it throws off.
+   ------------------------------------------------------------
+   A ripple was the wrong gesture. A circle spreading from the
+   contact point is the house style of every material-design app
+   on earth, and it fires on pointerdown — so it plays while the
+   finger is still going down, which reads as the button leaking
+   rather than reacting.
+
+   This fires on CLICK, which is the moment the button actually
+   does something, and it fires keyboard activations too (a
+   keyboard click reports detail 0 and no coordinates, so it
+   bursts from the element's centre instead).
+
+   Three flavours, because a button that deletes a world should
+   not celebrate:
+
+     default   sakura petals knocked off a branch — they scatter
+               in every direction and fall
+     primary   gold leaf, the same foil the display numbers use
+     danger    the fill coming apart: more particles, smaller,
+               drifting UP and shrinking to nothing
+
+   The shards live in a fixed layer on <body>, NOT inside the
+   button. Inside, they would inherit the button's overflow, sit
+   inside its stacking context, and collide with the
+   `.btn > *:not(.p5-hl)` rule that owns z-index 2 there. Outside,
+   they are free of all three and the same code works for rail
+   links and fleet rows. */
+
+let burstLayer = null;
+function layer() {
+  if (!burstLayer || !burstLayer.isConnected) {
+    burstLayer = document.createElement('div');
+    burstLayer.id = 'burstlayer';
+    burstLayer.setAttribute('aria-hidden', 'true');
+    document.body.append(burstLayer);
+  }
+  return burstLayer;
 }
-installRipple();
+
+const PETAL_INK = ['var(--sakura)', 'var(--rose)', 'var(--sakura-deep)', 'var(--rose-hi)'];
+const GOLD_INK = ['var(--gold)', '#FFF6D2', 'var(--gold)', 'var(--sakura)'];
+const ASH_INK = ['var(--danger)', 'var(--danger)', 'var(--faint)', 'var(--mid)'];
+
+/* Every node gets a timeout as well as an animation callback. `finished`
+   only settles while the document timeline is advancing, and a click
+   landing just as the tab is hidden would otherwise leave the shard in the
+   DOM forever. Same hazard the entrance animations are written around. */
+function sweep(node, ms) {
+  const go = () => node.remove();
+  node.getAnimations?.().forEach((a) => { a.finished.then(go, go); });
+  setTimeout(go, ms + 400);
+}
+
+function pop(el, x, y) {
+  const host = layer();
+  const danger = el.classList.contains('danger');
+  const rich = el.classList.contains('primary') || el.classList.contains('gold');
+  const ink = danger ? ASH_INK : rich ? GOLD_INK : PETAL_INK;
+  const count = danger ? 15 : 9;
+
+  const ringSize = danger ? 92 : 66;
+  const ring = document.createElement('span');
+  ring.className = 'popring';
+  ring.style.width = ring.style.height = `${ringSize}px`;
+  ring.style.left = `${x - ringSize / 2}px`;
+  ring.style.top = `${y - ringSize / 2}px`;
+  if (danger) ring.style.borderColor = 'var(--danger)';
+  host.append(ring);
+  ring.animate([
+    { transform: 'scale(.25) rotate(0deg)', opacity: .9 },
+    { transform: 'scale(1) rotate(26deg)', opacity: 0 },
+  ], { duration: 400, easing: 'cubic-bezier(.22,1,.36,1)' });
+  sweep(ring, 400);
+
+  for (let i = 0; i < count; i += 1) {
+    const w = rand(danger ? 3 : 5, danger ? 7 : 11);
+    const hgt = w * rand(0.6, 1);
+    const sh = document.createElement('span');
+    sh.className = 'shard';
+    sh.style.width = `${w}px`;
+    sh.style.height = `${hgt}px`;
+    sh.style.left = `${x - w / 2}px`;
+    sh.style.top = `${y - hgt / 2}px`;
+    sh.style.background = ink[i % ink.length];
+    host.append(sh);
+
+    const angle = danger ? (-Math.PI / 2) + rand(-0.95, 0.95) : rand(0, Math.PI * 2);
+    const dist = danger ? rand(34, 92) : rand(20, 62);
+    const dx = Math.cos(angle) * dist;
+    const dy = Math.sin(angle) * dist + (danger ? rand(-30, -10) : rand(8, 30));
+    const ms = rand(340, 640);
+    sh.animate([
+      { transform: 'translate(0,0) rotate(0deg) scale(1)', opacity: 1 },
+      {
+        transform: `translate(${dx.toFixed(1)}px,${dy.toFixed(1)}px) `
+          + `rotate(${rand(-280, 280).toFixed(0)}deg) scale(${danger ? 0.15 : 0.5})`,
+        opacity: 0,
+      },
+    ], { duration: ms, easing: 'cubic-bezier(.18,.7,.3,1)' });
+    sweep(sh, ms);
+  }
+}
+
+function installPress() {
+  document.addEventListener('click', (e) => {
+    if (REDUCED.matches) return;
+    const el = e.target.closest?.('.btn, .navlink, .fleetrow, .tabs button');
+    if (!el) return;
+    if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return;
+    // detail 0 means the activation did not come from a pointer — Enter or
+    // Space on a focused button. There is no click point, so use the middle.
+    const r = el.getBoundingClientRect();
+    const fromPointer = e.detail > 0 && (e.clientX || e.clientY);
+    pop(el, fromPointer ? e.clientX : r.left + r.width / 2,
+        fromPointer ? e.clientY : r.top + r.height / 2);
+  }, { passive: true, capture: true });
+}
+installPress();
 
 /* The shrine spinner: a sakura mon turning. Used wherever a wait is short
    enough that the fox would be too much. */

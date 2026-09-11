@@ -139,6 +139,55 @@ None of this needs anything from you on the box beyond the same hard reload
 
 ---
 
+## 1B. The third UI pass (2026-09-11)
+
+Eleven reported items. Nothing in the deployment contract moved again: same
+image, same port, same `/data`, same compose. **One new state file**,
+`/data/state/fleet-state.json`, created on first use and safe to delete
+(you lose the rack layout and the "last ran" record, nothing else).
+
+| Area | What to know |
+|---|---|
+| **Dark theme** | The near-white accent is gone. `--slab-bg` was `#F3E4E8` — 15.2:1 against the page, i.e. white — and is now a dusty blush `#C98FA2` at 7.1:1. It is the card border, the hard shadow, the slab and the panel header, so this changes the brightness of the whole dark theme. |
+| **Racks** (new screen) | `#/groups`. Torii lintels with servers hanging under them as ema plaques. Backed by `app/fleetgroups.py`; the sidebar now shows at most 5 servers, running first. |
+| **Koma** (new) | Clicking a mod or plugin row opens a comic panel of its project page. Needs a CurseForge key to show CurseForge projects; without one it draws a NO SIGNAL state naming what is missing. |
+| **Silent tuning** | Off by default unless the AI is configured. `Settings → AI → Let it tune servers quietly`. When on, the Tune screen folds a **validated and clamped** model answer into the deterministic plan and shows an ofuda naming what moved. Every failure path falls back to the existing optimizer. |
+| **Heap slider** | Smooth (it dragged in whole gigabytes before), themed, and it strains visibly as it approaches the ceiling. |
+| **Press** | Buttons throw petals on release; `.btn.danger` comes apart into ash. |
+| **Backdrop** | A blurred cherry tree behind everything, per theme, shipped as SVG. To use your own photograph instead, drop it in as `bg-sakura-light.<ext>` / `bg-sakura-dark.<ext>` in `app/static/img/` — it is picked up on the next page load, no rebuild. |
+
+Two contrast bugs that predate this pass are fixed with it, both dark-mode
+only: five places painted white text on `--rose`, which is a pale pink in
+dark (**2.40:1**, now 6.92:1); and **every modal in the app** animated from
+`opacity:0` with `fill:both` and was not gated, so a stalled document
+timeline left an invisible dialog over a live scrim.
+
+---
+
+## 1C. The fourth pass (2026-09-11, later)
+
+Seven more reported items. Again nothing in the deployment contract moved.
+**One new directory in the repo**, `dev/mock/`, which is a development tool
+and is not shipped in the image.
+
+| Area | What to know |
+|---|---|
+| **Mod install** | Reported as broken with `{'detail': 'Not Found'}`. **BlessForge was never at fault** — the dev mock had no upload route. The real code posts to `/api/v2/servers/{id}/files/upload`, which is correct for Crafty 4. Nothing changed in the client. If you see this error on the box, it is a genuine Crafty problem, not this. |
+| **Navigation** | Every screen now paints a skeleton of its own layout within ~10ms of a click, and the real content dissolves in over it. No more blank-then-everything. |
+| **Activity drawer** | Rebuilt. It stuttered because it destroyed and rebuilt every card on every frame; cards are patched in place now. A job is drawn as a walk between two torii with the working charm riding the rope at its percent, and a modpack install gets a five-leg road with an ETA and a `quiet for Ns` warning when nothing has arrived. Finished jobs clear when you close the drawer; running ones survive. |
+| **Vital signs** | CPU, memory and players are now a torii, a lantern and a row of petals across the top of an instance rather than three small bars in the header. |
+| **Racks** | One rope per row, aligned by construction. Plaques carry state (icon *and* word), players, version, loader, port and mod count. |
+| **Catalogues** | Discover and Add-mod scroll endlessly instead of paging. There is still a `Load more` button — it is the keyboard path, not a fallback. |
+
+Three faults that predate this pass were found and fixed with it, all
+invisible until the exact wrong moment: the activity drawer's collapse
+control **had never collapsed anything** (`#drawer .body{display:flex}`
+outranked the UA's `[hidden]`); a reconnect after a dropped stream built a
+*new* job record, resetting the elapsed clock and discarding the log; and
+a CurseForge key sourced by bash silently loses its `$` segments — see §7.
+
+---
+
 ## 2. Deploy
 
 From a checkout on the box (this builds your working tree — the override file
@@ -343,11 +392,70 @@ safe to run on the live box at any time.
 - [ ] Phone or narrow window: rail collapses to the ☰ drawer, no horizontal
       scrolling, the rope still pulls with a finger.
 
+### H — the third UI pass (10 min, nothing destructive)
+
+- [ ] **Dark mode is not glaring.** Switch to dark. Card borders and the hard
+      shadows should read as dusty pink, not white. If they look white, the
+      browser has an old stylesheet — Ctrl-Shift-R.
+- [ ] **Racks.** Open `Racks` in the rail. With no racks yet it offers three
+      cut from your own fleet — take one. Servers should hang as plaques
+      under a torii. Drag one to another rack; then do it again with the
+      keyboard (point at a plaque, press `G`).
+- [ ] **The rail shows 5 at most**, running servers first, with a "+N more"
+      row when you have more than five.
+- [ ] **Restart the container and re-open Racks.** The layout must survive.
+      (It lives in `/data/state/fleet-state.json`.)
+- [ ] **Mod popup.** Instance → Mods → click a mod's NAME (not its toggle,
+      not Change version). A comic panel opens with the project's details.
+      Press Escape. Then click the toggle and the install button and confirm
+      neither opens the panel.
+- [ ] **Heap slider.** Instance → Tune, or New server. Drag it: it should
+      move continuously, not in 1 GB jumps. Push it to the top — it should
+      tremble and shift toward red as it nears the ceiling.
+- [ ] **Silent tuning.** `Settings → AI`. If you have an AI endpoint
+      configured, turn on "Let it tune servers quietly", then open a server's
+      Tune tab. Either an ofuda names the model and what it changed, or it
+      says every number came from the deterministic optimizer. Both are
+      correct answers; a blank space is not.
+- [ ] Turn it back **off** and reload Tune — the numbers must still be there,
+      produced deterministically.
+- [ ] **Buttons throw petals** when clicked, and a Delete button throws ash
+      upward instead.
+- [ ] **The backdrop.** A faint blurred cherry tree behind the interface, and
+      the falling petals should now read as coming from it. Text over it must
+      stay readable in both themes.
+
+### I — the fourth pass (10 min)
+
+- [ ] **Install a mod.** Instance → Mods → Add mod → pick anything → Add.
+      It should finish and appear in the list. This is the one that was
+      reported broken; it was a fault in the dev harness, not in the app,
+      so it should simply work here.
+- [ ] **Scroll the catalogue.** Discover → scroll to the bottom: more
+      modpacks should load on their own. Do the same inside Add mod. At the
+      end of the results it should say so rather than spinning.
+- [ ] **Watch an install.** Start a modpack install and open the Activity
+      drawer. You should see a rope between two torii with a charm walking
+      it, a knot per phase, a file tally and an ETA — and it must not
+      flicker or jump while log lines arrive.
+- [ ] **Close the drawer mid-install.** The install must keep running (watch
+      it still be there when you re-open), and any *finished* jobs must be
+      gone from the list.
+- [ ] **Collapse the drawer** with the header. It must actually collapse —
+      this never worked before.
+- [ ] **Vital signs.** Open a running instance: a torii for CPU, a lantern
+      for memory, petals for player seats, across the top. Open a **stopped**
+      one: it must show no reading rather than `0%`.
+- [ ] **Racks.** The rope above each row is one straight line, and does not
+      move when you hover a plaque or when they sway.
+- [ ] **Navigation.** Click between Fleet, Racks, Discover and Settings.
+      Each should show its layout immediately, not a blank page.
+
 ---
 
 ## 4. What to report back
 
-For each of A–G: passed, or what happened instead. For anything that failed:
+For each of A–I: passed, or what happened instead. For anything that failed:
 
 ```bash
 docker compose logs --tail=200 blessforge
@@ -377,12 +485,14 @@ So you know what is being tested rather than re-tested. From
 | Any destructive button pressed for real | §E |
 | Below 900 px on a real phone | §E |
 | The AI assistant producing a plan | not covered — unchanged since August, still untested |
-| The UI pass on a real browser other than Chromium | §G |
+| The UI pass on a real browser other than Chromium | §G, §H |
+| Racks surviving a container restart | §H |
+| The AI actually changing a tuning number (it declined on the test pack) | §H |
 
 Everything else in 2.1 was driven against a mock Crafty and the live
 CurseForge, Modrinth, Mojang, FabricMC, NeoForged, PaperMC and PurpurMC APIs:
-15 routes with zero console errors, both themes, 141 backend checks and 125
-front-end checks.
+All routes rendered with zero console errors, both themes, 171 backend
+checks and 197 front-end checks.
 
 Two real bugs were found by driving the UI rather than reading it, and both are
 fixed. Worth knowing because they tell you what to be suspicious of:
@@ -424,8 +534,8 @@ done
 .venv/bin/python dev/tools/check_frontend.py | tail -2
 ```
 
-Expected: 39, 10, 31, 35, 26 backend checks and 125 front-end checks, all
-passing. `check_frontend.py` wants `node` on PATH for its parse check and skips
+Expected: 39, 10, 31, 35, 26, 30 backend checks and 197 front-end checks,
+all passing. `check_frontend.py` wants `node` on PATH for its parse check and skips
 it cleanly if node is absent — but that is the check worth having, because
 `node --check <file>` alone parses an ES module as a *script* and will accept a
 file with a broken string literal in it.

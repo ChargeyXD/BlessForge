@@ -5,6 +5,7 @@
    that any reverse proxy will serve without rewrite rules:
 
      #/                     the fleet
+     #/groups               the racks — the fleet, grouped
      #/create               create an instance
      #/discover             the catalogue and imports
      #/roulette             mod roulette
@@ -17,7 +18,8 @@
 
 import {
   h, hl, mount, clear, icon, api, toast, toastError, $, $$,
-  readTheme, applyTheme, prefs, loadingFox, empty, pill,
+  readTheme, applyTheme, prefs, loadingFox, empty, pill, ago, duration,
+  pageSkeleton, heldFor, dissolve,
 } from './core.js';
 import { adoptRunning, onJobsChanged, jobsRunning, openDrawer, activeJobs } from './jobs.js';
 import { startPetals } from './petals.js';
@@ -31,6 +33,13 @@ export const state = {
   route: { name: 'fleet', params: {} },
   loadersCatalogue: null,
   aiStatus: null,
+  // The racks, and what hangs on which. Central state, not per-instance --
+  // see `refreshGroups` for why.
+  groups: { groups: [], assign: {}, motifs: [], updated_at: 0, persisted: true },
+  // What the fleet poll has witnessed: when each server was last seen up.
+  // Crafty cannot answer that for a server that is currently down, so it is
+  // remembered here instead. Keyed by server_id, values are epoch seconds.
+  activity: {},
 };
 
 const subscribers = new Set();
@@ -39,17 +48,30 @@ function emit() { subscribers.forEach((fn) => { try { fn(); } catch (e) { consol
 
 /* --- routing -------------------------------------------------- */
 
+/* Each route carries the SHAPE it is about to become, so the frame after a
+   click already has that shape in it. See `pageSkeleton` in core.js for why
+   this lives here rather than in the view module: the module itself has to
+   be fetched over the network on first visit, and a skeleton that waits for
+   its own module to arrive has missed the moment it existed for. */
 const routes = [
-  { name: 'fleet', pattern: /^\/?$/, load: () => import('./views/fleet.js') },
-  { name: 'create', pattern: /^\/create$/, load: () => import('./views/create.js') },
-  { name: 'discover', pattern: /^\/discover$/, load: () => import('./views/discover.js') },
-  { name: 'roulette', pattern: /^\/roulette$/, load: () => import('./views/roulette.js') },
-  { name: 'settings', pattern: /^\/settings$/, load: () => import('./views/settings.js') },
+  { name: 'fleet', pattern: /^\/?$/, load: () => import('./views/fleet.js'),
+    skel: { head: 1, bar: 1, kpis: 4, cards: 4 } },
+  { name: 'groups', pattern: /^\/groups$/, load: () => import('./views/groups.js'),
+    skel: { head: 1, bar: 1, racks: 2 } },
+  { name: 'create', pattern: /^\/create$/, load: () => import('./views/create.js'),
+    skel: { head: 1, split: [4] } },
+  { name: 'discover', pattern: /^\/discover$/, load: () => import('./views/discover.js'),
+    skel: { head: 1, bar: 1, cards: 6 } },
+  { name: 'roulette', pattern: /^\/roulette$/, load: () => import('./views/roulette.js'),
+    skel: { head: 1, panels: 2 } },
+  { name: 'settings', pattern: /^\/settings$/, load: () => import('./views/settings.js'),
+    skel: { head: 1, panels: 3 } },
   {
     name: 'instance',
     pattern: /^\/i\/([^/]+)(?:\/([^/]+))?$/,
     load: () => import('./views/instance.js'),
     params: (m) => ({ id: m[1], tab: m[2] || 'overview' }),
+    skel: { instanceHead: 1, rows: 6 },
   },
 ];
 
@@ -82,7 +104,17 @@ async function route() {
 
   paintNav();
   const main = $('#main');
-  mount(main, loadingFox('Loading'));
+  /* Synchronous, before anything is awaited. This is the whole point: the
+     old sequence blanked the page, showed a spinner, then waited on a
+     dynamic import AND a network round trip before dropping the finished
+     screen in all at once -- two jarring moments per navigation, the
+     second of which moved every element on the page. Now the layout is
+     already there and the content fills into it. */
+  const shownAt = Date.now();
+  mount(main, pageSkeleton(def.skel || { head: 1, rows: 5 }));
+  main.classList.remove('routing');
+  void main.offsetWidth;             // restart the entrance, not resume it
+  main.classList.add('routing');
   document.body.classList.remove('rail-open');
 
   let mod;
@@ -103,11 +135,22 @@ async function route() {
   try {
     const view = await mod.render({ params, main });
     if (token !== routeToken) { view?.dispose?.(); return; }
+    // A skeleton that appears and vanishes inside 60ms reads as a glitch,
+    // so a fast screen waits out the remainder of the minimum. It costs
+    // nothing anybody notices and it makes every navigation feel the same.
+    await heldFor(shownAt);
+    if (token !== routeToken) { view?.dispose?.(); return; }
     currentView = view || null;
-    if (view?.node) mount(main, view.node);
+    // The skeleton stays on top and dissolves off the real content, so the
+    // swap reads as the screen developing rather than as a cut.
+    if (view?.node) dissolve(main, view.node);
+    // `settling`, not `routing`: the page already slid in with the
+    // skeleton. Sliding the whole thing a second time would undo the
+    // continuity the skeleton just bought. This is a much smaller move.
     main.classList.remove('routing');
-    void main.offsetWidth;           // restart the animation, not resume it
-    main.classList.add('routing');
+    main.classList.remove('settling');
+    void main.offsetWidth;
+    main.classList.add('settling');
     main.scrollTop = 0;
     window.scrollTo({ top: 0, behavior: 'instant' });
   } catch (e) {
@@ -121,9 +164,178 @@ async function route() {
   }
 }
 
+/* ============================================================
+   racks — the fleet, grouped
+   ------------------------------------------------------------
+   A group is a property of the COLLECTION, not of any one
+   server, so it is kept centrally under /data/state rather than
+   in each instance's .blessforge.json. Three reasons, in order
+   of how much they cost to get wrong:
+
+     * An empty rack, a rack's name and a rack's mark have
+       nowhere to live in a per-instance file. Delete the last
+       member and the rack itself would vanish; rename one and
+       you would be writing N files to change one word.
+     * Reading groups out of manifests is one Crafty round trip
+       per server just to lay out a screen. The fleet poll
+       already costs two per server and a layout choice does not
+       get to add a third.
+     * An instance BlessForge did not create has no manifest at
+       all, and an unmanaged fleet is exactly the one that most
+       needs organising.
+
+   What that costs is staleness, and it is paid for on the read
+   side: assignments are keyed on Crafty's server_id (so a
+   rename is free), and the server prunes assignments for ids
+   the fleet no longer contains -- but only when the fleet read
+   actually succeeded, so an unreachable Crafty never erases
+   anybody's racks.
+   ============================================================ */
+
+/* Each rack carries a shrine mark rather than a colour picked out of a
+   wheel. Every value here is an existing theme token, which is what makes
+   the marks follow light/dark and stay legible without anyone checking a
+   contrast ratio -- and it is why this feature adds no new palette. */
+export const MOTIFS = {
+  sakura: { glyph: '桜', label: 'Sakura', ink: 'var(--rose)', soft: 'var(--rose-soft)' },
+  kitsune: { glyph: '狐', label: 'Fox', ink: 'var(--gold-ink)', soft: 'var(--gold-soft)' },
+  torii: { glyph: '鳥', label: 'Torii', ink: 'var(--shrine-deep)', soft: 'var(--shrine-soft)' },
+  matsu: { glyph: '松', label: 'Pine', ink: 'var(--sage)', soft: 'var(--sage-soft)' },
+  tsuki: { glyph: '月', label: 'Moon', ink: 'var(--plum)', soft: 'var(--plum-soft)' },
+  mizu: { glyph: '水', label: 'Water', ink: 'var(--info)', soft: 'var(--info-soft)' },
+  kaminari: { glyph: '雷', label: 'Thunder', ink: 'var(--amber-ink)', soft: 'var(--amber-soft)' },
+  yuki: { glyph: '雪', label: 'Snow', ink: 'var(--faint)', soft: 'var(--paper-2)' },
+};
+
+export function motif(name) { return MOTIFS[name] || MOTIFS.sakura; }
+
+/* The rack a server hangs on, or null for the open yard. Resolved against
+   the CURRENT fleet every time it is asked, never cached onto an instance,
+   so a server deleted or added behind the page's back is simply absent or
+   simply ungrouped rather than wrong. */
+export function groupOf(serverId) {
+  const id = (state.groups.assign || {})[serverId];
+  if (!id) return null;
+  return (state.groups.groups || []).find((g) => g.id === id) || null;
+}
+
+/* Adopt a write's response wholesale. Every mutation returns the entire
+   document, so two tabs editing at once resolve to last-write-wins and the
+   loser corrects itself on its next read rather than drifting. */
+export function adoptGroups(doc) {
+  if (!doc || !Array.isArray(doc.groups)) return state.groups;
+  state.groups = {
+    groups: doc.groups,
+    assign: doc.assign || {},
+    motifs: doc.motifs || Object.keys(MOTIFS),
+    updated_at: doc.updated_at || 0,
+    persisted: doc.persisted !== false,
+  };
+  paintFleetRail();
+  emit();
+  return state.groups;
+}
+
+export async function refreshGroups({ quiet = true } = {}) {
+  try {
+    const doc = await api.get('/api/fleet/groups');
+    // Adopting emits, and emitting repaints whatever screen is open. The
+    // racks change when somebody changes them, which is far less often than
+    // once a minute, so an unchanged document is dropped on the floor rather
+    // than redrawing the page for nothing.
+    if (doc.updated_at && doc.updated_at === state.groups.updated_at) {
+      return state.groups;
+    }
+    adoptGroups(doc);
+  } catch (e) {
+    if (!quiet) toastError(e, 'Could not read the racks');
+  }
+  return state.groups;
+}
+
+/* One sentence about when a server last actually ran.
+   ------------------------------------------------------------
+   Crafty reports `started` for a RUNNING server and nothing at
+   all for a stopped one, so "when did this last run" is not a
+   question Crafty can answer -- and it is the question the rail
+   has to sort on. It is answered from the activity record the
+   fleet poll writes (see `recordSeen`): `last_running_at` is
+   the last poll at which the server was observed up, which is
+   an honest answer whether or not BlessForge was the thing that
+   started it. */
+export function lastRan(s) {
+  const a = (state.activity || {})[s.server_id] || {};
+  if (s.state === 'running') {
+    // Only claimed when the down -> up edge was actually witnessed. On the
+    // first sighting of an already-running server there was no "down" to
+    // witness, and inventing an uptime there would be a lie the user could
+    // catch in one glance at the console.
+    return a.last_started && a.last_started_precision === 'observed'
+      ? `up ${duration(Date.now() / 1000 - a.last_started)}`
+      : 'up now';
+  }
+  if (a.last_running_at) return `ran ${ago(a.last_running_at)}`;
+  if (s.created) return `added ${ago(s.created)}`;
+  if (a.first_seen) return `first seen ${ago(a.first_seen)}`;
+  return 'never seen up';
+}
+
+/* Which servers the rail shows, and in exactly what order.
+   ------------------------------------------------------------
+   Three tiers, then most-recent-first inside each:
+
+     0  running now          — newest start first
+     1  seen up at some point — most recently up first
+     2  never seen up        — most recently added first
+
+   The sort key for tier 1 is `last_running_at` rather than
+   `last_started`, because the last poll at which a server was
+   up is known for every server this app has ever watched, while
+   a start time is only known when the transition happened to be
+   witnessed. Tier 2 falls back to Crafty's own `created`, and
+   then to the first time BlessForge saw the server at all.
+
+   Ties break on name so the list cannot shuffle under the
+   cursor between two polls.
+
+   The server you currently have open is always kept, even when
+   it does not earn a place: losing the highlight in the rail
+   the moment you open an idle server is worse than showing one
+   fewer recent. */
+export function recentFleet(limit = 5) {
+  const act = state.activity || {};
+  const at = (s) => act[s.server_id] || {};
+  const added = (s) => {
+    const t = s.created ? Date.parse(s.created) : NaN;
+    return Number.isNaN(t) ? (at(s).first_seen || 0) * 1000 : t;
+  };
+  const rank = (s) => (s.state === 'running' ? 0
+    : (typeof at(s).last_running_at === 'number' ? 1 : 2));
+  const key = (s) => {
+    const a = at(s);
+    if (s.state === 'running') return (a.last_started || a.first_seen || 0) * 1000;
+    if (typeof a.last_running_at === 'number') return a.last_running_at * 1000;
+    return added(s);
+  };
+
+  const ordered = [...state.instances].sort((x, y) => rank(x) - rank(y)
+    || key(y) - key(x)
+    || String(x.name || '').localeCompare(String(y.name || '')));
+
+  const rows = ordered.slice(0, Math.max(1, limit));
+  const openId = state.route.name === 'instance' ? state.route.params.id : null;
+  if (openId && !rows.some((s) => s.server_id === openId)) {
+    const open = ordered.find((s) => s.server_id === openId);
+    if (open) rows.splice(rows.length - 1, 1, open);
+  }
+  return { rows, more: Math.max(0, ordered.length - rows.length),
+    total: ordered.length };
+}
+
 /* --- the fleet, polled ---------------------------------------- */
 
 let fleetTimer = null;
+let groupTick = 0;
 
 export async function refreshInstances({ quiet } = {}) {
   try {
@@ -132,11 +344,44 @@ export async function refreshInstances({ quiet } = {}) {
     state.instanceById = new Map(state.instances.map((i) => [i.server_id, i]));
     paintFleetRail();
     emit();
+    // Deliberately not awaited: this is bookkeeping, and the fleet must not
+    // wait a second round trip to appear.
+    recordSeen();
+    // The racks change far less often than the fleet does and cost a local
+    // file read, so they are re-read once a minute rather than every poll --
+    // and immediately after any write, which goes through adoptGroups().
+    if (groupTick++ % 4 === 0) refreshGroups();
     return state.instances;
   } catch (e) {
     if (!quiet) toastError(e, 'Could not read the fleet');
     throw e;
   }
+}
+
+/* Hand this poll's observation to the server, which timestamps it with its
+   own clock and hands back the whole record. One local round trip; no extra
+   traffic to Crafty. If it fails the rail simply orders by what it can see
+   right now -- running first, then the fleet's own order. */
+async function recordSeen() {
+  if (!state.instances.length) return;
+  try {
+    const res = await api.post('/api/fleet/seen', {
+      full: true,
+      items: state.instances.map((s) => ({
+        server_id: s.server_id,
+        name: s.name || '',
+        running: s.state === 'running',
+        created: s.created || null,
+      })),
+    });
+    const first = !Object.keys(state.activity || {}).length;
+    state.activity = res.servers || {};
+    paintFleetRail();
+    // Only the first answer is worth a full repaint. After that the rail
+    // updates on its own and every screen picks the new values up on the
+    // next poll, rather than every screen redrawing twice every 15 seconds.
+    if (first) emit();
+  } catch { /* ordering falls back; nothing here is worth a toast */ }
 }
 
 function startFleetPolling() {
@@ -157,6 +402,7 @@ function startFleetPolling() {
 
 const NAV = [
   { name: 'fleet', path: '/', label: 'Fleet', icon: 'server' },
+  { name: 'groups', path: '/groups', label: 'Racks', icon: 'layers' },
   { name: 'create', path: '/create', label: 'New server', icon: 'plus' },
   { name: 'discover', path: '/discover', label: 'Discover', icon: 'compass' },
   { name: 'roulette', path: '/roulette', label: 'Mod Roulette', icon: 'dice' },
@@ -203,39 +449,69 @@ function paintNav() {
       'aria-current': state.route.name === n.name ? 'page' : null,
     }, hl(), icon(n.icon, 17), h('span', n.label),
       n.name === 'fleet' && state.instances.length
-        ? h('span.count', String(state.instances.length)) : null)),
+        ? h('span.count', String(state.instances.length))
+        : n.name === 'groups' && state.groups.groups.length
+          ? h('span.count', String(state.groups.groups.length)) : null)),
   );
   paintTopbar();
 }
+
+/* The rail is not the fleet.
+   ------------------------------------------------------------
+   It used to list every server, which is fine at three and a
+   scrollbar at twenty -- and a scrollbar in a nav rail means the
+   thing you wanted was never on screen. It shows at most five
+   now: what is up, then what you last had up, then what you
+   last added (see `recentFleet` for the exact rule), with the
+   rest behind one row that goes to the fleet screen. Each row
+   carries a tick in its rack's mark, so the rail and the rack
+   screen agree at a glance about where a server lives. */
+const RAIL_ROWS = 5;
 
 function paintFleetRail() {
   const host = $('#railfleet');
   if (!host) return;
   if (!state.instances.length) {
     mount(host, h('div.sec', 'No servers yet'));
+    paintNav();
     return;
   }
   const openId = state.route.name === 'instance' ? state.route.params.id : null;
+  const { rows, more, total } = recentFleet(RAIL_ROWS);
+
   mount(host,
-    h('div.sec', `Servers · ${state.instances.length}`),
-    ...state.instances.map((s) => h('button.fleetrow', {
+    h('div.sec', more ? `Recent · ${rows.length} of ${total}` : `Servers · ${total}`),
+    ...rows.map((s) => {
+      const g = groupOf(s.server_id);
+      const row = h('button.fleetrow', {
+        type: 'button',
+        'aria-current': s.server_id === openId ? 'true' : null,
+        title: g ? `${s.name} — ${g.name}` : (s.name || ''),
+        onclick: () => go(`/i/${s.server_id}/overview`),
+      },
+        hl(),
+        g ? h('span.gtick', { 'aria-hidden': 'true' }) : null,
+        h(`span.state.${s.state || 'stopped'}`, {
+          'aria-hidden': 'true',
+          title: s.state || 'stopped',
+        }),
+        h('span.nm', s.name || s.server_id.slice(0, 8),
+          h('span.meta', [
+            s.loader ? s.loader : null,
+            s.minecraft || null,
+            s.running && s.players !== null && s.players !== undefined
+              ? `${s.players} online` : lastRan(s),
+          ].filter(Boolean).join(' · ') || 'unmanaged')),
+      );
+      if (g) row.style.setProperty('--g-ink', motif(g.motif).ink);
+      return row;
+    }),
+    more ? h('button.fleetrow.more', {
       type: 'button',
-      'aria-current': s.server_id === openId ? 'true' : null,
-      onclick: () => go(`/i/${s.server_id}/overview`),
-    },
-      hl(),
-      h(`span.state.${s.state || 'stopped'}`, {
-        'aria-hidden': 'true',
-        title: s.state || 'stopped',
-      }),
-      h('span.nm', s.name || s.server_id.slice(0, 8),
-        h('span.meta', [
-          s.loader ? s.loader : null,
-          s.minecraft || null,
-          s.running && s.players !== null && s.players !== undefined
-            ? `${s.players} online` : null,
-        ].filter(Boolean).join(' · ') || 'unmanaged')),
-    )),
+      onclick: () => go('/'),
+    }, hl(), h('span.plus', { 'aria-hidden': 'true' }, '+'),
+      h('span.nm', `${more} more`,
+        h('span.meta', 'open the whole fleet'))) : null,
   );
   paintNav();
 }
@@ -246,6 +522,7 @@ function paintTopbar() {
   const { name, params } = state.route;
   const labels = {
     fleet: ['Fleet', 'every server Crafty knows about'],
+    groups: ['Racks', 'every server on its hook'],
     create: ['New server', 'a loader, a version, an empty mods folder'],
     discover: ['Discover', 'modpacks, mods and plugins'],
     roulette: ['Mod Roulette', 'deal a pack you did not choose'],
@@ -410,6 +687,9 @@ async function boot() {
       startFleetPolling();
     }
   });
+  // The racks are a local file read and do not depend on Crafty answering,
+  // so they are asked for straight away rather than behind the health check.
+  refreshGroups();
   adoptRunning();
 
   // Health is cheap and the answer changes when someone fixes their compose

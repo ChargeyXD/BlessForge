@@ -428,11 +428,8 @@ async def build_pool(mc: str, loader: str, source: str = "both",
         "source": source,
         "mods": sorted(final, key=lambda m: -(m["downloads"] or 0)),
     }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(pool))
-    except OSError:
-        pass          # an unwritable cache costs speed, never correctness
+    # An unwritable cache costs speed, never correctness.
+    config.write_state(path, json.dumps(pool))
     return pool
 
 

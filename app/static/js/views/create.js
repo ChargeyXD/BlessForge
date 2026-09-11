@@ -28,9 +28,16 @@ export async function render() {
   mount(node, loadingFox('Reading the loader catalogue'));
 
   let catalogue;
+  let hostSpecs = null;
   try {
-    const data = await api.get('/api/loaders');
+    // The host is asked for alongside the catalogue, and failing to answer
+    // is not fatal: it only decides how far the heap rope runs.
+    const [data, specs] = await Promise.all([
+      api.get('/api/loaders'),
+      api.get('/api/host/specs').catch(() => null),
+    ]);
     catalogue = data.items || [];
+    hostSpecs = specs;
   } catch (e) {
     mount(node, bannerIfUnhealthy() || null,
       empty('chargey-failed.png', 'Could not read the loader catalogue',
@@ -47,12 +54,23 @@ export async function render() {
     return { node };
   }
 
+  // How far the heap rope runs. Mirrors the reserve in specs.recommend_memory
+  // -- 25% of total, never below 1.5 GB and never above 4 -- so the gate at
+  // the end of the slider is the real one rather than a hardcoded 16 that
+  // happily let someone ask an 8 GB box for 16. The server re-derives the
+  // number properly at creation; this only shapes what can be asked for.
+  const totalRam = Number(hostSpecs?.total_ram_gb) || 0;
+  const heapCeiling = totalRam
+    ? Math.max(4, Math.round((totalRam
+      - Math.min(4, Math.max(1.5, totalRam * 0.25))) * 2) / 2)
+    : 16;
+
   const form = {
     loader: catalogue[0].key,
     minecraft: catalogue[0].versions[0],
     name: '',
     port: 25565,
-    mem_max: 4,
+    mem_max: Math.min(4, heapCeiling),
     motd: '',
     difficulty: 'normal',
     gamemode: 'survival',
@@ -160,6 +178,28 @@ export async function render() {
     const c = chosen();
     const plugins = c.kind === 'plugins';
     const folder = c.mod_directory;
+
+    // The heap control and the summary line that follows it. The old
+    // version called paint() from its own `input` handler, which rebuilt
+    // this entire screen -- loader art and all -- on every pixel of a drag,
+    // destroying the very element the pointer was holding. That, far more
+    // than the step size, is what made it feel broken. Nothing here
+    // repaints: one text node changes.
+    const heapEcho = h('span', `${form.mem_max} GB`);
+    const heapSlider = shrineRange({
+      label: 'Heap size',
+      min: 1,
+      max: heapCeiling,
+      snap: 1,
+      value: form.mem_max,
+      ariaLabel: 'Heap size in gigabytes',
+      format: (v) => `${v} GB`,
+      capLabel: totalRam ? `ceiling ${heapCeiling} GB` : 'no measured host',
+      oninput: (v) => {
+        form.mem_max = v;
+        heapEcho.textContent = `${v} GB`;
+      },
+    });
 
     mount(node,
       bannerIfUnhealthy(),
@@ -337,20 +377,19 @@ export async function render() {
               summaryRow('Software', `${c.title} ${form.minecraft}`),
               summaryRow('Mod folder', `${folder}/`, 'empty, ready for you'),
               summaryRow('Port', String(form.port)),
-              summaryRow('Heap', `${form.mem_max} GB`),
+              summaryRow('Heap', heapEcho),
               summaryRow('EULA', 'accepted at creation'),
               plugins && form.starters.size
                 ? summaryRow('Plugins', `${form.starters.size} selected`)
                 : null,
-              h('div.field', { style: { margin: 0 } },
-                h('label', `Heap size — ${form.mem_max} GB`),
-                h('input', {
-                  type: 'range', min: 1, max: 16, step: 1, value: form.mem_max,
-                  'aria-label': 'Heap size in gigabytes',
-                  oninput: (e) => { form.mem_max = Number(e.target.value); paint(); },
-                }),
-                h('div.help', 'Sized against this host when tuning is on; this '
-                  + 'is the ceiling you are asking for.')),
+              heapSlider.node,
+              h('div.sldr-help', totalRam
+                ? `This box reports ${totalRam} GB, so the gate sits at `
+                  + `${heapCeiling} GB — total, less what the OS, Crafty and `
+                  + 'everything else need. Tuning re-checks it at creation.'
+                : 'This host\'s memory could not be read from here, so there '
+                  + 'is no real gate to draw. Tuning sizes the heap properly '
+                  + 'once the server exists.'),
               h('button.btn.primary.block', {
                 class: submitting ? 'btn primary block busy' : 'btn primary block',
                 disabled: submitting || !state.health?.ready,
@@ -448,5 +487,161 @@ export function toriiSvg() {
     + '<rect x="26" y="26" width="10" height="74"/>'
     + '<rect x="84" y="26" width="10" height="74"/>'
     + '<rect x="20" y="0" width="80" height="5" rx="2"/></g>';
+  return svg;
+}
+
+/* ============================================================
+   THE SHRINE SLIDER
+   ------------------------------------------------------------
+   Duplicated verbatim in views/create.js. core.js is owned by
+   another pass and cannot take a new shared helper, so this
+   lives in both call sites rather than in one place — if a
+   third screen ever needs it, that is the moment to promote it.
+
+   What it fixes, and why each part is necessary:
+
+     * The drag is continuous because `step` is a fifth of the
+       snap unit AND because `input` does not repaint anything.
+       Either one alone still stutters.
+     * The value the app commits is always on the snap grid.
+       `input` reports the snapped number while `--pct` follows
+       the raw one, so the fill glides while the readout counts
+       in halves; `change` settles the thumb onto the committed
+       value.
+     * Arrow keys move by the snap unit, not by the fine step —
+       otherwise a keyboard user needs a hundred presses to
+       cross the rope.
+     * `--strain` is a smoothstep of how far past 70% of the
+       range the value sits. Every visual is multiplied by it,
+       so the effect grows rather than switching on.
+   ============================================================ */
+
+function shrineRange(o) {
+  const min = Number(o.min);
+  const max = Math.max(Number(o.max), min + (Number(o.snap) || 1));
+  const snap = Number(o.snap) || 1;
+  const fine = Math.max(snap / 5, 0.01);
+  const fmt = o.format || ((v) => String(v));
+  const onset = 0.7;                   // strain starts here, as a fraction
+
+  const settle = (v) => {
+    if (!Number.isFinite(v)) return min;
+    const stepped = Math.round(v / snap) * snap;
+    const bounded = Math.min(max, Math.max(min, stepped));
+    return Math.round(bounded * 1000) / 1000;
+  };
+
+  let value = settle(Number(o.value));
+  // A drag in progress, and when it was last seen alive. The timestamp is
+  // the safety net: `busy()` gates a deferred re-render, so a `dragging`
+  // flag that got stuck true would defer it forever.
+  let dragging = false;
+  let dragAt = 0;
+
+  const val = h('b.sldr-val', fmt(value));
+  const input = h('input.sldr-in', {
+    type: 'range', min, max, step: fine, value,
+    'aria-label': o.ariaLabel || o.label,
+  });
+  input.setAttribute('aria-valuetext', fmt(value));
+
+  const wrap = h('div.sldr',
+    h('div.sldr-head', h('span.sldr-lbl', o.label), val),
+    h('div.sldr-lane', input, h('span.sldr-heat', { 'aria-hidden': 'true' })),
+    h('div.sldr-scale', { 'aria-hidden': 'true' }),
+    h('div.sldr-ends',
+      h('span', fmt(min)),
+      h('span.sldr-cap', sldrTorii(), o.capLabel || fmt(max))));
+
+  // Notches every snap unit, thinned until they are countable.
+  let every = snap;
+  while ((max - min) / every > 26) every *= 2;
+  wrap.style.setProperty('--tick', `${(100 * every) / (max - min)}%`);
+
+  function draw(raw) {
+    const span = max - min || 1;
+    const t = Math.min(1, Math.max(0, (raw - min) / span));
+    const over = Math.min(1, Math.max(0, (t - onset) / (1 - onset)));
+    const strain = over * over * (3 - 2 * over);      // smoothstep
+    wrap.style.setProperty('--pct', String(t));
+    wrap.style.setProperty('--strain', strain.toFixed(3));
+    wrap.classList.toggle('straining', strain > 0.02);
+  }
+
+  input.addEventListener('input', () => {
+    dragAt = Date.now();
+    const raw = Number(input.value);
+    draw(raw);
+    const next = settle(raw);
+    if (next === value) return;
+    value = next;
+    val.textContent = fmt(value);
+    input.setAttribute('aria-valuetext', fmt(value));
+    o.oninput?.(value, raw);
+  });
+  input.addEventListener('change', () => {
+    // Land the bell on the committed number rather than wherever the
+    // pointer happened to let go.
+    dragging = false;
+    input.value = String(value);
+    draw(value);
+    o.onchange?.(value);
+  });
+  // Every listener is on the input itself. A window-level pointerup would
+  // be tidier to reason about and would also leak one listener per repaint,
+  // and this panel repaints on every property edit.
+  input.addEventListener('pointerdown', () => {
+    dragging = true;
+    dragAt = Date.now();
+  });
+  for (const done of ['pointerup', 'pointercancel', 'lostpointercapture',
+    'blur']) {
+    input.addEventListener(done, () => { dragging = false; });
+  }
+  input.addEventListener('keydown', (e) => {
+    const by = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1,
+      PageDown: -4, PageUp: 4 }[e.key];
+    if (by === undefined) return;
+    e.preventDefault();
+    const next = settle(value + by * snap);
+    if (next === value) return;
+    value = next;
+    input.value = String(value);
+    val.textContent = fmt(value);
+    input.setAttribute('aria-valuetext', fmt(value));
+    draw(value);
+    o.oninput?.(value, value);
+    o.onchange?.(value);
+  });
+
+  draw(value);
+  return {
+    node: wrap,
+    value: () => value,
+    busy: () => dragging && Date.now() - dragAt < 2500,
+    set(v) {
+      value = settle(v);
+      input.value = String(value);
+      val.textContent = fmt(value);
+      input.setAttribute('aria-valuetext', fmt(value));
+      draw(value);
+    },
+  };
+}
+
+/* The gate at the end of the rope. Drawn at 24x20 with chunky members
+   rather than reusing the page ornament, which is built for 120x100 and
+   disappears at this size. */
+function sldrTorii() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 20');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = '<g fill="currentColor">'
+    + '<rect x="2" y="0" width="20" height="1.6" rx=".6"/>'
+    + '<rect x="0" y="2.4" width="24" height="3"/>'
+    + '<rect x="3.5" y="7" width="17" height="2.2"/>'
+    + '<rect x="6" y="9.2" width="3.2" height="10.8"/>'
+    + '<rect x="14.8" y="9.2" width="3.2" height="10.8"/></g>';
   return svg;
 }

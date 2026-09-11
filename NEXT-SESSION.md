@@ -63,6 +63,42 @@ Two more traps from this pass, both now guarded:
   ES module imports carry no query string, so a fingerprint on the entry point
   does nothing for anything it imports.
 
+## 1B. The third pass — eleven reported items (2026-09-11)
+
+| area | what it is now |
+|---|---|
+| Dark accent | `--slab-bg` was `#F3E4E8`, 15.2:1 against the page — white in all but name. Now `#C98FA2`, 7.1:1, with slab text still at 7:1. |
+| Polygon | Six shapes, and `hl()` stamps each blob its own duration, phase and direction. Nothing runs while idle. |
+| Ghost buttons | `.btn.ghost::after` is the fill layer and was transparent, so the blob painted behind the label at **1.53:1**. The bleed also reached into a smaller gap and covered neighbours. Both fixed. |
+| Press | Press and release had one shared overshooting curve. Split; release throws petals, `.btn.danger` throws ash. |
+| Shine | The panel sheen ran on every panel on a 7s loop forever. Replaced with a static asanoha weave at ~3%. |
+| Racks | `#/groups`, `app/fleetgroups.py`. Torii lintels, ema plaques, the open yard. Rail shows 5. |
+| Koma | A comic panel of a mod's project page, opened from the row but not its controls. |
+| Silent tuning | `optimizer.advise()` clamps and validates a model answer into the deterministic plan; the ofuda says what moved. |
+| Heap slider | Dragged in whole gigabytes; now a fifth of a snap, with a continuous strain curve toward the ceiling. |
+| Backdrop | A blurred cherry tree per theme as SVG, resolved by `/assets/backdrop/{theme}` so a real photograph dropped in takes over. |
+
+**A torn state file, found by a real power cut.** Mid-review the user
+restarted the machine and the racks were gone: `fleet-state.json` came back
+as 559 NUL bytes. Every state writer in the app wrote straight over the live
+file with no temp file and no `fsync` — neither atomic nor durable. All nine
+now go through `config.write_state` (temp → fsync → rename → fsync the
+directory) and read through `config.read_state`, which treats a torn file as
+absent. If you add a tenth writer, use the helper.
+
+**Three more bugs found that nobody reported.** Worth knowing because each was
+invisible until the exact wrong moment:
+
+1. **Every modal animated from `opacity:0` with `fill:both` and was not
+   gated on `html.js-motion`.** A stalled document timeline meant an
+   invisible dialog over a live scrim. Every confirmation in the app is a
+   modal.
+2. **Five places painted `#fff` on `var(--rose)`** — 8:1 in light, **2.40:1**
+   in dark. `--slab-rose-fg` existed for this and was not used.
+3. **`check_api` compared call sites to routes by PREFIX**, in both
+   directions, so `/api` prefixed everything and the suite was green with
+   **ten routes missing**. It now compares normalised shapes exactly.
+
 ## 2. Verified in this session
 
 Driven against a mock Crafty (`dev/`-adjacent, not committed) and against the
@@ -77,8 +113,8 @@ APIs:
 | File manager | Browse, per-folder sizes, editor with gutter, edit → confirm → save → verified on disk → snapshot taken |
 | Players | Both routes: console on a running server, JSON file on a stopped one, each saying which it took; Mojang UUID lookup |
 | Client-only scoring | 6 targeted cases including the Forge mod that declares nothing and is caught by package layout |
-| Backend suite | 141 checks across 5 test files |
-| Front end | 125 checks (`dev/tools/check_frontend.py`), including the layering contract |
+| Backend suite | 171 checks across 6 test files (`test_fleet_state.py` is new: 30) |
+| Front end | 194 checks (`dev/tools/check_frontend.py`) — the layering contract, plus exact API-shape matching and CSS-referenced assets |
 | Layering | Read back from computed styles in a real browser: card `isolation:isolate`, blob `position:absolute` at z 0, fill at z 1, bleeding 17 px left and 15 px top |
 | Load time | Measured, not estimated: shell 4 ms, health 541 ms non-blocking, instances 32 ms, DCL 118 ms, load 387 ms |
 | The rope | Dragged and clicked; recklessness ladder lit to `11111` at Unhinged, crest cycling, the roll starting from both |

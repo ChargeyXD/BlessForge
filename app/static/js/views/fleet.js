@@ -15,7 +15,8 @@ import {
 } from '../core.js';
 import { run } from '../jobs.js';
 import {
-  state, refreshInstances, go, topActions, bannerIfUnhealthy, onState,
+  state, refreshInstances, refreshGroups, go, topActions, bannerIfUnhealthy,
+  onState, groupOf, motif, lastRan,
 } from '../app.js';
 
 const LOADER_ART = {
@@ -39,9 +40,17 @@ const STATE_PILL = {
 export async function render() {
   const node = h('div.wrap');
   let filter = prefs.get('fleet.filter', 'all');
+  // The rack filter is a SECOND axis, not a fifth segment: "running" and
+  // "on the Survival rack" are different questions and you routinely want
+  // to ask both at once. Remembered, but validated against the racks that
+  // still exist -- a rack deleted from another tab must not leave this
+  // screen permanently showing nothing.
+  let rackId = prefs.get('fleet.rack', '');
   let unsub = null;
 
   topActions(
+    h('a.btn.sm.ghost', { href: '#/groups' }, icon('layers', 14),
+      h('span', 'Racks')),
     h('a.btn.sm.ghost', { href: '#/discover' }, icon('compass', 14),
       h('span', 'Discover')),
     h('a.btn.sm.primary', { href: '#/create' }, hl(), icon('plus', 14),
@@ -51,7 +60,19 @@ export async function render() {
   function paint() {
     const banner = bannerIfUnhealthy();
     const all = state.instances;
+    const racks = state.groups.groups || [];
+    const assign = state.groups.assign || {};
+    if (rackId && rackId !== '__yard__'
+        && !racks.some((g) => g.id === rackId)) {
+      rackId = '';
+      prefs.set('fleet.rack', '');
+    }
+    const inRack = (s) => (rackId === '__yard__'
+      ? !assign[s.server_id]
+      : assign[s.server_id] === rackId);
+
     const shown = all.filter((s) => {
+      if (rackId && !inRack(s)) return false;
       if (filter === 'all') return true;
       if (filter === 'running') return s.state === 'running';
       if (filter === 'stopped') return s.state === 'stopped';
@@ -87,6 +108,22 @@ export async function render() {
           'Filter servers'),
       ),
 
+      racks.length ? h('div.rackbar', { role: 'group', 'aria-label': 'Rack' },
+        h('span.rb-lbl.mono', 'Racks'),
+        rackChip('', 'All', all.length, null, rackId, (v) => {
+          rackId = v; prefs.set('fleet.rack', v); paint();
+        }),
+        ...racks.map((g) => rackChip(g.id, g.name,
+          all.filter((s) => assign[s.server_id] === g.id).length,
+          g.motif, rackId, (v) => {
+            rackId = v; prefs.set('fleet.rack', v); paint();
+          })),
+        rackChip('__yard__', 'Open yard',
+          all.filter((s) => !assign[s.server_id]).length, 'yuki', rackId,
+          (v) => { rackId = v; prefs.set('fleet.rack', v); paint(); }),
+        h('a.rb-more', { href: '#/groups' }, 'arrange…'),
+      ) : null,
+
       all.length ? h('div.kpis.stagger', { style: { marginBottom: '20px' } },
         kpi('Servers', String(all.length), `${counts.running} running`),
         kpi('Players online', String(counts.players),
@@ -111,7 +148,9 @@ export async function render() {
             h('a.btn.primary', { href: '#/settings' }, hl(), h('span', 'Settings'))))
         : shown.length
           ? h('div.grid.gauto.bleed.stagger', ...shown.map(card))
-          : h('div.note', 'Nothing matches that filter.'),
+          : h('div.note', rackId
+            ? 'Nothing on that rack matches that filter.'
+            : 'Nothing matches that filter.'),
     );
   }
 
@@ -119,10 +158,27 @@ export async function render() {
     mount(node, skeletonGrid(6));
     await refreshInstances({ quiet: true }).catch(() => {});
   }
+  refreshGroups();
   paint();
   unsub = onState(paint);
 
   return { node, dispose: () => unsub?.() };
+}
+
+function rackChip(value, label, count, motifName, current, onpick) {
+  const chip = h('button.chip.rackchip', {
+    type: 'button',
+    'aria-pressed': String(current === value),
+    onclick: () => onpick(current === value && value ? '' : value),
+  },
+    motifName
+      ? h('span.rc-g', { 'aria-hidden': 'true' }, motif(motifName).glyph)
+      : null,
+    h('span', label),
+    h('span.rc-n.tnum', String(count)),
+  );
+  if (motifName) chip.style.setProperty('--g-ink', motif(motifName).ink);
+  return chip;
 }
 
 function kpi(label, value, sub, tone = '') {
@@ -136,8 +192,9 @@ function card(s) {
   const [tone, label] = STATE_PILL[s.state] || ['dead', s.state || 'unknown'];
   const art = LOADER_ART[(s.loader || '').toLowerCase()];
   const open = () => go(`/i/${s.server_id}/overview`);
+  const g = groupOf(s.server_id);
 
-  return h('div.card.hoverable.svcard', {
+  const node = h('div.card.hoverable.svcard', {
     role: 'link', tabIndex: 0,
     'aria-label': `Open ${s.name || 'server'}`,
     onclick: (e) => { if (!e.target.closest('button')) open(); },
@@ -165,6 +222,20 @@ function card(s) {
       (s.problems || 0) > 0
         ? h('span.pill.warn', `${s.problems} problem${s.problems > 1 ? 's' : ''}`)
         : null,
+    ),
+
+    h('div.sv-foot',
+      h('span.sv-ran.mono', lastRan(s)),
+      h('button.racktag', {
+        type: 'button',
+        'aria-label': g
+          ? `${s.name} is on the ${g.name} rack. Move it.`
+          : `${s.name} is not on a rack. Hang it.`,
+        onclick: (e) => { e.stopPropagation(); hang(s); },
+      },
+        h('span.rt-g', { 'aria-hidden': 'true' },
+          g ? motif(g.motif).glyph : '—'),
+        h('span.trunc', g ? g.name : 'open yard')),
     ),
 
     s.pack?.name
@@ -211,6 +282,21 @@ function card(s) {
       }, hl(), icon('wrench', 13), h('span', 'Finish setup')),
     ),
   );
+
+  if (g) node.style.setProperty('--g-ink', motif(g.motif).ink);
+  return node;
+}
+
+/* The rack picker lives on the Racks screen and is loaded on demand, so a
+   fleet that nobody groups never downloads it. One implementation either
+   way -- the alternative is two dialogs that drift apart. */
+async function hang(s) {
+  try {
+    const mod = await import('./groups.js');
+    await mod.openHangPicker([s]);
+  } catch (e) {
+    toastError(e, 'Could not open the rack picker');
+  }
 }
 
 function gauge(label, percent, text, tone = '') {

@@ -134,6 +134,25 @@ A sidebar measures the folders worth measuring — `mods`, `world`, `logs`,
 `backups` — so "where did the disk go" is one glance rather than an
 investigation.
 
+### Organise the fleet
+
+Servers hang on **racks** — named groups, each wearing a shrine mark. The
+screen is a row of torii gates with a rope strung under each and every server
+hanging from it as an ema plaque, crooked at its own angle. Drag a plaque to
+another rack, or point at it and press `G` if you would rather not drag.
+
+With no racks yet it offers three cut from your own fleet — by loader, by
+version, modded or plain — so the first one costs a tap rather than a form.
+Servers you have not filed hang in **the open yard**, which is a real rack
+with a ghost gate rather than a hidden bucket.
+
+The sidebar shows at most five: everything running first, then whatever ran
+most recently, then whatever was installed most recently, and a "+N more" row
+to the rest. "Ran 20 minutes ago" is recorded by BlessForge itself — Crafty
+does not keep it — and an uptime is only claimed when the down→up transition
+was actually witnessed, so a server found already running says "up now"
+rather than inventing a start time.
+
 ### Manage players
 
 Ops, whitelist, bans, IP bans, and who is connected right now — merged from
@@ -278,6 +297,11 @@ list built over months survives moving to another machine.
   or `both` — from the same scored evidence the install review uses, not from
   the name. A jar nobody has scanned yet says so rather than guessing, and one
   scan fills in the whole list.
+- **Click a mod's name and its project page opens as a comic panel** —
+  summary, the long description, categories, downloads, licence, links out,
+  and which build fits this server. Clicking the toggle or the install button
+  does not open it. Descriptions come from third parties, so they are never
+  inserted as HTML and links inside them are dropped.
 - Bulk enable/disable/delete, update checks, and whole-modpack version switching.
 
 ### Edit configs
@@ -421,6 +445,19 @@ inventory and a 67k crash report become a 7k prompt naming the six jars the log
 actually mentions.
 
 ### Optimize for the machine
+
+If an AI endpoint is configured you can let it **tune quietly in the
+background** (`Settings → AI`). It does not open a chat: it folds a better
+heap, GC and flag choice for the actual modpack into the numbers the
+deterministic optimizer already produced. Everything it suggests is validated
+and clamped — a heap it proposes can never exceed what the host can safely
+give — and every failure path, including it being slow or unreachable, falls
+back to the deterministic answer.
+
+Silent does not mean unaccountable. The Tune screen shows an *ofuda* naming
+the model and listing every value it moved, with the old number struck
+through beside the new one, and it says so plainly when nothing was changed.
+
 
 Reads the host's RAM and CPU and the pack's recommended RAM, then proposes:
 

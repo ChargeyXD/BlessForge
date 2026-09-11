@@ -27,7 +27,7 @@ export are all verified end to end against them (§5D).
 |---|---|
 | Deployed | `http://<host>:8710`, healthy |
 | Version | 2.1.0, ~131 routes |
-| Tests | **141 backend checks** across five files, **125 front-end checks** (§9) |
+| Tests | **171 backend checks** across six files, **197 front-end checks** (§9) |
 | Servers in Crafty | **five**, §5D and §5F. `Perfect World` :25565 (NeoForge, 100), `Cozy Experience` :25566 (Fabric, 245), `Lucky Dip` :25567 (rolled, 44), `Roulette RB5-YR9-BC` :25568 (rolled, 72), `Tensura` :25569 (Forge 1.19.2, 223 — will not boot here, §5F) |
 
 **Committed on `main`.** `1d00eb8` is the rebuild and the six new features and
@@ -831,6 +831,242 @@ screenshotting a hidden pane.
 
 ---
 
+## 5H. The third UI pass (2026-09-11) — eleven reported items
+
+Reported as: still too plain, the polygon in the wrong layer, the sidebar
+bland, the lever "just a button", the slider not smooth, the AI apparently
+unused. Eleven items, all landed. The three that are worth understanding
+rather than just listing:
+
+### 5H.1 The polygon was painting through the buttons it bled onto
+
+Two separate faults wearing the same symptom.
+
+`.btn.ghost::after` — the FILL layer, z-index 1 — sets
+`background:transparent`. With nothing between the z-0 blob and the z-2
+label, the blob painted directly behind the text. Measured, not guessed:
+cream `#F2E8EC` on the `#EFAEC0` blob is **1.53:1**.
+
+And the blob bled 13px sideways out of a `.btnrow` whose gap was 10px, so a
+hovered button painted over the label of the button beside it. Bleed is now
+10px inside a 14px gap, and `.btn:hover` takes `z-index:1` so the button you
+are pointing at is never underneath a later sibling.
+
+### 5H.2 The dark theme's accent was white in all but name
+
+`--slab-bg` in dark was `#F3E4E8` — **15.23:1** against the page, when the
+theoretical maximum is 21. It is the card border, the hard offset shadow in
+every `--lift-*`, the slab, the panel header and the switch track, so it set
+the entire brightness of dark mode. Now `#C98FA2`, a dusty blush at 7.08:1
+against the page with slab text still at 7.01:1.
+
+Changing it exposed five places that painted `#fff` on `var(--rose)` — the
+pill, the active rail item, the tab count, the file-manager selection, the
+catalogue monitor. In light mode `--rose` is a deep crimson and that reads at
+8:1. In dark it is a pale pink and the same white reads at **2.40:1**.
+`--slab-rose-fg` already existed for exactly this (white in light, near-black
+in dark); those five simply never used it. Now 6.92:1 dark, 5.59:1 light.
+
+### 5H.3 Every modal in the app was one stalled frame from invisible
+
+Found while reviewing an agent's work, and the most serious thing in the
+pass. `.modal` carried `animation:pop .24s ... both`, `@keyframes pop` began
+at `opacity:0`, and unlike every other entrance in the app it was **not**
+gated on `html.js-motion`. A document timeline that never advances — a
+background tab, a throttled preview, a stalled main thread — and `fill:both`
+holds the FROM state forever: an invisible dialog, a live scrim over the
+page, and no way out but Escape. Every confirmation in the app is a modal.
+
+`pop` is scale-only now and the rule is gated. This is the third time the
+opacity-from-zero rule has been broken in this codebase; it is written up in
+§4 and it will happen again.
+
+### 5H.4 The rest
+
+| | |
+|---|---|
+| **Random polygon** | Six clip-path shapes, and `hl()` stamps each blob its own duration, starting phase and direction. Measured on the fleet screen: 30 blobs, all 6 shapes, 9 distinct durations in the first 10. Nothing runs while idle — the animation only exists under `:hover`. |
+| **Press** | One transition served press *and* release, so an overshooting spring ran on the way DOWN. Press is 55ms and non-overshooting; release keeps the spring. On release it throws petals — gold for primary, and `.btn.danger` comes apart upward into ash. The shards live in a fixed layer on `<body>`, not inside the button, so they cannot collide with the layering contract. |
+| **Shine → weave** | The panel-header sheen ran a light across *every* panel on a 7s loop, forever; card and KPI fills were diagonal two-tones. Replaced with a static asanoha lattice at ~3% alpha (`--washi`, three repeating gradients). Gold leaf on the few display numbers stays. |
+| **Backdrop** | A cherry tree per theme, drawn as SVG with the blur baked in (39/79 KB) behind a paper scrim. `dev/tools/make_backdrop.py` generates both. `/assets/backdrop/{theme}` resolves server-side, so dropping a real photograph in as `bg-sakura-<theme>.<ext>` takes over with no code change. |
+| **Heap slider** | The "not smooth" was the step: the input moved in whole gigabytes. It now runs at a fifth of a snap and settles the *committed* value to the snap. Strain is a continuous smoothstep (0 below 70%, 1.0 at the ceiling) driving a tremor, a heat wash and a colour shift — not a class flip at a threshold. The ceiling is drawn as a torii. |
+| **Silent tuning** | `optimizer.advise()` folds a validated, clamped model answer into the deterministic plan, and degrades to it on every failure path. The Tune screen shows an **ofuda** naming the model and every value it moved, with the old number struck through. Silent means uninterrupting, not unaccountable. |
+| **Racks** | `#/groups`. Torii lintels with a rope strung under each and servers hanging as ema plaques, crooked at their own angle. `app/fleetgroups.py` holds the layout and the activity record; the rail shows 5, running first. |
+| **Koma** | Clicking a mod row — but not its controls — opens a comic panel of the project's own page. Untrusted upstream HTML is never `innerHTML`'d and links inside descriptions are dropped. |
+
+### 5H.5 A torn state file, found by a real power cut
+
+Reported mid-review as "the racks are gone after I restarted the device".
+`fleet-state.json` was 559 bytes of NUL: the file length had been recorded
+and the contents had not.
+
+`fleetgroups._save` wrote a temp file and renamed it, which is **atomic**
+but not **durable** -- the rename can be flushed before the data. Every
+other state writer in the app was worse: `whitelist.py`, `ai.py`,
+`optimizer.py`, `watcher.py`, `uploads.py`, `backups.py` and `roulette.py`
+all wrote straight over the live file, so a crash part-way through left a
+truncated file that `json.loads` then rejected, silently discarding the
+data. There was no `fsync` anywhere in the codebase.
+
+`config.write_state` now does temp -> fsync -> rename -> fsync the
+directory, and `config.read_state` treats a missing file and a torn one as
+the same thing. All nine call sites use it. `test_fleet_state.py` writes a
+file of NULs over a saved layout and asserts the app starts clean and keeps
+working.
+
+### 5H.6 Route transitions, and the rope that would not stay still
+
+Reported after the first review. Two more things, both fixed by moving
+something rather than by adding something.
+
+**Navigation flashed.** `route()` blanked the page, showed a spinner, then
+awaited a dynamic import AND a network round trip before dropping the
+finished screen in at once -- two jarring moments per navigation, the
+second of which moved every element. Each route now declares the SHAPE it
+is about to become (`skel` in the routes table) and `pageSkeleton` paints
+it **synchronously**, before anything is awaited, so the frame after a
+click already has the right layout in it. The skeleton lives in the routes
+table rather than in the view module on purpose: the module itself has to
+be fetched on first visit, and a skeleton that waits for its own module
+has missed the moment it existed for. `heldFor` keeps it up for at least
+170ms so a fast screen does not flicker. Instance tabs do the same per
+tab, which also stops the tab strip jumping as the body under it changes
+height.
+
+**The rope moved with the plaques.** `.hanger` and `.cord` were children
+of `.ema-plaque`, so every transform on the plaque -- the hand-hung angle,
+the sway, the hover lift -- moved the rope too, and a row of plaques tore
+the strung line into pieces that slid around independently. Three
+counter-transforms got most of it: an equal-and-opposite rotate for the
+angle, a mirrored sway on the same timing, and a counter-translate for the
+lift. The first two were exact. The third could not be, because the hover
+also turns the board in 3D, and a child cannot undo a parent's perspective
+projection with a translate.
+
+The fix was one div. `.plq-body` wraps everything that moves; the rope and
+cord are its siblings. Measured by driving the sway animation frame by
+frame: the board swings 1.16px and the rope sits at the same pixel at
+every frame.
+
+### 5H.7 What this pass was checked against
+
+195 front-end checks, 171 backend across six files, both themes, zero console
+errors. `dev/tools/test_fleet_state.py` is new (27 checks).
+
+**`check_api` was wrong, and had been for a while.** It matched a call
+against a route by PREFIX in either direction, so `/api/fleet/groups` passed
+because `/api` prefixes everything — 194 checks were green with **ten routes
+missing**. It now normalises both sides to the same shape and compares
+exactly. If you add a route, this is the check that will tell you when the
+front end and the server disagree.
+
+---
+
+## 5I. The fourth UI pass (2026-09-11, later) — seven reported items
+
+### 5I.1 The mod install that was never broken
+
+Reported as: `upload modernfix-neoforge-5.27.24+mc1.21.1.jar failed:
+{'detail': 'Not Found'}`.
+
+`{'detail': 'Not Found'}` is FastAPI's own 404 shape, and the client posts
+to `/api/v2/servers/{id}/files/upload`, which is correct for Crafty 4. The
+**mock** had no upload route, so it 404'd. BlessForge was right the whole
+time.
+
+The mock now implements the real chunked protocol, and implements it
+strictly: a missing `fileId` / `fileName` / `location` / `fileSize` header
+is a 400, and every chunk's SHA-256 is verified rather than trusted. A mock
+that accepts anything proves nothing. It also moved into the repo at
+`dev/mock/crafty.py`, because it had only ever existed in a scratch
+directory and was being rebuilt from memory each session — and a gap in a
+test harness reads exactly like a bug in the thing it is testing.
+
+### 5I.2 Navigation, and why it flashed
+
+`route()` blanked the page, showed a spinner, then awaited a dynamic import
+AND a network round trip before dropping the finished screen in at once.
+Each route now declares the SHAPE it will become and `pageSkeleton` paints
+it **synchronously** — measured at 10-11ms after a click, versus a blank
+page until the fetch landed. The skeleton then stays on top and **dissolves
+off** the real content underneath.
+
+The direction of that fade is the safety argument. Fading content IN means
+starting it at `opacity:0`, which is the bug this codebase has shipped
+twice. Fading the skeleton OUT means the worst case is a skeleton that
+lingers — and it is removed on a 400ms timer regardless, so it cannot.
+
+### 5I.3 Why the activity drawer stuttered
+
+`paint()` did `mount(bodyEl, ...jobs.map(jobCard))` on **every frame** —
+`mount` is clear-then-append, so every card, log line and `<img>` was a new
+node many times a second. That restarted the log lines' fade-in from
+`opacity:0`, restarted the working GIF from frame 0, dealt every button's
+blob a fresh random phase, reset both scroll positions, and replaced the
+progress bar's `<i>` so its `transition:width` never ran. A `setInterval`
+re-render every second did the same thing again while nothing was
+happening.
+
+Cards are now patched in place. Measured over a whole job: the card node is
+**identical** before and after, with 5 structural additions and the log
+appended rather than rebuilt.
+
+Three further faults fell out of reading it: the reconnect path built a
+*new* record, resetting the elapsed clock to zero and discarding the log;
+`h('div.joblog', { ref: 'log' })` was dead, `ref` not being a core prop;
+and `#drawer .body{display:flex}` outranked the UA's `[hidden]`, so
+`bodyEl.hidden = true` did nothing and **the collapse control had never
+collapsed anything**.
+
+### 5I.4 The rest
+
+| | |
+|---|---|
+| **The shrine road** | A job is a walk between two torii with a shimenawa strung between them; the walked length is gold leaf, a knot sits at each phase boundary, and the working charm rides the rope at the job's own percent. A modpack install gets a five-leg road whose knots sit on `installer.py`'s own percent anchors, a tally of petal ticks parsed from `Downloading mods (142/301)`, an ETA, and — the thing the old drawer could never say — `quiet for 47s` when no frame has arrived. Working and hung no longer look identical. |
+| **Finished jobs clear on close** | Verified: 3 jobs (2 done, 1 running) → closing the drawer leaves exactly the running one, with its `EventSource` still open. |
+| **Vital signs** | CPU is a torii whose pillars rise with load; memory is a chōchin lantern filling with light; players are sakura petals, filled for occupied seats. They read from across the room instead of from three bars in the header's corner, and a stopped server shows no reading rather than a `0%` that looks like data. |
+| **The rope** | One rope per ROW, drawn once, with cords dropping to each plaque — rather than a segment per plaque overhanging half a column gap and relying on the gap never changing. Aligned by construction. |
+| **The plaque** | State as an icon AND a word (a green dot and a grey dot are the same dot to a colourblind reader), players, version, loader, port, mod count, last ran. Still a wooden board on a rope, not a card. |
+
+### 5I.5 The catalogue keeps going
+
+Both catalogue screens paged with Prev/Next, which is the wrong shape for
+browsing and, worse, a shape CurseForge cannot support: its search reports
+neither a total nor a last page, so Next was always enabled and the only way
+to find the end was to walk off it.
+
+`core.endlessFeed` appends instead. Four things it has to get right, each a
+real failure rather than a nicety:
+
+- **A new search cancels an in-flight page.** Type `create`, then `cre`:
+  without a token the slower first request lands second and the grid fills
+  with results for a query nobody asked for.
+- **Duplicates.** CurseForge pages by offset over a set it re-ranks per
+  request, so the same project genuinely arrives twice. Deduped by key.
+- **The end** is a page shorter than `size` -- counted on the raw batch, not
+  on the deduped one, or a full page of duplicates would read as the end.
+- **Cleanup.** A route change does not disconnect an IntersectionObserver;
+  the view's `dispose` does.
+
+The sentinel is watched against the nearest scrollable ancestor rather than
+the viewport, because the add-mod browser lives in a modal with its own
+`overflow-y:auto` -- and a sentinel inside an overflow container never
+intersects the viewport once scrolled past, so a viewport-rooted observer
+would silently never fire there. Verified in both: Discover 72 -> 96 cards
+from scrolling alone, the modal 20 -> 40.
+
+The `Load more` button is not a fallback nobody sees. It is the keyboard
+path, and it is what works when the sentinel cannot intersect anything --
+which is exactly what happens in a hidden browser pane, where `innerHeight`
+is 0 and no observer fires at all.
+
+### 5I.6 What this pass was checked against
+
+197 front-end checks, 171 backend across six files, nine routes with zero
+console errors, both themes.
+
+---
+
 ## 6. Earlier sessions (8 commits, `23b38e7..c62d607`)
 
 History. Kept for the traps it records, which are all still live.
@@ -989,11 +1225,37 @@ missing from disk.
     a *script* and will happily accept a file with a broken string literal in
     it. Only `node --input-type=module --check` is real. That distinction cost
     a screen once.
-26. **The layering contract is invisible when it breaks.** A new
+26. **Writing a state file is not the same as saving it.** Every state
+    writer in this app was one `write_text` straight over the live file,
+    which is neither atomic (a crash mid-write truncates it) nor durable
+    (a rename can reach the disk before the bytes do). A hard restart on
+    2026-09-11 brought `fleet-state.json` back as **559 NUL bytes** -- the
+    right length, no contents. Use `config.write_state`, which fsyncs the
+    temp file before renaming and fsyncs the directory after; and read
+    through `config.read_state`, which treats a torn file as absent rather
+    than letting it reach a parser. Nine call sites were converted; if you
+    add a tenth, use the helper.
+27. **The layering contract is invisible when it breaks.** A new
     `.card > *` rule, or any new `z-index:-1`, silently moves the wiggling
     polygon in front of the card fill. `check_frontend.check_layering` catches
     both; nothing else will, short of hovering a card and noticing.
-27. **Two servers cannot both hold 4 GB on this host.** The Tune screen's
+28. **A CurseForge key sourced by bash loses its `$` segments.** Every
+    key is bcrypt-shaped -- `$2a$10$...` -- and `dev.sh` does
+    `set -a; . ./.env`, where `$2a` and `$10` are positional parameters.
+    A 60-character key with three `$` segments arrives as 47 characters
+    with none, and every request then fails with a 403 that reads exactly
+    like a revoked key. **Single-quote the value in `.env`.**
+    `config.curseforge_key_warning()` now catches it (it checks the key
+    still starts with `$2`; it used to check only the length, which a
+    fully-eaten key passes).
+29. **A CSS animation naming a keyframe that does not exist is silent.**
+    No warning, no error, no fallback -- the element keeps its static
+    styles. Renaming `p5-wiggle-poly` to six numbered shapes left four
+    rules in app.css naming the old one, and the blobs they belonged to
+    stopped moving and sat at full opacity instead: the instance tabs lost
+    their labels behind one and the rack plaques grew a grey box.
+    `check_frontend.check_keyframes` now catches this.
+30. **Two servers cannot both hold 4 GB on this host.** The Tune screen's
     ceiling is computed from what is free *now*, so it drops while another
     server runs — which is correct, and does mean the same pack shows a
     different ceiling depending on what else is up.
@@ -1170,9 +1432,9 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 141 backend + 125 front-end checks
+# the whole suite: 171 backend + 197 front-end checks
 cd ~/blessforge
-for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict; do
+for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict test_fleet_state; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
 .venv/bin/python dev/tools/check_frontend.py | tail -1

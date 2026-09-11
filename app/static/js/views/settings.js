@@ -21,14 +21,20 @@ export async function render() {
   const node = h('div.wrap');
   mount(node, loadingFox('Reading settings'));
 
-  const [health, cache, updates, ai, endpoints, decisions] = await Promise.all([
-    refreshHealth(),
-    api.get('/api/cache').catch(() => null),
-    api.get('/api/updates').catch(() => null),
-    api.get('/api/ai/status').catch(() => null),
-    api.get('/api/ai/endpoints').catch(() => null),
-    api.get('/api/whitelist').catch(() => ({ items: [], counts: {} })),
-  ]);
+  const [health, cache, updates, ai, endpoints, decisions, tuning]
+    = await Promise.all([
+      refreshHealth(),
+      api.get('/api/cache').catch(() => null),
+      api.get('/api/updates').catch(() => null),
+      api.get('/api/ai/status').catch(() => null),
+      api.get('/api/ai/endpoints').catch(() => null),
+      api.get('/api/whitelist').catch(() => ({ items: [], counts: {} })),
+      api.get('/api/ai/tuning').catch(() => null),
+    ]);
+  // The toggle is the one thing on this screen the user can change that the
+  // server owns, so it is mirrored locally rather than re-fetched: a repaint
+  // must not undo a switch that has already been written.
+  let tuneOn = !!tuning?.chosen;
 
   let list = decisions;
   let listFilter = '';
@@ -157,6 +163,56 @@ export async function render() {
                   + 'prioritises, it is not the detector.'
                 : (ai.reason || 'Not configured.')),
             ai.hint ? h('div.note.warn', ai.hint) : null,
+
+            /* --- silent tuning ------------------------------------
+               The only place this feature is visible when it is
+               working. Everything else it does happens on the Tune
+               screen without being asked. */
+            tuning ? h('div', { style: { display: 'grid', gap: '10px',
+              borderTop: '2px solid var(--rule)', paddingTop: '12px' } },
+            toggle('Let it tune servers quietly', tuneOn, async (v) => {
+              try {
+                const res = await api.post('/api/ai/tuning', { enabled: v });
+                // `chosen` is the switch; `enabled` is the switch AND a
+                // container that has AI_ENABLED set. They differ, and the
+                // toggle must show the switch.
+                tuneOn = !!(res.chosen ?? res.enabled);
+                toast(tuneOn
+                  ? 'On. The Tune screen will fold its suggestions in as they '
+                    + 'arrive.'
+                  : 'Off. Tuning is deterministic again.',
+                res.persisted === false ? 'warn' : 'ok');
+                if (res.persisted === false) {
+                  toast('Not written to disk — /data is not writable, so this '
+                    + 'lasts until the container restarts.', 'warn',
+                  { timeout: 9000 });
+                }
+              } catch (e) {
+                tuneOn = !v;
+                toastError(e);
+              }
+              paint();
+            }, {
+              disabled: !tuning.ai_enabled,
+              help: 'On the Tune screen it quietly sharpens the heap, the GC '
+                + 'flags and a few server.properties values for the pack that '
+                + 'is actually installed, and says in one line why each number '
+                + 'moved. It never blocks the page and never asks you '
+                + 'anything.',
+            }),
+            h('p.muted', { style: { fontSize: '12px' } },
+              'Everything it proposes is clamped against the same host '
+              + 'arithmetic that produced the number in the first place — a '
+              + 'heap can never exceed the measured ceiling, flags come from '
+              + 'a fixed list with per-flag ranges, and anything outside that '
+              + 'is dropped and counted. If the model is off, missing, '
+              + `unreachable or slower than ${tuning.timeout_seconds ?? 25} s, `
+              + 'the deterministic optimizer is what you get.'),
+            !tuning.ai_enabled
+              ? h('div.note.warn', 'AI_ENABLED is false in this container\'s '
+                + 'environment, so this cannot be switched on here.')
+              : null) : null,
+
             endpoints?.items?.length > 1
               ? h('div.field', { style: { margin: 0 } },
                 h('label', 'Endpoint'),

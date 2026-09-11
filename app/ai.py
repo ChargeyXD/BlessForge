@@ -220,11 +220,7 @@ def set_endpoint(url: str) -> str:
             f"unknown endpoint {url!r}; expected {OLLAMA_URL} or {LOCAL_URL}"
         )
     _endpoint = url
-    try:
-        _ENDPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _ENDPOINT_FILE.write_text(url, encoding="utf-8")
-    except OSError:
-        pass          # the choice still applies for this run
+    config.write_state(_ENDPOINT_FILE, url)   # applies either way
     return url
 
 
@@ -1177,3 +1173,354 @@ def split_auto_actions(plan: dict, *, allow_destructive: bool = False
         else:
             held.append(action)
     return auto, held
+
+
+# ======================================================================
+# SILENT TUNING ADVICE
+# ======================================================================
+#
+# Everything above this line is the *conversational* half of the assistant:
+# a user opens Troubleshoot, asks a question, reads an answer. This half
+# never talks to anybody. It sharpens numbers the deterministic optimizer
+# has already produced and hands back a plain-language reason, and if it
+# cannot do that -- off, unconfigured, unreachable, slow, or talking
+# nonsense -- the deterministic numbers stand untouched.
+#
+# Three rules make that safe rather than merely hopeful:
+#
+#   1. **It is advisory, never authoritative.** `advise_tuning` returns a
+#      *proposal*. `app/optimizer.py` owns the clamping, and clamps against
+#      `specs.recommend_memory` -- so a hallucinated 64 GB heap on an 8 GB
+#      box is arithmetic, not trust.
+#   2. **It is time-boxed twice.** The HTTP client gets AI_TUNE_TIMEOUT, and
+#      the whole coroutine is wrapped in `asyncio.wait_for` at the same
+#      budget, because a socket that connects and then dribbles is not
+#      caught by a connect timeout.
+#   3. **It never raises.** Every failure path returns a dict with
+#      `ok: False` and a reason worth printing. A tuning page that 500s
+#      because a language model was busy is a worse product than one that
+#      quietly shows the deterministic answer.
+#
+# It also never runs on the render path -- see `optimizer.build_plan`.
+
+import asyncio
+import time
+
+# Deliberately short. This is a background improvement to a number that is
+# already correct, so waiting is never the right trade: past this budget the
+# deterministic answer is simply better than a later one.
+AI_TUNE_TIMEOUT = int(os.environ.get("AI_TUNE_TIMEOUT", "25"))
+
+_TUNING_FILE = config.state_path("ai-tuning.json")
+_tuning: dict | None = None
+
+
+def _tuning_state() -> dict:
+    """The toggle, read once and then held.
+
+    Held in memory as well as on disk for the same reason the client-only
+    list is (see app/whitelist.py): /data is not always writable, and a
+    preference the operator just set must still apply for this run.
+    """
+    global _tuning
+    if _tuning is not None:
+        return _tuning
+    try:
+        data = json.loads(_TUNING_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+    _tuning = {
+        # On by default: the whole point is that nobody has to ask for it.
+        # It still degrades to the deterministic optimizer the moment the
+        # model is missing, so "on" costs nothing on a box with no Ollama.
+        "enabled": bool(data.get("enabled", True)),
+        "updated_at": float(data.get("updated_at") or 0) or None,
+        "persisted": True,
+    }
+    return _tuning
+
+
+def tuning_enabled() -> bool:
+    """Is the assistant allowed to adjust tuning numbers?"""
+    return AI_ENABLED and bool(_tuning_state().get("enabled"))
+
+
+def set_tuning_enabled(on: bool) -> dict:
+    """Remember the choice. Applies to this run even if the write fails."""
+    global _tuning
+    _tuning = {"enabled": bool(on), "updated_at": time.time(), "persisted": True}
+    _tuning["persisted"] = config.write_state(
+        _TUNING_FILE,
+        json.dumps({"enabled": bool(on),
+                    "updated_at": _tuning["updated_at"]}, indent=2))
+    return dict(_tuning)
+
+
+def tuning_settings() -> dict:
+    """What the Settings screen needs to draw the toggle."""
+    state = dict(_tuning_state())
+    state.update({
+        "enabled": tuning_enabled(),
+        "chosen": bool(_tuning_state().get("enabled")),
+        "ai_enabled": AI_ENABLED,
+        "model": AI_MODEL,
+        "endpoint": current_endpoint(),
+        "timeout_seconds": AI_TUNE_TIMEOUT,
+    })
+    return state
+
+
+TUNE_SYSTEM_PROMPT = """\
+You are tuning a dedicated modded Minecraft server. A deterministic \
+optimizer has already produced a safe baseline from the host's specs and \
+Aikar's flags. Your job is to ADJUST that baseline where the specific \
+modpack, loader and mod count justify it, and to leave it alone where they \
+do not.
+
+Rules:
+- Returning no changes at all is a correct and common answer. The baseline \
+is already good. Only change something you can justify from the evidence.
+- Never propose a heap larger than the stated ceiling. The ceiling is what \
+the host can actually give; exceeding it kills the server at startup with \
+no log at all.
+- Only name JVM flags from the "Flags available" list, or a different \
+numeric value for one of the parameterised flags listed there.
+- Only name server.properties keys from the "Properties you may tune" list.
+- Every change needs a `why` a server owner would understand: name the mod \
+count, the loader, the heap size or the core count that makes it right. No \
+jargon for its own sake.
+- Reply with JSON only, no prose outside it, no markdown fences.
+
+JSON shape:
+{
+  "summary": "one sentence: what you changed and why, or that nothing needed changing",
+  "heap_gb": <number or null>,
+  "heap_why": "why this heap rather than the baseline, or empty string",
+  "flags": [
+    {"flag": "-XX:MaxGCPauseMillis=150", "on": true, "why": "..."}
+  ],
+  "properties": [
+    {"key": "view-distance", "value": "7", "why": "..."}
+  ]
+}
+
+Set `on` to false to turn a baseline flag OFF. Keep `flags` to at most six \
+entries and `properties` to at most four. Use null for heap_gb when the \
+baseline heap is right.
+"""
+
+# The parameterised flags the model is allowed to re-value, advertised to it
+# by name. The *bounds* live in optimizer.py, because they depend on the
+# host -- this list is only what the prompt says is on the table.
+TUNABLE_NUMERIC_FLAGS = (
+    "-XX:MaxGCPauseMillis", "-XX:G1NewSizePercent", "-XX:G1MaxNewSizePercent",
+    "-XX:G1ReservePercent", "-XX:InitiatingHeapOccupancyPercent",
+    "-XX:G1HeapWastePercent", "-XX:G1MixedGCCountTarget", "-XX:SurvivorRatio",
+    "-XX:MaxTenuringThreshold", "-XX:ParallelGCThreads", "-XX:ConcGCThreads",
+    "-XX:SoftRefLRUPolicyMSPerMB", "-Dfml.readTimeout", "-XX:G1HeapRegionSize",
+)
+
+
+def build_tune_evidence(profile: dict) -> str:
+    """The prompt body. Small on purpose -- this runs per tuned server.
+
+    A crash review sends thousands of characters because the answer is
+    hidden in a log. Here the answer is arithmetic over a dozen numbers, so
+    the evidence is a dozen numbers. That is what keeps the whole round trip
+    inside a 25 second budget on a shared endpoint.
+    """
+    host = profile.get("host") or {}
+    memory = profile.get("memory") or {}
+    pack = profile.get("pack") or {}
+    load = host.get("load_per_core")
+    parts = [
+        "## The server",
+        f"Minecraft: {profile.get('minecraft') or 'unknown'}",
+        f"Loader: {profile.get('loader') or 'unknown'}",
+        f"Modpack: {pack.get('name') or 'none -- hand-assembled'}",
+        f"Mods installed: {profile.get('mod_count', 0)}",
+        "",
+        "## The host",
+        f"Total RAM: {host.get('total_ram_gb') or 'unknown'} GB",
+        f"Free right now: {host.get('available_ram_gb') or 'unknown'} GB",
+        f"CPU cores: {host.get('cpu_count') or 'unknown'}",
+        f"Load per core: {load if load is not None else 'unknown'}",
+        "",
+        "## The baseline the optimizer chose",
+        f"Heap: {memory.get('heap_gb')} GB "
+        f"({memory.get('basis') or 'no basis given'})",
+        f"Ceiling -- NEVER exceed this: {memory.get('ceiling_gb')} GB",
+        f"The pack asked for: {memory.get('requested_gb')} GB",
+    ]
+    if memory.get("warnings"):
+        parts.append("Warnings already raised: "
+                     + " ".join(memory["warnings"])[:400])
+
+    parts.append("")
+    parts.append("## Flags available (on/off, and their current value)")
+    for entry in (profile.get("flags") or [])[:40]:
+        mark = "ON " if entry.get("enabled") else "off"
+        parts.append(f"- [{mark}] {entry['flag']}")
+    parts.append("Parameterised flags you may give a different number to: "
+                 + ", ".join(TUNABLE_NUMERIC_FLAGS))
+
+    parts.append("")
+    parts.append("## Properties you may tune (key = baseline value)")
+    for entry in (profile.get("properties") or [])[:12]:
+        current = entry.get("current")
+        suffix = f"   (currently {current})" if current is not None else ""
+        parts.append(f"- {entry['key']} = {entry['value']}{suffix}")
+
+    mods = profile.get("mod_names") or []
+    if mods:
+        parts.append("")
+        parts.append(f"## A sample of the jars ({len(mods)} shown)")
+        parts.append(", ".join(mods))
+    return "\n".join(parts)
+
+
+def _clean(text, limit: int) -> str:
+    return str(text or "").strip()[:limit]
+
+
+def validate_tune(raw: dict) -> dict:
+    """Shape validation only -- no domain knowledge lives here.
+
+    Deliberately split from the clamping in `optimizer.py`. This function
+    answers "did the model return the structure we asked for"; the optimizer
+    answers "is this number safe on this host". Mixing the two is how a
+    validator ends up trusting a field it only type-checked.
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+    out: dict = {"summary": _clean(raw.get("summary"), 400),
+                 "heap_gb": None, "heap_why": "", "flags": [], "properties": []}
+
+    heap = raw.get("heap_gb")
+    if isinstance(heap, str):
+        # "8", "8 GB" and "8G" all turn up. A bare number is recoverable;
+        # anything else is not worth guessing at.
+        m = re.match(r"^\s*(\d+(?:\.\d+)?)", heap)
+        heap = float(m.group(1)) if m else None
+    if isinstance(heap, bool):
+        heap = None                      # `true` is not a heap size
+    if isinstance(heap, (int, float)):
+        value = float(heap)
+        # NaN fails every comparison including its own, which is exactly the
+        # kind of value that slips through a naive range check.
+        if value == value and 0.5 <= value <= 512:
+            out["heap_gb"] = value
+            out["heap_why"] = _clean(raw.get("heap_why"), 400)
+
+    # `or []` is not enough: a model that answers `"flags": "none"` or
+    # `"properties": 3` gets past it and then blows up on the slice.
+    flags = raw.get("flags")
+    props = raw.get("properties")
+    for entry in (flags if isinstance(flags, list) else [])[:8]:
+        if not isinstance(entry, dict):
+            continue
+        flag = _clean(entry.get("flag"), 120)
+        if not flag:
+            continue
+        out["flags"].append({
+            "flag": flag,
+            # Absent means "turn it on"; only an explicit false is an off.
+            "on": entry.get("on") is not False,
+            "why": _clean(entry.get("why"), 300),
+        })
+
+    for entry in (props if isinstance(props, list) else [])[:6]:
+        if not isinstance(entry, dict):
+            continue
+        key = _clean(entry.get("key"), 60)
+        value = entry.get("value")
+        if not key or value is None or isinstance(value, (dict, list)):
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        out["properties"].append({
+            "key": key,
+            "value": _clean(value, 60),
+            "why": _clean(entry.get("why"), 300),
+        })
+    return out
+
+
+async def _tune_turn(profile: dict) -> dict:
+    """One non-streaming JSON turn on a short leash. Raises on failure."""
+    state = await status()
+    if not state.get("available"):
+        raise RuntimeError(state.get("reason") or "the assistant is unavailable")
+
+    model = state["model"]
+    evidence = build_tune_evidence(profile)
+    payload = {
+        "model": model,
+        "stream": False,
+        "format": "json",
+        "keep_alive": AI_KEEP_ALIVE,
+        "options": {
+            # Colder than the diagnosis prompts. Tuning is arithmetic with an
+            # opinion, not brainstorming, and a creative heap size is a dead
+            # server.
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "num_ctx": _size_context(len(evidence) + len(TUNE_SYSTEM_PROMPT)),
+            "num_predict": 500,
+        },
+        "messages": [
+            {"role": "system", "content": TUNE_SYSTEM_PROMPT},
+            {"role": "user", "content": evidence},
+        ],
+    }
+    async with _client(timeout=AI_TUNE_TIMEOUT) as c:
+        r = await c.post("/api/chat", json=payload)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Ollama returned {r.status_code}: {r.text[:200]}")
+    parsed = _extract_json((r.json().get("message") or {}).get("content", ""))
+    if not parsed:
+        raise RuntimeError("the model did not return usable JSON")
+    advice = validate_tune(parsed)
+    advice.update({"model": model, "stats": _timing(r.json()),
+                   "evidence_chars": len(evidence)})
+    return advice
+
+
+async def advise_tuning(profile: dict, *, timeout: float | None = None) -> dict:
+    """A tuning proposal, or a reason there isn't one. Never raises.
+
+    The caller is `optimizer.advise`, which clamps everything here against
+    the host before a single number reaches a real server.
+    """
+    started = time.monotonic()
+
+    def elapsed() -> int:
+        return int((time.monotonic() - started) * 1000)
+
+    if not AI_ENABLED:
+        return {"ok": False, "state": "off", "reason": "AI_ENABLED is false",
+                "took_ms": elapsed()}
+    if not tuning_enabled():
+        return {"ok": False, "state": "off",
+                "reason": "assisted tuning is switched off in Settings",
+                "took_ms": elapsed()}
+
+    budget = float(timeout or AI_TUNE_TIMEOUT)
+    try:
+        # Belt and braces. The client timeout covers a stalled socket; this
+        # covers everything else, including a `status()` call that hangs
+        # before the real request is even sent.
+        advice = await asyncio.wait_for(_tune_turn(profile), timeout=budget)
+    except asyncio.TimeoutError:
+        return {"ok": False, "state": "slow",
+                "reason": f"the model took longer than {budget:g}s, so the "
+                          "deterministic numbers were kept",
+                "took_ms": elapsed()}
+    except Exception as e:                                  # noqa: BLE001
+        return {"ok": False, "state": "unavailable",
+                "reason": f"{type(e).__name__}: {e}"[:300], "took_ms": elapsed()}
+
+    advice.update({"ok": True, "state": "ready", "took_ms": elapsed()})
+    return advice

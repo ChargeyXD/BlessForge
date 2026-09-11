@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import (FileResponse, RedirectResponse, Response,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 
 from app import (
@@ -27,6 +28,7 @@ from app import (
     diagnostics,
     exporter,
     files,
+    fleetgroups,
     installer,
     loaders,
     modrinth,
@@ -1599,6 +1601,123 @@ async def ai_status() -> dict:
     return await ai.status()
 
 
+# --- the fleet: racks, and who ran when ---------------------------------
+
+async def _known_ids() -> set[str] | None:
+    """Every server id Crafty currently reports, or None if it cannot say.
+
+    None rather than an empty set on failure, and the difference matters:
+    an empty set means "there are no servers", which would strip every
+    assignment out of the answer and make the racks look wiped. None means
+    "do not filter", so an unreachable Crafty leaves the layout alone.
+    """
+    try:
+        return {s.get("server_id") for s in await crafty.list_servers()}
+    except Exception:
+        return None
+
+
+@app.get("/api/fleet/groups")
+async def fleet_groups() -> dict:
+    return fleetgroups.document(await _known_ids())
+
+
+@app.post("/api/fleet/groups")
+async def fleet_group_save(body: dict = Body(...)) -> dict:
+    try:
+        return fleetgroups.save_group(
+            body.get("id"), body.get("name") or "", body.get("motif"),
+            await _known_ids())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/fleet/groups/{group_id}")
+async def fleet_group_delete(group_id: str) -> dict:
+    return fleetgroups.delete_group(group_id, await _known_ids())
+
+
+@app.post("/api/fleet/groups/plan")
+async def fleet_group_plan(body: dict = Body(...)) -> dict:
+    groups = body.get("groups")
+    if not isinstance(groups, list):
+        raise HTTPException(status_code=400, detail="groups must be a list")
+    return fleetgroups.plan(groups, await _known_ids())
+
+
+@app.post("/api/fleet/assign")
+async def fleet_assign(body: dict = Body(...)) -> dict:
+    ids = body.get("server_ids")
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="server_ids must be a list")
+    try:
+        return fleetgroups.assign([str(i) for i in ids],
+                                  body.get("group_id") or None,
+                                  await _known_ids())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/fleet/seen")
+async def fleet_seen(body: dict = Body(...)) -> dict:
+    """Record what the fleet poll just observed.
+
+    The browser reports what it SAW; the timestamp is taken here, from the
+    server's clock, so a client with a wrong clock cannot poison the
+    ordering the rail sorts on.
+    """
+    items = body.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items must be a list")
+    return fleetgroups.observe(items, bool(body.get("full")))
+
+
+# --- the AI, as a quiet assistant to the tuner --------------------------
+
+@app.get("/api/ai/tuning")
+async def ai_tuning() -> dict:
+    return ai.tuning_settings()
+
+
+@app.post("/api/ai/tuning")
+async def ai_tuning_set(body: dict = Body(...)) -> dict:
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be true or false")
+    return ai.set_tuning_enabled(enabled)
+
+
+@app.post("/api/instances/{sid}/optimize/advice")
+async def optimize_advice(sid: str, body: dict = Body(default={})) -> dict:
+    """The tuning plan, improved by the model when that is switched on.
+
+    Always answers. If the AI is off, unconfigured, slow or talking
+    nonsense, this is the deterministic optimiser's plan and says so in
+    its `source` -- see optimizer.advise.
+    """
+    try:
+        return await optimizer.advise(sid, refresh=bool(body.get("refresh")))
+    except Exception as e:
+        raise _err(e)
+
+
+# --- one mod or plugin, in full -----------------------------------------
+
+@app.get("/api/mods/{source}/{project_id}/detail")
+async def mod_detail(source: str, project_id: str) -> dict:
+    """Everything the project's own page shows, for the detail popup."""
+    try:
+        if source == "modrinth":
+            return await modrinth.project_detail(project_id)
+        if source == "curseforge":
+            return await curseforge.project_detail(int(project_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad project id")
+    except Exception as e:
+        raise _err(e)
+    raise HTTPException(status_code=404, detail=f"unknown source {source!r}")
+
+
 @app.post("/api/ai/warm")
 async def ai_warm() -> dict:
     """Preload the model so the first real question is not stuck behind it."""
@@ -2684,6 +2803,39 @@ class _StaticCache(StaticFiles):
             # .js, .css, .html and anything else we might add later.
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
+
+
+# The backdrop, resolved server-side rather than probed from the browser.
+#
+# The shipped default is a hand-drawn SVG scene per theme (see
+# dev/tools/make_backdrop.py). If someone drops a real photograph in as
+# `bg-sakura-light.<ext>` / `bg-sakura-dark.<ext>` it should just take over,
+# with no code change and no edit to the stylesheet.
+#
+# Done here, as a redirect, rather than with a fetch() probe in app.js:
+# the server already knows what is on disk, so there is no request that has
+# to 404 first, nothing to cache in localStorage, and no flash of the wrong
+# picture while the probe is in flight. The stylesheet points at this path
+# forever and the answer changes underneath it.
+#
+# Registered BEFORE the /assets mount, because a Mount swallows everything
+# beneath its prefix and whichever is declared first wins.
+_BACKDROP_FALLBACK = {"light": "sakura-light.svg", "dark": "sakura-dark.svg"}
+_BACKDROP_EXT = (".avif", ".webp", ".jpg", ".jpeg", ".png", ".svg")
+
+
+@app.get("/assets/backdrop/{theme}")
+async def backdrop(theme: str) -> Response:
+    """Redirect to whichever backdrop image is actually present."""
+    if theme not in _BACKDROP_FALLBACK:
+        raise HTTPException(status_code=404, detail="unknown theme")
+    img = STATIC_DIR / "img"
+    for ext in _BACKDROP_EXT:
+        override = img / f"bg-sakura-{theme}{ext}"
+        if override.is_file():
+            return RedirectResponse(f"/assets/{override.name}", status_code=307)
+    return RedirectResponse(f"/assets/{_BACKDROP_FALLBACK[theme]}",
+                            status_code=307)
 
 
 if STATIC_DIR.exists():

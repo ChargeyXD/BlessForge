@@ -7,7 +7,7 @@
    server in the fleet to reach the screen they opened. */
 .skiplink{
   position:fixed;left:10px;top:-60px;z-index:200;
-  padding:11px 18px;background:var(--rose);color:#fff;font-weight:700;
+  padding:11px 18px;background:var(--rose);color:var(--slab-rose-fg);font-weight:700;
   border:var(--edge) solid var(--slab-bg);box-shadow:4px 4px 0 var(--slab-bg);
   transition:top .18s cubic-bezier(.2,.9,.3,1.2);text-decoration:none;
 }
@@ -108,7 +108,7 @@
   background:var(--band-rule);color:var(--band-fg);padding:2px 8px;font-weight:700;
   border-radius:99px}
 .navlink[aria-current="page"]{
-  color:#fff;
+  color:var(--slab-rose-fg);
   background:linear-gradient(90deg,var(--rose),
     color-mix(in srgb,var(--rose) 40%,transparent));
 }
@@ -161,6 +161,17 @@
 
 .rail-foot{border-top:var(--edge) solid var(--band-rule);padding:10px 12px;
   display:flex;gap:8px;align-items:center;position:relative;z-index:2;flex-wrap:wrap}
+/* The rail is dark in BOTH themes, so anything sitting in it has to take
+   its colours from the band tokens rather than the page ones. `.btn` and
+   `.btn.ghost` default to `--text` on a transparent fill — which in LIGHT
+   mode is dark plum ink on a near-black rail, so the theme toggle and the
+   Activity button were drawn correctly and were completely invisible. */
+.rail-foot .btn{color:var(--band-fg)}
+.rail-foot .btn.ghost::after{background:transparent;border-color:var(--band-rule)}
+.rail-foot .btn.ghost:hover::after{
+  background:var(--band-card);border-color:var(--shrine);
+}
+.rail-foot .btn > .p5-hl{background:var(--shrine)}
 
 /* --- the column ---------------------------------------------- */
 #col{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -228,15 +239,27 @@
   display:inline-flex;align-items:center;gap:8px;
 }
 .tabs button + button{border-left:2px solid var(--rule-2)}
+/* A tab is a blob host, so it needs all three layers. It had two: a blob
+   at 0 and content, with NOTHING between them, so a hover painted
+   saturated sakura straight across the label. Same fault `.btn.ghost`
+   had. The fill is opaque and the selected state now lives on it rather
+   than on the button's own background, which sits below the blob. */
+.tabs button::after{
+  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:var(--card);
+  transition:background var(--t-tap) linear;
+}
+.tabs button > *:not(.p5-hl){position:relative;z-index:2}
 .tabs button > .p5-hl{background:var(--sakura);left:-6px;right:-6px;top:-2px;bottom:-2px}
-.tabs button:hover > .p5-hl{opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite}
 .tabs button:hover{color:var(--text)}
-.tabs button[aria-selected="true"]{background:var(--slab-bg);color:var(--slab-fg)}
+.tabs button:hover::after{background:var(--sakura-soft)}
+.tabs button[aria-selected="true"]{color:var(--slab-fg)}
+.tabs button[aria-selected="true"]::after{background:var(--slab-bg)}
 .tabs button[aria-selected="true"] > .p5-hl{display:none}
 .tabs button svg{width:15px;height:15px}
 .tabs button .n{font-family:var(--mono);font-size:10px;background:var(--sakura-soft);
   color:var(--rose);padding:1px 6px;font-weight:700}
-.tabs button[aria-selected="true"] .n{background:var(--rose);color:#fff}
+.tabs button[aria-selected="true"] .n{background:var(--rose);color:var(--slab-rose-fg)}
 
 .tabbody{margin-top:18px}
 
@@ -299,10 +322,11 @@
 }
 .fm-side button:last-child{border-bottom:0}
 .fm-side button:hover{background:var(--sakura-soft)}
-.fm-side button[aria-current="true"]{background:var(--rose);color:#fff}
+.fm-side button[aria-current="true"]{background:var(--rose);color:var(--slab-rose-fg)}
 .fm-side button .sz{margin-left:auto;font-family:var(--mono);font-size:10px;
   color:var(--faint)}
-.fm-side button[aria-current="true"] .sz{color:rgba(255,255,255,.8)}
+.fm-side button[aria-current="true"] .sz{
+  color:color-mix(in srgb,var(--slab-rose-fg) 80%,transparent)}
 
 .fm-main{border:var(--edge) solid var(--slab-bg);background:var(--card);min-width:0}
 .fm-bar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:11px 13px;
@@ -411,8 +435,13 @@
   position:relative;background:var(--card);border:var(--edge) solid var(--slab-bg);
   box-shadow:10px 10px 0 var(--sakura);width:min(680px,100%);
   max-height:min(86vh,860px);display:flex;flex-direction:column;
-  animation:pop .24s cubic-bezier(.2,.9,.3,1.3) both;
 }
+/* Gated, like every other entrance in the app. Ungated, a browser that
+   never advances the document timeline leaves the dialog stuck in its
+   FROM state -- and before `pop` was made scale-only, that state was
+   `opacity:0`: an invisible modal with a live scrim over the page and
+   no way out but Escape. */
+html.js-motion .modal{animation:pop .24s cubic-bezier(.2,.9,.3,1.3) both}
 .modal.wide{width:min(1040px,100%)}
 .modal > header{display:flex;align-items:center;gap:12px;padding:14px 18px;
   background:var(--slab-bg);color:var(--slab-fg)}
@@ -554,19 +583,32 @@
    controls, the side-by-side config editor, balanced loader art.
    ============================================================ */
 
-/* --- ripple ---------------------------------------------------
-   Bound once on the document (see core.js), so this only has to
-   describe the ink, not manage it. Every .btn already isolates;
-   the other hosts get it here.                                  */
+/* --- the press burst ------------------------------------------
+   Petals (or gold leaf, or ash) thrown from the point of contact.
+   core.js owns the particles and their timing; this only has to
+   describe what one looks like.
+
+   The layer is fixed and lives on <body>, ABOVE the modal
+   (z 100) so a button inside a dialog still pops, and BELOW the
+   toasts (z 120) so a burst never covers a message. Nothing in
+   it is interactive and nothing in it is read out.             */
 .navlink,.fleetrow,.tabs button{isolation:isolate}
-.ripple{
-  position:absolute;z-index:3;border-radius:50%;pointer-events:none;
-  background:radial-gradient(circle,
-    color-mix(in srgb,var(--sakura) 62%,transparent) 0%,transparent 68%);
-  transform:scale(0);opacity:.85;
-  animation:ripple .55s var(--ease-out) forwards;
+#burstlayer{
+  position:fixed;inset:0;z-index:110;pointer-events:none;overflow:hidden;
 }
-@keyframes ripple{to{transform:scale(1);opacity:0}}
+#burstlayer .shard{
+  position:absolute;will-change:transform,opacity;
+  /* Two opposite corners rounded: a petal, not a dot. */
+  border-radius:64% 6% 64% 6%;
+}
+#burstlayer .popring{
+  position:absolute;will-change:transform,opacity;
+  border:2.5px solid var(--rose);
+  /* The same broken hexagon the wiggling polygon is cut from, so the
+     burst belongs to the rest of the app rather than arriving from a
+     different design language. */
+  clip-path:polygon(0% 52%,14% 0%,78% 6%,100% 26%,92% 100%,8% 90%);
+}
 
 /* --- reveal on scroll ---------------------------------------- */
 /* Same rule as the entrance keyframes: move it, do not hide it. A row that
@@ -636,7 +678,6 @@ html.js-motion .to-reveal.revealed{transform:none}
 .loadercard > *:not(.p5-hl){position:relative;z-index:2}
 .loadercard:hover{transform:translate(-2px,-3px)}
 .loadercard:hover::after{box-shadow:var(--lift-3);border-color:var(--rose)}
-.loadercard:hover > .p5-hl{opacity:1;animation:p5-wiggle-poly .66s ease-in-out infinite}
 .loadercard[aria-pressed="true"]::after{
   border-color:var(--rose);
   background:linear-gradient(160deg,var(--rose-soft),var(--card) 70%);
@@ -772,7 +813,8 @@ html.js-motion .to-reveal.revealed{transform:none}
   transition:transform var(--t-move) var(--ease-spring),background var(--t-tap),
              border-color var(--t-tap);
 }
-.catmon[data-state="1"]{background:var(--rose);border-color:var(--rose);color:#fff}
+.catmon[data-state="1"]{background:var(--rose);border-color:var(--rose);
+  color:var(--slab-rose-fg)}
 .catmon[data-state="1"] .crest{background:var(--gold);border-color:var(--gold);
   transform:rotate(14deg) scale(1.12)}
 .catmon[data-state="2"]{background:var(--rule-2);border-color:var(--rule);
@@ -890,3 +932,2365 @@ html.js-motion .reel.dealing .reelrow{animation:dealIn .3s var(--ease-out) both}
   text-transform:uppercase;color:var(--mid);white-space:nowrap;
 }
 .srcmark img{width:13px;height:13px;object-fit:contain;flex:none}
+
+/* ============================================================
+   RACKS — the fleet hung as ema plaques
+   ------------------------------------------------------------
+   A group here is a torii lintel with a rope under it and the
+   servers hanging off that rope on cords. Two things carry the
+   whole look and both are cheap:
+
+     * every ROW gets its own rope, drawn as a short segment on
+       each plaque that overhangs the column gap by exactly half
+       of it, so neighbours butt together into one continuous
+       line without any element having to span the grid;
+     * every plaque hangs at its own small angle and sways on
+       its own phase, and STRAIGHTENS when you point at it — the
+       way you tilt a real one up to read the back.
+
+   Layering: .ema-plaque is a fourth host for the wiggling
+   polygon and keeps the same contract as .card and .btn —
+   blob 0, fill 1, content 2. The pentagon is clipped on the
+   PSEUDOS, never on the host, so the blob still bleeds past the
+   edge the way it does everywhere else, and the ink edge is a
+   second clipped layer rather than a border (a border under a
+   clip-path is cut away on the diagonals and the plaque reads
+   as broken).
+   ============================================================ */
+
+/* Per-rack colour, set inline from a shrine mark whose values are all
+   existing theme tokens — which is what makes the marks follow light/dark
+   and stay legible without anyone checking a contrast ratio, and why this
+   feature adds no new palette. Declared here as well so a rule that renders
+   outside a rack still resolves, and declared in BOTH dark blocks because a
+   custom property defined only at :root keeps its light value. The three
+   values are identical because they are token references; repeating them is
+   so the next person to add one does not have to find the rule the hard
+   way. */
+:root{ --g-ink:var(--rose); --g-soft:var(--rose-soft); }
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){ --g-ink:var(--rose); --g-soft:var(--rose-soft); }
+}
+:root[data-theme="dark"]{ --g-ink:var(--rose); --g-soft:var(--rose-soft); }
+
+/* --- the page ------------------------------------------------- */
+
+.rack-hint{
+  display:flex;align-items:flex-start;gap:8px;margin:0 0 22px;
+  font-size:12.5px;color:var(--faint);line-height:1.5;
+}
+.rack-hint svg{flex:none;margin-top:2px;color:var(--rose)}
+.rack-hint b{color:var(--rose)}
+.rack-hint kbd{font-size:10.5px;padding:1px 5px}
+
+/* --- one rack ------------------------------------------------- */
+
+.rack{position:relative;margin:0 0 40px;padding:0 12px}
+.rack:last-child{margin-bottom:12px}
+
+.rack .lintel{
+  position:relative;min-height:62px;padding:42px 30px 10px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+}
+/* kasagi — the top beam, ends turned up */
+.rack .kasagi{
+  position:absolute;left:-10px;right:-10px;top:0;height:13px;z-index:1;
+  background:var(--g-ink);
+  clip-path:polygon(0 58%,2.5% 0,97.5% 0,100% 58%,100% 100%,0 100%);
+  box-shadow:0 3px 0 color-mix(in srgb,var(--g-ink) 46%,var(--slab-bg));
+}
+/* nuki — the second beam */
+.rack .nuki{
+  position:absolute;left:4px;right:4px;top:24px;height:7px;z-index:1;
+  background:color-mix(in srgb,var(--g-ink) 78%,var(--slab-bg));
+}
+.rack .post{
+  position:absolute;top:11px;width:9px;height:34px;z-index:0;
+  background:color-mix(in srgb,var(--g-ink) 86%,var(--slab-bg));
+}
+.rack .post.l{left:16px}
+.rack .post.r{right:16px}
+/* shide — the folded paper streamer knotted onto the beam */
+.rack .shide{
+  position:absolute;right:46px;top:16px;width:15px;height:36px;z-index:2;
+  background:var(--paper);
+  border:2px solid color-mix(in srgb,var(--g-ink) 70%,var(--slab-bg));
+  clip-path:polygon(0 0,100% 0,100% 24%,34% 24%,34% 48%,100% 48%,
+    100% 72%,34% 72%,34% 100%,0 100%);
+  transform-origin:50% 0;
+  animation:shideSway 7.5s ease-in-out infinite;
+}
+@keyframes shideSway{0%,100%{transform:rotate(-3deg)}50%{transform:rotate(3deg)}}
+
+/* The open yard is a real rack with a ghost gate, not a hidden bucket: what
+   you have NOT filed is the thing this screen most has to show you. */
+.rack[data-yard="1"] .kasagi,
+.rack[data-yard="1"] .nuki,
+.rack[data-yard="1"] .post{
+  background:repeating-linear-gradient(90deg,
+    color-mix(in srgb,var(--g-ink) 62%,transparent) 0 9px,transparent 9px 16px);
+  box-shadow:none;
+}
+.rack[data-yard="1"] .shide{display:none}
+
+.rack .plate{
+  position:relative;z-index:2;display:flex;align-items:center;gap:10px;
+  min-width:0;max-width:100%;padding:7px 14px 7px 11px;
+  background:var(--card);border:var(--edge) solid var(--slab-bg);
+  box-shadow:var(--lift-1);
+}
+.rack .plate h3{
+  font-family:var(--disp);font-size:13.5px;text-transform:uppercase;
+  letter-spacing:.01em;margin:0;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:44vw;
+}
+/* The display faces carry no CJK, so the marks name a stack that does and
+   fall back to the body face rather than to a box glyph. */
+.rack .motif-glyph,.ema-plaque .burn,.hangrow .hg,.motifpick .g,
+.rackchip .rc-g,.svcard .racktag .rt-g,.inked .ink-glyph{
+  font-family:"Yu Gothic UI","Hiragino Sans","Noto Sans JP","Meiryo",
+    "Microsoft YaHei",var(--body);
+  line-height:1;
+}
+.rack .motif-glyph{font-size:16px;color:var(--g-ink);flex:none}
+.rack .tally{
+  font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.06em;
+  background:var(--g-soft);color:var(--g-ink);padding:3px 8px;flex:none;
+  clip-path:polygon(9% 0,100% 0,91% 100%,0 100%);
+}
+.rack .plate .lit{
+  display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);
+  font-size:10px;letter-spacing:.08em;color:var(--sage);flex:none;
+}
+.rack .rack-acts{
+  display:flex;gap:7px;align-items:center;margin-left:auto;flex-wrap:wrap;
+  position:relative;z-index:2;
+}
+
+.rack .rack-bare{
+  margin:26px 0 0;padding:20px 18px;font-size:13px;color:var(--faint);
+  border:2px dashed color-mix(in srgb,var(--g-ink) 40%,var(--rule));
+  background:color-mix(in srgb,var(--g-soft) 40%,transparent);
+}
+
+/* A rack lights up while something is being dragged onto it. Drawn with an
+   outline and the beams rather than a transform: these sections carry the
+   staggered entrance animation, whose `both` fill owns `transform` for good
+   once it has run. */
+.rack.drop-on .kasagi,.rack.drop-on .nuki{
+  background:var(--gold-leaf);background-size:200% 100%;
+  animation:foil 2.2s linear infinite;
+}
+.rack.drop-on .plaques,.rack.drop-on .hooklist,.rack.drop-on .rack-bare{
+  outline:3px dashed var(--g-ink);outline-offset:6px;
+}
+.rack.drop-on .rack-bare{border-style:solid;border-color:var(--g-ink);
+  color:var(--text)}
+
+/* --- the plaques ---------------------------------------------- */
+
+.plaques{
+  --plq-gap:44px;
+  display:grid;gap:var(--plq-gap) 14px;
+  grid-template-columns:repeat(auto-fill,minmax(186px,1fr));
+  padding:var(--plq-gap) 8px 6px;
+}
+
+.ema-plaque{
+  position:relative;min-height:168px;cursor:pointer;background:transparent;
+  border:0;overflow:visible;
+}
+/* Everything that moves lives here, one level in from the rope. */
+.ema-plaque .plq-body{
+  position:relative;isolation:isolate;min-height:168px;
+  padding:44px 13px 13px;
+  display:flex;flex-direction:column;gap:3px;
+  transform-origin:50% -30px;
+  transform:rotate(var(--plq-rot,0deg));
+  transition:transform var(--t-move) var(--ease-out),
+             filter var(--t-move) var(--ease-out);
+}
+/* The sway uses the independent `rotate` property so it composes with the
+   hand-hung angle in `transform` instead of fighting it. A browser without
+   it simply does not sway; the plaque still hangs crooked. */
+html.js-motion .ema-plaque .plq-body{
+  animation:plqSway 5.6s ease-in-out infinite;
+  animation-delay:var(--plq-delay,0s);
+}
+@keyframes plqSway{0%,100%{rotate:-1deg}50%{rotate:1deg}}
+
+/* The layer rule goes FIRST, before any rule that positions a child.
+   `.ema-plaque .hanger` and `.ema-plaque > *:not(.p5-hl)` have identical
+   specificity, so whichever is written last wins -- and written last, this
+   one quietly turns the rope and the cord back into in-flow elements. That
+   is a whole row of ropes not appearing, with nothing in the console. */
+.ema-plaque .plq-body > *:not(.p5-hl){position:relative;z-index:2}
+/* Clipped to the plaque's own silhouette, one size up. A rectangle behind
+   a pentagon reads as a grey box someone forgot to style; the same
+   pentagon reads as the plaque's own aura. The blob still wiggles inside
+   this clip, so the outline breathes rather than sitting still. */
+.ema-plaque .plq-body > .p5-hl{
+  inset:-14px -16px;
+  clip-path:polygon(50% 0,100% 25%,100% 100%,0 100%,0 25%);
+}
+
+/* the cord, and the rope this plaque hangs from. The rope overhangs by half
+   the column gap on each side, so the segments across one row meet exactly
+   and read as a single strung rope. */
+.ema-plaque .hanger{
+  position:absolute;left:-7px;right:-7px;top:-30px;height:8px;z-index:2;
+  /* Counter-rotated about the same point the plaque swings from, so the rope
+     stays a straight strung line and only the plaques hang crooked. */
+  transform-origin:50% 0;
+  transform:rotate(calc(-1 * var(--plq-rot,0deg)));
+  background:repeating-linear-gradient(112deg,
+    var(--g-ink) 0 7px,
+    color-mix(in srgb,var(--g-ink) 52%,var(--slab-bg)) 7px 14px);
+  box-shadow:0 2px 0 color-mix(in srgb,var(--g-ink) 30%,transparent);
+}
+.ema-plaque .cord{
+  position:absolute;left:50%;top:-26px;width:2.5px;height:30px;z-index:2;
+  margin-left:-1.25px;
+  background:color-mix(in srgb,var(--g-ink) 72%,var(--slab-bg));
+}
+
+.ema-plaque .plq-body::before{
+  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:var(--slab-bg);
+  clip-path:polygon(50% 0,100% 25%,100% 100%,0 100%,0 25%);
+  filter:drop-shadow(3px 3px 0 color-mix(in srgb,var(--slab-bg) 38%,transparent));
+  transition:filter var(--t-move) var(--ease-out);
+}
+.ema-plaque .plq-body::after{
+  content:"";position:absolute;inset:2.5px;z-index:1;pointer-events:none;
+  background:
+    repeating-linear-gradient(93deg,transparent 0 10px,
+      color-mix(in srgb,var(--g-ink) 9%,transparent) 10px 11px),
+    /* Warmed off --card rather than being --card. In DARK mode the plain
+       card colour sits four points off the page behind it, so a plaque
+       read as an outline with nothing in it -- a wireframe, not a piece
+       of wood. The sakura tint lifts it clear of the ground in dark and
+       warms it toward cedar in light, from the same one declaration. */
+    linear-gradient(168deg,
+      color-mix(in srgb,var(--card-2) 88%,var(--sakura)),
+      color-mix(in srgb,var(--card) 90%,var(--sakura)) 54%);
+  clip-path:polygon(50% 0,100% 25%,100% 100%,0 100%,0 25%);
+}
+
+/* Pointed at: it straightens, lifts, and the blob blooms behind the wood.
+   `animation:none` rather than a paused animation — a paused animation
+   still holds its current keyframe, so the plaque would freeze crooked
+   instead of coming level. */
+html.js-motion .ema-plaque:hover .plq-body,
+html.js-motion .ema-plaque:focus-within .plq-body{animation:none}
+.ema-plaque:hover .plq-body,.ema-plaque:focus-within .plq-body{
+  /* It swings level, lifts, and turns a little to face you -- a hanging
+     board catching the light rather than a card sliding up. The parent
+     supplies the perspective; without one, rotateY is an affine squash
+     and looks like a mistake. */
+  transform:rotate(0deg) translateY(-6px) rotateY(-14deg) scale(1.03);
+}
+.racks .hangrow,.racks .plaques{perspective:900px}
+
+/* THE ROPE DOES NOT MOVE WITH THE PLAQUE.
+   ------------------------------------------------------------
+   It cannot: `.hanger` and `.cord` are siblings of `.plq-body`, and every
+   transform -- the hand-hung angle, the sway, the hover lift and turn --
+   is on the body. Nothing above it moves at all.
+
+   This replaced three counter-transforms that tried to cancel the
+   parent's motion from inside it: an equal-and-opposite rotate for the
+   hand-hung angle, a mirrored sway animation on the same timing, and a
+   counter-translate for the lift. The first two were exact. The third
+   could not be, because the hover also turns the board in 3D and scales
+   it, and a child cannot undo a parent's perspective projection with a
+   translate. The rope crept by about three pixels. Moving one div solved
+   what four rules could not.                                          */
+
+.ema-plaque.lifting .plq-body{filter:grayscale(.45)}
+
+.ema-plaque[data-picked="1"] .plq-body::before{background:var(--g-ink)}
+.ema-plaque[data-picked="1"] .plq-body::after{
+  background:
+    repeating-linear-gradient(93deg,transparent 0 10px,
+      color-mix(in srgb,var(--g-ink) 9%,transparent) 10px 11px),
+    linear-gradient(168deg,var(--g-soft),var(--card) 82%);
+}
+
+/* The mark is burnt into the peak, where the wood is widest at the top. */
+.ema-plaque .plq-top{
+  position:absolute;left:0;right:0;top:9px;height:20px;z-index:2;
+  display:flex;align-items:center;justify-content:center;gap:7px;
+}
+.ema-plaque .burn{font-size:13px;color:var(--g-ink);opacity:.85}
+.ema-plaque .plq-name{
+  font-family:var(--num);font-weight:800;font-size:14.5px;letter-spacing:-.01em;
+  line-height:1.2;margin:0;overflow-wrap:anywhere;
+  display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden;
+}
+.ema-plaque .plq-meta{font-size:10.5px;color:var(--mid)}
+.ema-plaque .plq-ran{
+  font-size:10px;color:var(--faint);margin-top:auto;padding:7px 58px 0 0;
+  border-top:1.5px dashed var(--rule);
+}
+.ema-plaque:hover .plq-meta{color:var(--text)}
+.ema-plaque:hover .plq-ran{color:var(--mid)}
+
+.ema-plaque .plq-pick,.ema-plaque .plq-hang{
+  position:absolute;bottom:9px;z-index:3;width:26px;height:26px;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;
+  border:2px solid var(--rule);background:var(--card);color:var(--faint);
+  cursor:pointer;
+  transition:border-color var(--t-tap),color var(--t-tap),
+             background var(--t-tap),transform var(--t-tap) var(--ease-spring);
+}
+.ema-plaque .plq-pick{right:9px}
+.ema-plaque .plq-hang{right:41px}
+.ema-plaque .plq-pick:hover,.ema-plaque .plq-hang:hover{
+  border-color:var(--g-ink);color:var(--g-ink);transform:translateY(-1px);
+}
+.ema-plaque .plq-pick[aria-pressed="true"]{
+  background:var(--g-ink);border-color:var(--g-ink);color:var(--card);
+}
+/* On a touch screen there is no hover to reveal anything, so both controls
+   are always present — which is also why they are 26px squares with room
+   around them rather than 14px icons. */
+@media (hover:hover) and (pointer:fine){
+  .ema-plaque .plq-hang{opacity:0;
+    transition:opacity var(--t-tap) linear,border-color var(--t-tap),
+      color var(--t-tap),transform var(--t-tap) var(--ease-spring)}
+  .ema-plaque:hover .plq-hang,.ema-plaque:focus-within .plq-hang{opacity:1}
+}
+
+/* --- the compact rendering ------------------------------------
+   Same rack, same rope, one row per hook: for the day the fleet
+   is forty servers and forty swaying plaques is a wall.        */
+
+.hooklist{
+  position:relative;margin:32px 8px 0;background:var(--card);
+  border:var(--edge) solid var(--slab-bg);box-shadow:var(--lift-1);
+}
+.hooklist::before{
+  content:"";position:absolute;left:-8px;right:-8px;top:-20px;height:8px;
+  background:repeating-linear-gradient(112deg,
+    var(--g-ink) 0 7px,
+    color-mix(in srgb,var(--g-ink) 52%,var(--slab-bg)) 7px 14px);
+}
+.hookrow{
+  display:grid;align-items:center;gap:10px;
+  grid-template-columns:26px 10px minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) 32px;
+  padding:7px 11px;border-bottom:1.5px solid var(--rule-2);cursor:pointer;
+  transition:background var(--t-tap) linear,
+             padding-left var(--t-tap) var(--ease-out);
+}
+.hookrow:last-child{border-bottom:0}
+.hookrow:hover{background:var(--g-soft);padding-left:15px}
+.hookrow[data-picked="1"]{
+  background:var(--g-soft);box-shadow:inset 3px 0 0 var(--g-ink);
+}
+.hookrow .nm{font-family:var(--num);font-weight:700;font-size:13.5px}
+.hookrow .mt,.hookrow .rn{font-size:10.5px;color:var(--faint)}
+.hook-pick{
+  width:24px;height:24px;padding:0;display:inline-flex;align-items:center;
+  justify-content:center;border:2px solid var(--rule);background:var(--card);
+  color:var(--faint);cursor:pointer;
+}
+.hook-pick:hover{border-color:var(--g-ink);color:var(--g-ink)}
+.hook-pick[aria-pressed="true"]{
+  background:var(--g-ink);border-color:var(--g-ink);color:var(--card);
+}
+
+/* --- the carry tray -------------------------------------------
+   The non-drag path, and on a desktop the fast one: pick plaques
+   up, then say where they go once.                             */
+
+.carry{
+  position:fixed;left:50%;bottom:18px;z-index:calc(var(--z-drawer) - 1);
+  width:min(560px,calc(100vw - 28px));
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 12px;background:var(--card);
+  border:var(--edge) solid var(--slab-bg);box-shadow:var(--lift-3);
+  transform:translateX(-50%);
+}
+/* Translate only, never opacity: an entrance that fades from zero is
+   invisible for good if the document timeline never advances. */
+html.js-motion .carry{animation:carryIn .26s var(--ease-spring) both}
+@keyframes carryIn{
+  from{transform:translate(-50%,26px)}
+  to{transform:translate(-50%,0)}
+}
+.carry .grow{flex:1}
+.carry-n{
+  font-family:var(--num);font-weight:800;font-size:19px;line-height:1;
+  background:var(--rose);color:var(--slab-rose-fg);padding:6px 10px;flex:none;
+  clip-path:polygon(9% 0,100% 0,91% 100%,0 100%);
+}
+.carry-t{
+  font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--faint);
+}
+
+/* --- the empty state ------------------------------------------
+   Racks cut from the fleet that is already there, one tap each,
+   so making the first one is a choice rather than a form.      */
+
+.firstrack{
+  position:relative;text-align:center;padding:46px 18px 30px;
+  border:var(--edge) solid var(--slab-bg);box-shadow:var(--lift-2);
+  background:
+    radial-gradient(680px 260px at 50% -10%,var(--sakura-soft),transparent 70%),
+    linear-gradient(170deg,var(--card-2),var(--card) 52%);
+}
+.firstrack .fr-rope{
+  position:absolute;left:-2px;right:-2px;top:22px;height:9px;
+  background:repeating-linear-gradient(112deg,
+    var(--shrine) 0 8px,var(--shrine-deep) 8px 16px);
+  box-shadow:0 2px 0 color-mix(in srgb,var(--slab-bg) 26%,transparent);
+}
+.firstrack h3{
+  font-family:var(--disp);font-size:clamp(19px,3vw,26px);
+  text-transform:uppercase;letter-spacing:-.015em;margin:0 0 10px;
+}
+.firstrack .lede{margin:0 auto 26px;max-width:60ch}
+
+.inkgrid{
+  display:grid;gap:16px;justify-content:center;
+  grid-template-columns:repeat(auto-fit,minmax(190px,220px));
+}
+.inked{
+  position:relative;cursor:pointer;border:0;background:transparent;
+  padding:32px 14px 16px;min-height:152px;text-align:center;color:var(--text);
+  display:flex;flex-direction:column;align-items:center;gap:5px;
+  transform:rotate(-1.4deg);transform-origin:50% -20px;
+  transition:transform var(--t-move) var(--ease-out);
+}
+.inked:nth-child(2){transform:rotate(1.1deg)}
+.inked:nth-child(3){transform:rotate(-.5deg)}
+.inked::before{
+  content:"";position:absolute;inset:0;z-index:0;background:var(--slab-bg);
+  clip-path:polygon(50% 0,100% 25%,100% 100%,0 100%,0 25%);
+  filter:drop-shadow(3px 3px 0 color-mix(in srgb,var(--slab-bg) 34%,transparent));
+  transition:filter var(--t-move) var(--ease-out);
+}
+.inked::after{
+  content:"";position:absolute;inset:2.5px;z-index:1;
+  background:linear-gradient(168deg,var(--gold-soft),var(--card) 62%);
+  clip-path:polygon(50% 0,100% 25%,100% 100%,0 100%,0 25%);
+}
+.inked > *{position:relative;z-index:2}
+.inked:hover,.inked:focus-visible{transform:rotate(0deg) translateY(-5px)}
+.inked:hover::before{
+  filter:drop-shadow(5px 7px 0 color-mix(in srgb,var(--slab-bg) 44%,transparent));
+}
+.inked .ink-glyph{position:absolute;top:5px;left:0;right:0;font-size:14px;
+  color:var(--g-ink)}
+.inked .ink-t{font-family:var(--num);font-weight:800;font-size:15px}
+.inked .ink-s{font-size:11.5px;color:var(--mid);line-height:1.4}
+.inked .ink-n{
+  margin-top:auto;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--gold-ink);
+}
+
+/* --- the picker ------------------------------------------------
+   One dialog, reached from a plaque, from the tray, from a
+   server card and from the keyboard. Rows are 54px because this
+   is the control that has to work with a thumb.               */
+
+.hanglist{
+  border:var(--edge) solid var(--slab-bg);background:var(--card);
+  max-height:min(46vh,360px);overflow:auto;
+}
+.hangrow{
+  display:flex;align-items:center;gap:11px;width:100%;min-height:54px;
+  padding:10px 13px;border:0;border-bottom:1.5px solid var(--rule-2);
+  background:none;cursor:pointer;text-align:left;color:var(--text);
+  font-family:var(--num);font-size:14px;font-weight:700;
+  transition:background var(--t-tap) linear,
+             padding-left var(--t-tap) var(--ease-out);
+}
+.hangrow:last-child{border-bottom:0}
+.hangrow:hover{background:var(--g-soft);padding-left:17px}
+.hangrow[aria-current="true"]{box-shadow:inset 4px 0 0 var(--g-ink)}
+.hangrow .hg{font-size:17px;color:var(--g-ink);width:22px;text-align:center;
+  flex:none}
+.hangrow .hn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.hangrow .hc{font-size:11px;color:var(--faint);flex:none}
+.hangrow svg{color:var(--faint);flex:none}
+
+.motifgrid{display:grid;gap:8px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.motifpick{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:9px 4px;min-height:56px;cursor:pointer;
+  border:2px solid var(--rule);background:var(--card);color:var(--faint);
+  transition:border-color var(--t-tap),background var(--t-tap),
+             color var(--t-tap),transform var(--t-tap) var(--ease-spring);
+}
+.motifpick:hover{transform:translateY(-2px);border-color:var(--g-ink)}
+.motifpick .g{font-size:17px;color:var(--g-ink)}
+.motifpick .n{font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  text-transform:uppercase}
+.motifpick[aria-pressed="true"]{
+  background:var(--g-soft);border-color:var(--g-ink);color:var(--g-ink);
+  box-shadow:3px 3px 0 var(--g-ink);
+}
+
+/* --- the fleet grid's rack row --------------------------------
+   A second axis, not a fifth segment: "running" and "on the
+   Survival rack" are different questions and you want both.   */
+
+.rackbar{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  margin:0 0 18px;padding:9px 12px;
+  border-left:5px solid var(--rose);background:var(--paper-2);
+}
+.rackbar .rb-lbl{
+  font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--faint);font-weight:700;
+}
+.rackbar .rb-more{
+  margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--rose);
+}
+.rackchip .rc-g{font-size:13px;color:var(--g-ink)}
+.rackchip .rc-n{font-size:10px;color:var(--faint);font-weight:700}
+.rackchip[aria-pressed="true"]{
+  background:var(--g-ink);border-color:var(--g-ink);color:var(--card);
+}
+.rackchip[aria-pressed="true"] .rc-g,
+.rackchip[aria-pressed="true"] .rc-n{color:inherit}
+
+/* the rack tag on a server card */
+.svcard .sv-foot{display:flex;align-items:center;gap:9px;min-width:0}
+.svcard .sv-ran{font-size:10.5px;color:var(--faint);flex:1;min-width:0}
+.svcard .racktag{
+  display:inline-flex;align-items:center;gap:6px;max-width:56%;flex:none;
+  padding:3px 9px;border:2px solid var(--rule);background:var(--card);
+  cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.05em;
+  color:var(--mid);
+  transition:border-color var(--t-tap),color var(--t-tap),
+             background var(--t-tap);
+}
+.svcard .racktag:hover{
+  border-color:var(--g-ink);color:var(--g-ink);background:var(--paper-2);
+}
+.svcard .racktag .rt-g{font-size:12px;color:var(--g-ink)}
+
+/* --- the rail --------------------------------------------------
+   The rail is not the fleet. It shows five: what is up, then
+   what you last had up, then what you last added — and one row
+   for the rest. The rack's mark is a tick down the edge, so the
+   rail and the rack screen agree without the rail spending a
+   word on it.                                                 */
+
+.fleetrow .gtick{
+  position:absolute;left:0;top:9px;bottom:9px;width:3px;z-index:1;
+  background:var(--g-ink);
+}
+.fleetrow.more{color:var(--band-mid);min-height:42px}
+.fleetrow.more:hover{color:#fff}
+.fleetrow.more .plus{
+  font-family:var(--num);font-weight:800;font-size:15px;line-height:1;
+  width:9px;text-align:center;flex:none;color:var(--sakura);
+}
+.fleetrow.more .nm{font-size:12.5px;font-weight:700}
+
+/* --- responsive ------------------------------------------------ */
+
+@media (max-width:760px){
+  .plaques{
+    --plq-gap:38px;
+    grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+    padding-left:2px;padding-right:2px;
+  }
+  .ema-plaque{min-height:152px;padding:40px 10px 11px}
+  .ema-plaque .plq-name{font-size:13.5px}
+  .ema-plaque .plq-ran{padding-right:56px}
+  .rack{padding:0 4px}
+  .rack .lintel{padding:38px 16px 10px}
+  .rack .plate h3{max-width:40vw}
+  .rack .shide{right:20px}
+  .hookrow{grid-template-columns:26px 10px minmax(0,1fr) 32px}
+  .hookrow .mt,.hookrow .rn{display:none}
+  .carry{left:14px;right:14px;width:auto;transform:none}
+  html.js-motion .carry{animation:carryInFlat .26s var(--ease-spring) both}
+  @keyframes carryInFlat{from{transform:translateY(26px)}to{transform:none}}
+  .motifgrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .inkgrid{grid-template-columns:minmax(0,1fr)}
+}
+
+@media (prefers-reduced-motion:reduce){
+  html.js-motion .ema-plaque,.rack .shide{animation:none}
+  .ema-plaque:hover,.ema-plaque:focus-within{transform:rotate(0deg)}
+}
+
+/* ============================================================
+   KOMA — a mod or plugin's source page, as a comic panel
+   ------------------------------------------------------------
+   A koma is one frame of a manga page, and that is what this
+   is: a hard panel with an offset shadow, action lines
+   radiating from behind it, halftone under the body copy, and
+   the summary in a speech balloon with a torn tail. All of it
+   is drawn out of tokens this app already has — the 2.5px
+   edge, the -8deg skew, gold leaf, sakura — so it reads as
+   this shrine rather than as a manga template laid on top.
+
+   It introduces NO new custom property on purpose. A new token
+   has to be declared in :root and in both dark blocks or it
+   silently falls back to its light value everywhere, and none
+   of this needs one.
+
+   It carries no wiggling polygon of its own, so it declares no
+   layer that could argue with .card / .btn / .loadercard. The
+   .btn elements inside it keep their own three layers exactly
+   as they are.
+   ============================================================ */
+
+/* --- the way in, on a row ------------------------------------
+   The title is a real <button>, so the row opens from the
+   keyboard without the row pretending to be a control and
+   without the checkbox, the toggle and the install button
+   losing their place in the tab order.                        */
+.modrow[data-koma]{cursor:pointer}
+.koma-open{
+  display:inline;padding:0;margin:0;border:0;background:none;cursor:pointer;
+  font:inherit;color:inherit;letter-spacing:inherit;text-align:left;
+  overflow-wrap:anywhere;
+}
+.koma-open::after{
+  content:"";display:block;height:2px;margin-top:1px;
+  background:var(--gold-leaf);background-size:220% 100%;
+  transform:scaleX(0);transform-origin:left center;
+  transition:transform var(--t-tap) var(--ease-out);
+}
+.modrow:hover .koma-open::after,
+.card.hoverable:hover .koma-open::after,
+.koma-open:hover::after,
+.koma-open:focus-visible::after{transform:scaleX(1)}
+
+/* --- the dialog it opens in ---------------------------------- */
+.koma-modal{
+  box-shadow:12px 12px 0 var(--gold),0 26px 64px -20px rgba(36,27,40,.55);
+}
+.koma-modal > header{position:relative;overflow:hidden}
+.koma-modal > header::after{
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:.2;
+  background-image:radial-gradient(var(--sakura) 1px,transparent 1.6px);
+  background-size:9px 9px;
+}
+.koma-modal > header h3{
+  position:relative;z-index:1;padding-left:4px;
+  transform:skewX(var(--skew));transform-origin:left center;
+}
+.koma-modal > header .btn{position:relative;z-index:1}
+.koma-modal .body{padding:0}
+
+/* --- the frame ----------------------------------------------- */
+.koma{
+  position:relative;isolation:isolate;overflow:hidden;
+  padding:28px 26px 24px;background:var(--paper);
+}
+/* Action lines. A repeating conic gradient is the whole trick: it costs one
+   paint and turns once a minute, which reads as a panel that has not quite
+   settled rather than as a spinner. Transform only — nothing here animates
+   opacity from zero, so a stalled timeline leaves it visible and still. */
+.koma-burst{
+  position:absolute;z-index:0;left:50%;top:30%;width:168%;aspect-ratio:1;
+  transform:translate(-50%,-50%);pointer-events:none;opacity:.3;
+  background:repeating-conic-gradient(from 6deg at 50% 50%,
+    color-mix(in srgb,var(--rose) 52%,transparent) 0deg 1.5deg,
+    transparent 1.5deg 11deg);
+  -webkit-mask-image:radial-gradient(closest-side,transparent 12%,
+    #000 40%,#000 58%,transparent 88%);
+          mask-image:radial-gradient(closest-side,transparent 12%,
+    #000 40%,#000 58%,transparent 88%);
+}
+html.js-motion .koma-burst{animation:koma-turn 78s linear infinite}
+@keyframes koma-turn{
+  from{transform:translate(-50%,-50%) rotate(0deg)}
+  to{transform:translate(-50%,-50%) rotate(360deg)}
+}
+
+.koma-panel{
+  position:relative;z-index:1;
+  display:flex;flex-direction:column;gap:13px;padding:19px 19px 17px;
+  border:var(--edge) solid var(--slab-bg);
+  background:linear-gradient(168deg,var(--card-2),var(--card) 44%);
+  box-shadow:9px 10px 0 var(--slab-bg),0 22px 48px -18px rgba(36,27,40,.42);
+}
+html.js-motion .koma-panel{animation:koma-land .34s var(--ease-out) both}
+@keyframes koma-land{
+  from{transform:translateY(13px) skewX(-1.4deg)}
+  to{transform:none}
+}
+
+/* --- hero ----------------------------------------------------- */
+.koma-hero{display:flex;gap:16px;align-items:flex-start}
+.koma-artwrap{position:relative;isolation:isolate;width:80px;height:80px;flex:none}
+.koma-artwrap::after{
+  content:"";position:absolute;z-index:0;inset:-3px;background:var(--sakura);
+  transform:translate(8px,8px);
+  clip-path:polygon(0 7%,7% 0,93% 4%,100% 13%,96% 93%,88% 100%,8% 96%,0 87%);
+}
+.koma-artwrap::before{
+  content:"";position:absolute;z-index:1;inset:-3px;background:var(--slab-bg);
+  clip-path:polygon(0 7%,7% 0,93% 4%,100% 13%,96% 93%,88% 100%,8% 96%,0 87%);
+}
+.koma-art{
+  position:relative;z-index:2;width:100%;height:100%;
+  object-fit:cover;background:var(--paper-2);color:var(--rose);
+  display:grid;place-items:center;
+  clip-path:polygon(0 7%,7% 0,93% 4%,100% 13%,96% 93%,88% 100%,8% 96%,0 87%);
+}
+
+.koma-kicker{
+  display:inline-block;background:var(--rose);color:var(--slab-rose-fg);
+  font-family:var(--disp);font-weight:400;font-size:10.5px;line-height:1;
+  text-transform:uppercase;letter-spacing:.05em;padding:6px 12px 7px;
+  transform:skewX(var(--skew));box-shadow:4px 4px 0 var(--gold);
+}
+.koma-kicker > span{display:inline-block;transform:skewX(8deg)}
+html.no-archivo .koma-kicker,html.no-archivo .koma-name{font-weight:700}
+.koma-name{
+  font-family:var(--disp);font-weight:400;font-size:clamp(21px,3.5vw,31px);
+  text-transform:uppercase;letter-spacing:-.028em;line-height:.97;
+  margin:11px 0 0;overflow-wrap:anywhere;font-synthesis-weight:none;
+}
+.koma-by{
+  display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:8px;
+  font-family:var(--mono);font-size:11px;color:var(--faint);
+}
+
+/* --- the speech balloon --------------------------------------
+   Two stacked tails: the dark one is bigger and reads as the
+   outline, the paper one sits on top and overlaps the balloon's
+   bottom border so the two become one shape.                  */
+.koma-balloon{
+  position:relative;margin:5px 0 15px;padding:13px 16px;
+  border:var(--edge) solid var(--slab-bg);background:var(--paper);
+  box-shadow:5px 5px 0 var(--slab-bg);
+  font-size:14.5px;line-height:1.5;color:var(--text);overflow-wrap:anywhere;
+}
+.koma-balloon::before,.koma-balloon::after{
+  content:"";position:absolute;top:calc(100% - 3px);
+  clip-path:polygon(0 0,100% 0,56% 38%,72% 97%,26% 50%,11% 80%);
+}
+.koma-balloon::before{left:24px;width:50px;height:29px;background:var(--slab-bg)}
+.koma-balloon::after{left:28px;width:41px;height:23px;background:var(--paper)}
+
+/* --- the meta strip ------------------------------------------- */
+.koma-strip{
+  display:grid;gap:10px;
+  grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
+}
+.koma-cell{
+  position:relative;overflow:hidden;padding:9px 12px 10px;
+  border:2px solid var(--slab-bg);background:var(--paper-2);
+}
+.koma-cell::after{
+  content:"";position:absolute;right:-16px;top:-16px;width:52px;height:52px;
+  border-radius:50%;pointer-events:none;filter:blur(10px);
+  background:color-mix(in srgb,var(--sakura) 34%,transparent);
+}
+.koma-cell .k{
+  position:relative;font-family:var(--mono);font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);
+}
+.koma-cell .v{
+  position:relative;margin-top:3px;line-height:1.18;overflow-wrap:anywhere;
+  font-family:var(--num);font-weight:800;font-size:17.5px;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;
+}
+.koma-cell .v.sm{font-size:13px;font-weight:700;letter-spacing:0}
+/* One lacquered plaque for the headline figure. --band-bg is the only dark
+   ground that stays dark in both themes, and gold leaf on a light ground is
+   just pale yellow. */
+.koma-cell.lacquer{background:var(--band-bg);border-color:var(--band-bg)}
+.koma-cell.lacquer .k{color:var(--band-mid)}
+.koma-cell.lacquer .v{color:var(--band-fg)}
+.koma-cell.lacquer::after{background:color-mix(in srgb,var(--gold) 38%,transparent)}
+.koma-cell .skel{height:14px;vertical-align:-2px}
+
+/* --- section rules -------------------------------------------- */
+.koma-h{
+  display:flex;align-items:center;gap:10px;margin:3px 0 -2px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--faint);
+}
+.koma-h::after{
+  content:"";flex:1;height:2px;
+  background:linear-gradient(90deg,var(--rule),transparent);
+}
+
+/* --- the build on offer ---------------------------------------- */
+.koma-offer{
+  display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:11px 13px;
+  border:2px dashed var(--rule);background:var(--paper-2);
+}
+.koma-offer > div:first-child{flex:1;min-width:0}
+.koma-offer .nm{
+  font-family:var(--num);font-weight:800;font-size:14px;line-height:1.25;
+  overflow-wrap:anywhere;
+}
+.koma-offer .fn{
+  font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:2px;
+  overflow-wrap:anywhere;
+}
+
+/* --- screens from the project page ----------------------------- */
+.koma-galwrap{display:flex;flex-direction:column;gap:9px}
+.koma-gal{display:flex;gap:10px;overflow-x:auto;padding:2px 0 5px}
+.koma-gal img{
+  flex:none;width:156px;height:88px;object-fit:cover;display:block;
+  background:var(--paper-2);border:2px solid var(--slab-bg);
+  box-shadow:4px 4px 0 var(--sakura);
+  transition:box-shadow var(--t-tap) linear,transform var(--t-tap) var(--ease-out);
+}
+.koma-gal img:hover{box-shadow:4px 4px 0 var(--rose);transform:translate(-1px,-2px)}
+
+/* --- what the catalogue says ----------------------------------
+   Halftone under the copy, fading out over a fixed 230px rather
+   than a percentage, so a one-line description and a 2000-word
+   one get the same amount of texture.
+
+   No inner scroll here: the dialog body is already a scroller,
+   and two nested ones mean an operator can scroll in the wrong
+   box and think the panel is stuck. The links and the build on
+   offer sit ABOVE this, so a long description costs nothing but
+   a longer scroll.                                             */
+.koma-read{
+  position:relative;isolation:isolate;padding:15px 17px 13px;
+  border:2px solid var(--rule);background:var(--card);
+}
+.koma-read::before{
+  content:"";position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.32;
+  background-image:radial-gradient(var(--sakura) 1px,transparent 1.5px);
+  background-size:8px 8px;
+  -webkit-mask-image:linear-gradient(#000,transparent 230px);
+          mask-image:linear-gradient(#000,transparent 230px);
+}
+.koma-read > *{position:relative;z-index:1}
+.koma-read h4{
+  margin:15px 0 5px;color:var(--rose);
+  font-family:var(--num);font-weight:800;font-size:13.5px;letter-spacing:-.01em;
+}
+.koma-read > h4:first-child{margin-top:0}
+.koma-read p{
+  margin:0 0 9px;font-size:13.5px;line-height:1.58;color:var(--mid);
+  overflow-wrap:anywhere;
+}
+.koma-read hr{border:0;border-top:2px dashed var(--rule);margin:12px 0}
+.koma-li{
+  display:flex;gap:9px;margin:0 0 6px;
+  font-size:13.5px;line-height:1.55;color:var(--mid);overflow-wrap:anywhere;
+}
+.koma-li::before{
+  content:"";flex:none;width:7px;height:7px;margin-top:7px;
+  background:var(--sakura-deep);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);
+}
+.koma-q{
+  margin:0 0 9px;padding-left:12px;border-left:3px solid var(--sakura-deep);
+  font-size:13.5px;line-height:1.55;font-style:italic;color:var(--mid);
+  overflow-wrap:anywhere;
+}
+.koma-read pre{
+  margin:0 0 9px;padding:9px 11px;background:var(--paper-2);
+  border:2px solid var(--rule);color:var(--text);
+  font-family:var(--mono);font-size:11.5px;line-height:1.5;
+  white-space:pre-wrap;overflow-wrap:anywhere;
+}
+.koma-skel{display:grid;gap:10px}
+.koma-skel .shrine-wait{margin-bottom:4px}
+
+/* --- links out -------------------------------------------------- */
+.koma-links{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin:-2px 0 2px}
+
+/* --- the catalogue did not answer -------------------------------
+   Not an empty panel: everything the search result already knew
+   stays on screen above this, and this says exactly what is
+   missing and why.                                              */
+.koma-dead{
+  display:flex;flex-direction:column;align-items:flex-start;gap:11px;
+  padding:14px 15px;border:var(--edge) solid var(--danger);
+  background:var(--danger-soft);
+}
+.koma-dead p{margin:0;font-size:13.5px;line-height:1.55;color:var(--text)}
+.koma-bang{
+  display:inline-block;padding:13px 22px;line-height:1;
+  background:var(--danger);color:var(--slab-rose-fg);
+  font-family:var(--disp);font-weight:400;font-size:15px;
+  text-transform:uppercase;letter-spacing:.03em;
+  clip-path:polygon(4% 17%,15% 1%,28% 15%,42% 2%,56% 16%,70% 1%,84% 14%,
+    97% 4%,100% 39%,92% 51%,100% 73%,87% 83%,91% 100%,73% 90%,58% 100%,
+    44% 88%,30% 99%,17% 86%,4% 95%,0 66%,8% 50%,0 31%);
+}
+html.no-archivo .koma-bang{font-weight:700}
+.koma-bang > span{display:inline-block;transform:skewX(var(--skew))}
+
+@media (max-width:560px){
+  .koma{padding:20px 14px 16px}
+  .koma-panel{padding:15px 14px}
+  .koma-artwrap{width:60px;height:60px}
+  .koma-hero{gap:12px}
+  .koma-gal img{width:132px;height:76px}
+}
+
+/* ============================================================
+   THE HEAP SLIDER, and the ofuda the assistant writes on
+   ------------------------------------------------------------
+   Two things that arrived together because they are the same
+   screen: how much memory you are giving a server, and who
+   decided the number.
+
+   The slider was not smooth for a boring reason — its step was
+   the commit granularity, so a drag moved in whole gigabytes
+   and the browser's own unstyled track fought the custom thumb.
+   The JS now drives the input at a fifth of a snap and settles
+   the COMMITTED value to the snap, and everything visual here
+   is driven off two custom properties it sets:
+
+       --pct      0..1, where the handle is
+       --strain   0..1, smoothstepped, how close to the ceiling
+       --tick     the notch spacing, as a percentage
+
+   `--strain` is a continuous number rather than a class flip,
+   so the tremor comes on gradually instead of switching on at
+   a threshold. `.straining` exists only to start the animation
+   at all; its amplitude is still --strain.
+   ============================================================ */
+
+.sldr{
+  --pct:0;
+  --strain:0;
+  --tick:25%;
+  display:block;margin:14px 0 4px;
+}
+
+.sldr-head{
+  display:flex;align-items:baseline;gap:12px;margin-bottom:7px;
+}
+.sldr-lbl{
+  font-family:var(--mono);font-size:10px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--faint);font-weight:700;
+}
+.sldr-val{
+  margin-left:auto;font-family:var(--num);font-weight:800;font-size:19px;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums;
+  color:var(--text);
+  /* Toward danger as the gate approaches. color-mix with a variable
+     percentage is the whole "continuous, not a switch" idea in one
+     declaration. */
+  color:color-mix(in srgb,var(--danger) calc(var(--strain) * 100%),var(--text));
+  transition:color var(--t-move) linear;
+}
+
+/* --- the lane ------------------------------------------------- */
+
+.sldr-lane{position:relative;display:flex;align-items:center;height:34px}
+
+.sldr-in{
+  -webkit-appearance:none;appearance:none;
+  width:100%;height:34px;margin:0;padding:0;
+  background:transparent;cursor:grab;
+}
+.sldr-in:active{cursor:grabbing}
+
+/* The track has to be declared twice, in full, once per engine: a rule
+   list containing a vendor pseudo-element that the current browser does
+   not understand is dropped WHOLE, so these cannot be comma-joined. */
+.sldr-in::-webkit-slider-runnable-track{
+  height:14px;border:var(--edge) solid var(--slab-bg);
+  background:
+    linear-gradient(90deg,
+      var(--rose) 0 calc(var(--pct) * 100%),
+      transparent calc(var(--pct) * 100%)),
+    repeating-linear-gradient(115deg,
+      color-mix(in srgb,var(--sakura) 30%,transparent) 0 6px,
+      transparent 6px 12px),
+    var(--paper-2);
+  box-shadow:inset 0 2px 0 color-mix(in srgb,var(--slab-bg) 22%,transparent);
+}
+.sldr-in::-moz-range-track{
+  height:14px;border:var(--edge) solid var(--slab-bg);
+  background:
+    repeating-linear-gradient(115deg,
+      color-mix(in srgb,var(--sakura) 30%,transparent) 0 6px,
+      transparent 6px 12px),
+    var(--paper-2);
+}
+.sldr-in::-moz-range-progress{
+  height:14px;background:var(--rose);
+}
+
+/* The handle is a shrine bell: a hard-edged plate with the gold offset
+   the rest of the app uses, and a clapper line down the middle. */
+.sldr-in::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:26px;height:26px;margin-top:-9px;
+  border:var(--edge) solid var(--slab-bg);
+  background:linear-gradient(160deg,var(--gold-soft),var(--gold) 70%);
+  box-shadow:2px 3px 0 var(--slab-bg);
+  clip-path:polygon(50% 0,100% 22%,100% 78%,50% 100%,0 78%,0 22%);
+  transition:transform var(--t-tap) var(--ease-spring);
+}
+.sldr-in::-moz-range-thumb{
+  width:26px;height:26px;border:var(--edge) solid var(--slab-bg);
+  background:linear-gradient(160deg,var(--gold-soft),var(--gold) 70%);
+  box-shadow:2px 3px 0 var(--slab-bg);
+  clip-path:polygon(50% 0,100% 22%,100% 78%,50% 100%,0 78%,0 22%);
+}
+.sldr-in:hover::-webkit-slider-thumb{transform:scale(1.1)}
+.sldr-in:active::-webkit-slider-thumb{transform:scale(.94)}
+.sldr-in:focus-visible{outline:none}
+.sldr-in:focus-visible::-webkit-slider-thumb{
+  box-shadow:2px 3px 0 var(--slab-bg),0 0 0 5px
+    color-mix(in srgb,var(--rose) 30%,transparent);
+}
+.sldr-in:focus-visible::-moz-range-thumb{
+  box-shadow:2px 3px 0 var(--slab-bg),0 0 0 5px
+    color-mix(in srgb,var(--rose) 30%,transparent);
+}
+
+/* --- the strain ----------------------------------------------- */
+
+/* Heat over the last stretch of the lane, rising out of nothing. It sits
+   on the lane rather than on the track because a pseudo-element of a
+   range input cannot be positioned relative to its parent. */
+.sldr-heat{
+  position:absolute;inset:3px 0;pointer-events:none;
+  opacity:calc(var(--strain) * .85);
+  background:linear-gradient(90deg,transparent 45%,
+    color-mix(in srgb,var(--danger) 55%,transparent) 100%);
+  transition:opacity var(--t-move) linear;
+}
+
+/* The tremor. Amplitude is --strain, so it is imperceptible at 0.05 and
+   unmistakable at 1 without ever switching on. */
+@keyframes sldr-shake{
+  0%,100%{transform:translate3d(0,0,0)}
+  20%{transform:translate3d(calc(var(--strain) * -1.5px),
+                            calc(var(--strain) * .7px),0)}
+  40%{transform:translate3d(calc(var(--strain) * 1.3px),
+                            calc(var(--strain) * -.6px),0)}
+  60%{transform:translate3d(calc(var(--strain) * -1.1px),
+                            calc(var(--strain) * -.8px),0)}
+  80%{transform:translate3d(calc(var(--strain) * 1.4px),
+                            calc(var(--strain) * .5px),0)}
+}
+html.js-motion .sldr.straining .sldr-lane{
+  animation:sldr-shake .19s linear infinite;
+}
+/* At the very top the bell rings rather than trembles. */
+html.js-motion .sldr.straining .sldr-val{
+  animation:sldr-shake .13s linear infinite;
+}
+
+/* --- the scale ------------------------------------------------ */
+
+.sldr-scale{
+  height:7px;margin:2px 1px 0;
+  background:repeating-linear-gradient(90deg,
+    var(--rule) 0 2px,transparent 2px var(--tick));
+  -webkit-mask-image:linear-gradient(#000,transparent);
+          mask-image:linear-gradient(#000,transparent);
+}
+
+.sldr-ends{
+  display:flex;justify-content:space-between;align-items:center;gap:12px;
+  margin-top:3px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+  color:var(--faint);
+}
+/* The ceiling is a torii: the gate you do not go through. */
+.sldr-cap{
+  display:inline-flex;align-items:center;gap:6px;
+  color:color-mix(in srgb,var(--danger) calc(var(--strain) * 100%),
+                  var(--faint));
+  transition:color var(--t-move) linear;
+}
+.sldr-cap svg{width:15px;height:15px;flex:none}
+
+.sldr-help{
+  font-size:12.5px;color:var(--faint);line-height:1.45;margin-top:8px;
+}
+
+/* ============================================================
+   THE OFUDA — who chose this number
+   ------------------------------------------------------------
+   An ofuda is a paper talisman from a shrine: a narrow strip
+   with a seal at the head. It is the right object for this
+   because the whole feature is "something was quietly done on
+   your behalf" and the one thing that must not happen is for
+   that to be unaccountable. It names the model, lists every
+   value it moved and what it moved it FROM, and says plainly
+   when nothing was changed at all.
+
+   Three states, one shape: `.thinking` while the model is
+   being asked, the bare class once it has answered, and
+   `.plain` when the deterministic optimizer did all of it.
+   ============================================================ */
+
+.ofuda{
+  position:relative;display:flex;gap:13px;align-items:flex-start;
+  padding:13px 15px 13px 13px;
+  border:var(--edge) solid var(--slab-bg);
+  background-color:var(--card);background-image:var(--washi);
+  box-shadow:var(--lift-1);
+  /* Cut corners at the head, like a strip of paper torn off a block. */
+  clip-path:polygon(0 0,100% 0,100% 100%,7px 100%,0 calc(100% - 7px));
+}
+.ofuda.plain{box-shadow:none;border-color:var(--rule)}
+
+/* The seal. A vermilion square with the sakura mon knocked out of it --
+   the same mon the rest of the app turns, held still here because this
+   is a receipt, not an ornament. */
+.ofuda-seal{
+  flex:none;width:30px;height:30px;border-radius:2px;
+  background:var(--shrine);
+  -webkit-mask-image:var(--mon-mask);mask-image:var(--mon-mask);
+  -webkit-mask-size:78%;mask-size:78%;
+  -webkit-mask-position:center;mask-position:center;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+  box-shadow:inset 0 0 0 2px var(--shrine);
+}
+.ofuda.plain .ofuda-seal{background:var(--faint)}
+html.js-motion .ofuda.thinking .ofuda-seal{
+  animation:ofudaPulse 1.5s ease-in-out infinite;
+}
+/* Scale, not opacity. */
+@keyframes ofudaPulse{0%,100%{transform:scale(1)}50%{transform:scale(.86)}}
+
+.ofuda-hd{
+  font-family:var(--num);font-weight:800;font-size:13.5px;
+  letter-spacing:-.01em;color:var(--text);
+}
+.ofuda-sum{
+  font-size:13px;color:var(--mid);line-height:1.5;margin-top:3px;
+  max-width:64ch;
+}
+
+.ofuda-lines{list-style:none;margin:9px 0 0;padding:0;display:grid;gap:5px}
+.ofuda-line{
+  display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;
+  font-size:12.5px;line-height:1.45;
+  padding-left:11px;position:relative;
+}
+/* A tally mark rather than a bullet. */
+.ofuda-line::before{
+  content:"";position:absolute;left:0;top:.55em;
+  width:5px;height:2px;background:var(--rose);
+}
+.what{font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--faint);min-width:0}
+.move{
+  font-family:var(--mono);font-size:12px;font-weight:700;color:var(--text);
+  display:inline-flex;align-items:baseline;gap:7px;
+}
+/* The old value stays legible. Struck through, not greyed out: the point
+   of showing it is that you can check the change, and you cannot check a
+   number you have to squint at. */
+.move s{color:var(--faint);text-decoration-color:var(--danger)}
+.move s::after{
+  content:"→";margin-left:7px;color:var(--rose);text-decoration:none;
+  display:inline-block;
+}
+.ofuda-note{color:var(--faint);font-size:12px;flex:1 1 100%;min-width:0}
+
+.ofuda-foot{
+  margin-top:9px;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.07em;color:var(--faint);
+}
+
+/* Why one row differs from what the deterministic optimizer wanted. Shown
+   inline on the row it belongs to, because a footnote nobody reads is the
+   same as not saying it. */
+.src-why{
+  display:block;margin-top:2px;font-family:var(--mono);font-size:10.5px;
+  color:var(--faint);letter-spacing:.04em;
+}
+
+@media (max-width:560px){
+  .ofuda{padding:11px 12px}
+  .ofuda-line{gap:6px}
+}
+
+/* Two containers the rack screen leans on. Left to browser defaults they
+   work, in the sense that nothing overlaps -- but the racks end up evenly
+   spaced with the plaques hanging off them, which reads as a list of
+   cards rather than as a row of gates with things hung under each. The
+   gap has to be bigger than the plaque sway. */
+.racks{display:grid;gap:38px;margin-top:6px}
+@media (max-width:700px){.racks{gap:26px}}
+
+/* The modal body for "which rack does this go on". The list scrolls; the
+   buttons under it do not, so "New rack…" is reachable with twenty racks
+   in the list without hunting for it at the bottom of a long scroll. */
+.hangpick{display:flex;flex-direction:column;gap:4px;padding:16px}
+.hangpick .hanglist{max-height:min(46vh,340px);overflow-y:auto;margin:-4px}
+.hangpick .hanglist > *{margin:4px}
+
+/* ============================================================
+   SKELETONS — the shape of a screen before its data exists
+   ------------------------------------------------------------
+   These deliberately mirror the real layouts rather than being
+   generic grey bars: the whole value is that when the content
+   lands it replaces boxes that are already the right size and
+   in the right place, so nothing jumps.
+
+   The shimmer is a moving background-position, never an opacity
+   animating up from zero. If the document timeline stalls, a
+   skeleton that faded in from nothing would be an invisible
+   page; this one is simply a still skeleton, which is the
+   correct failure.
+   ============================================================ */
+.sk{--sk-gap:16px}
+.sk .skel{border-radius:2px}
+
+.sk-head{display:flex;flex-direction:column;gap:10px;margin-bottom:22px}
+.sk-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+
+.sk-kpi{
+  border:var(--edge) solid var(--rule);background:var(--card);
+  padding:13px 15px;display:flex;flex-direction:column;gap:9px;
+}
+
+.sk-rows{display:flex;flex-direction:column;gap:9px}
+.sk-row{
+  display:flex;align-items:center;gap:12px;padding:11px 13px;
+  border:2px solid var(--rule-2);background:var(--card);
+}
+
+.sk-panels{display:flex;flex-direction:column;gap:16px}
+.sk-panel{border:var(--edge) solid var(--rule);background:var(--card)}
+.sk-panelhd{padding:13px 16px;border-bottom:2px solid var(--rule-2);
+  background:var(--paper-2)}
+.sk-panelbody{padding:16px;display:flex;flex-direction:column;gap:10px}
+
+.sk-split{display:grid;gap:18px;grid-template-columns:1fr}
+@media (min-width:1000px){.sk-split{grid-template-columns:1.25fr .85fr}}
+
+/* The rack screen: a lintel with plaques under it, so the gates and the
+   hanging boards are already where they will be. */
+.sk-racks{display:grid;gap:38px}
+.sk-rack{display:flex;flex-direction:column;align-items:stretch;gap:26px}
+.sk-lintel{height:15px;background:var(--rule-2);margin:0 -6px}
+.sk-plaques{display:grid;gap:16px;
+  grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}
+.sk-plaque{
+  height:168px;background:var(--rule-2);
+  clip-path:polygon(50% 0,100% 25%,100% 100%,0 100%,0 25%);
+  animation:shimmer 1.3s ease infinite;
+  background-image:linear-gradient(90deg,var(--rule-2) 25%,
+    var(--paper-2) 37%,var(--rule-2) 63%);
+  background-size:400% 100%;
+}
+
+.sk-inst{display:flex;flex-direction:column;gap:18px;margin-bottom:18px}
+.sk-insthd{display:flex;align-items:center;gap:14px}
+.sk-insttitle{display:flex;flex-direction:column;gap:9px;flex:1;min-width:0}
+.sk-tabs{
+  display:flex;gap:16px;padding:13px 15px;overflow:hidden;
+  border:var(--edge) solid var(--rule);background:var(--card);
+}
+
+/* The swap. `routing` slid the skeleton in; the real content only has to
+   settle into boxes that are already the right size, so this is a much
+   smaller move. Sliding the whole page a second time would throw away the
+   continuity the skeleton just bought. */
+@keyframes settleIn{from{transform:translateY(4px)}to{transform:none}}
+html.js-motion #main.settling{animation:settleIn .16s var(--ease-out) both}
+
+/* The skeleton on its way out. It is laid over the real content -- which is
+   already in the DOM underneath at full opacity -- and dissolves off it.
+
+   Fading the SKELETON out rather than the content in is deliberate: content
+   that starts at opacity 0 is invisible forever if the document timeline
+   never advances, and this app has shipped that bug twice. Here the worst
+   case is a skeleton that lingers, and core.js removes it on a 400ms timer
+   regardless, so it cannot. */
+.sk-out{
+  position:absolute;inset:0;z-index:4;pointer-events:none;
+  opacity:0;transform:scale(1.012);
+  transition:opacity .22s var(--ease-out),transform .22s var(--ease-out);
+}
+#main{position:relative}
+.tabbody{position:relative}
+@media (prefers-reduced-motion:reduce){
+  .sk-out{transition:none}
+}
+
+/* ============================================================
+   RACKS, PART TWO — one rope per ROW, and a board worth reading
+   ------------------------------------------------------------
+   Appended after the rack block above. Every rule here that
+   REPLACES a declaration up there is written `.plaques
+   .ema-plaque ...` so it wins on specificity rather than on
+   being written last, because "whichever is written last" is
+   how the rope came loose the first time.
+
+   THE ROPE, AND WHY IT WAS CROOKED
+   The rope stopped MOVING when `.hanger` and `.cord` became
+   siblings of `.plq-body`. It did not become straight. Three
+   separate things were still wrong:
+
+     * the segment still carried
+       `rotate(calc(-1 * var(--plq-rot)))`, left over from when
+       it lived INSIDE the swinging board. As a sibling it
+       inherits nothing, so that rotate was no longer
+       cancelling a parent — it was tilting every segment by up
+       to 1.8deg, each one a different way. Across a 216px
+       segment that walks the far end about 6px, so neighbours
+       met at visibly different heights. The rope was straight
+       only in the sense of holding still.
+     * a row that is not full — two plaques in a four-column
+       grid — ended its rope in mid-air, a third of the way
+       across the rack, because the last segment was only as
+       wide as the last plaque.
+     * the first and last segment of every row overhung 7px
+       into nothing.
+
+   So a segment per plaque is the wrong model and it is gone.
+   Each plaque still carries one `.hanger`, but it is positioned
+   against `.plaques` with `left`/`right` set and `top` LEFT AT
+   AUTO. Setting left and right spans it across the whole rack;
+   leaving `top` auto keeps its static position, which is the
+   top of the grid row its own plaque landed in. So every plaque
+   in a row paints the same rope in the same place — they
+   coincide to the pixel — a wrapped row gets its own, and a
+   rack holding one plaque gets one whole rope with one board on
+   it. Nothing has to know how many columns the grid wrapped at,
+   which is the one fact no amount of CSS could have told it.
+
+   Two consequences to know before editing anything here:
+
+     * `.ema-plaque` MUST NOT become a containing block. Not
+       `position` anything but static, not `transform` — not
+       even `rotate(0deg)`, an identity transform still makes
+       one — not `perspective`, `filter`, `contain:paint` or
+       `will-change:transform`. Any of those re-parent the rope
+       to a single board and the whole row's rope snaps to that
+       board's width the moment you point at it. Two rules up
+       there did exactly that and both are overridden below.
+     * every colour in the rope is OPAQUE. Three coincident
+       copies of a 30%-alpha shadow composite to 66%, and the
+       rope over a three-wide row would come out half again as
+       dark as the rope over a one-wide row.
+
+   The hover turn now takes its perspective from a
+   `perspective()` FUNCTION inside `.plq-body`'s own transform
+   instead of from an ancestor. That is what lets `.ema-plaque`
+   stay static — and it is also the first time that turn has
+   actually been in 3D, because the `perspective` on `.plaques`
+   was two levels up and never reached the body at all.
+   ============================================================ */
+
+.plaques{
+  position:relative;           /* the rope's containing block */
+  --rope-drop:30px;            /* how far above a row the rope is strung */
+}
+
+/* Static, untransformed, unfiltered. Load-bearing: see above. */
+.plaques .ema-plaque{position:static;min-height:186px;padding:0}
+
+.plaques .ema-plaque .plq-body{
+  min-height:186px;gap:2px;z-index:1;
+  /* The perspective the hover turn needs, carried inside the transform.
+     Naming every function in the resting state as well means the hover
+     interpolates function by function instead of decomposing to a matrix. */
+  transform:perspective(900px) rotate(var(--plq-rot,0deg)) translateY(0)
+            rotateY(0deg) scale(1);
+}
+.plaques .ema-plaque:hover .plq-body,
+.plaques .ema-plaque:focus-within .plq-body{
+  transform:perspective(900px) rotate(0deg) translateY(-6px)
+            rotateY(-14deg) scale(1.03);
+}
+
+/* `:not(.p5-hl)` counts as a class, so the layer rule up there is (0,3,0)
+   and quietly outranks `.ema-plaque .plq-pick` (0,2,0) — which dropped the
+   burnt mark and both controls back INTO the flex column, where they
+   stacked up and added 70px of nothing to every board on the screen. A tag
+   name in the selector puts them back without depending on write order. */
+.ema-plaque .plq-body > div.plq-top{position:absolute}
+.ema-plaque .plq-body > button.plq-pick,
+.ema-plaque .plq-body > button.plq-hang{position:absolute;z-index:3}
+
+/* --- the rope ------------------------------------------------- */
+
+.plaques .ema-plaque .hanger{
+  position:absolute;left:-6px;right:-6px;top:auto;bottom:auto;
+  height:8px;z-index:0;
+  transform:none;              /* nothing to cancel, nothing to drift */
+  margin-top:calc(-1 * var(--rope-drop,30px));
+  /* The twist, and the rope's own shaded underside as a second OPAQUE
+     layer rather than a translucent box-shadow — see the note above about
+     coincident copies. */
+  background:
+    linear-gradient(180deg,transparent 0 5.5px,
+      color-mix(in srgb,var(--g-ink) 44%,var(--slab-bg)) 5.5px 8px),
+    repeating-linear-gradient(112deg,
+      var(--g-ink) 0 7px,
+      color-mix(in srgb,var(--g-ink) 52%,var(--slab-bg)) 7px 14px);
+  box-shadow:none;
+}
+/* Lashed off at both ends. A rope that simply stops is a rope somebody cut. */
+.plaques .ema-plaque .hanger::before,
+.plaques .ema-plaque .hanger::after{
+  content:"";position:absolute;top:-3px;width:8px;height:14px;
+  background:color-mix(in srgb,var(--g-ink) 88%,var(--slab-bg));
+}
+.plaques .ema-plaque .hanger::before{left:0}
+.plaques .ema-plaque .hanger::after{right:0}
+
+/* The cord cannot hang off the plaque any more, because the plaque is not
+   positioned. `.plq-rig` is a zero-height marker at the top of the board —
+   the one positioned thing left in here, and the only origin a cord needs. */
+.ema-plaque .plq-rig{position:relative;display:block;height:0;z-index:2}
+.plaques .ema-plaque .cord{
+  position:absolute;left:50%;margin-left:-1.25px;width:2.5px;z-index:2;
+  top:calc(4px - var(--rope-drop,30px));
+  height:calc(var(--rope-drop,30px) + 4px);
+  background:color-mix(in srgb,var(--g-ink) 72%,var(--slab-bg));
+}
+
+/* --- what is written on the board ------------------------------ */
+
+.plaques .ema-plaque .plq-name{font-size:14.5px;line-height:1.18;margin:0 0 1px}
+
+/* The state, in words, burnt into a band. Four independent channels carry
+   it and only one of them is hue: the WORD, the icon, the weight of the
+   band's fill (solid and dark where something is happening, pale where
+   nothing is) and — running only — a pulse and a number that none of the
+   other states have at all. A green dot and a grey dot are the same dot. */
+.ema-plaque .plq-state{
+  display:flex;align-items:center;gap:5px;min-width:0;margin:2px 0 3px;
+  padding:3.5px 8px;
+  font-family:var(--mono);font-size:9.5px;font-weight:700;
+  letter-spacing:.09em;text-transform:uppercase;line-height:1.35;
+  background:var(--paper-3);color:var(--mid);
+  /* Slabbed like the rack tally, and deliberately a clip rather than a
+     border: a border under a clip-path is cut away on the diagonals and
+     the band reads as broken. */
+  clip-path:polygon(4px 0,100% 0,calc(100% - 4px) 100%,0 100%);
+}
+.ema-plaque .plq-state svg{flex:none}
+.ema-plaque .plq-state .sw{
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;
+}
+.ema-plaque .plq-state .dot{margin-left:auto;width:6px;height:6px}
+.ema-plaque .plq-state .sn{font-size:10.5px;letter-spacing:.02em;flex:none}
+/* Each pair is a token against the partner token that flips with it, so the
+   contrast holds in dark from the same one declaration. */
+.ema-plaque .plq-state.st-running{background:var(--sage);color:var(--card)}
+.ema-plaque .plq-state.st-orphan{background:var(--plum);color:var(--card)}
+.ema-plaque .plq-state.st-crashed{
+  /* Hazard stripes: the one state that gets a texture, so it stays the
+     loudest board on the rack even in greyscale. */
+  background:
+    repeating-linear-gradient(135deg,transparent 0 6px,
+      color-mix(in srgb,var(--danger) 58%,var(--slab-bg)) 6px 12px),
+    var(--danger);
+  color:var(--card);
+}
+.ema-plaque .plq-state.st-incomplete{
+  background:var(--gold-soft);color:var(--amber-ink);
+  box-shadow:inset 3px 0 0 var(--gold);
+}
+.ema-plaque .plq-state.st-stopped,
+.ema-plaque .plq-state.st-unknown{background:var(--paper-3);color:var(--mid)}
+
+/* The two written lines. Mono, because every word on them is a number or a
+   name a machine chose — and because that is what makes them line up down
+   a rack instead of wandering. */
+.plaques .ema-plaque .plq-meta{
+  font-family:var(--mono);font-size:10px;letter-spacing:.02em;color:var(--mid);
+}
+.ema-plaque .plq-ref{font-size:10px;letter-spacing:.02em;color:var(--faint)}
+.ema-plaque .plq-eye{
+  display:flex;align-items:center;gap:5px;min-width:0;margin-top:2px;
+  font-size:10px;font-weight:700;letter-spacing:.02em;color:var(--danger);
+}
+.ema-plaque .plq-eye svg{flex:none}
+/* The foot rail keeps clear of the two controls in the bottom corner. */
+.plaques .ema-plaque .plq-ran{
+  font-size:10px;letter-spacing:.02em;margin-top:auto;
+  padding:8px 58px 0 0;border-top:1.5px dashed var(--rule);
+}
+.ema-plaque:hover .plq-ref{color:var(--mid)}
+
+/* --- alive, and dormant ---------------------------------------- */
+/* A running board hangs proud of the wall and catches the light; a stopped
+   one lies flat against it with its mark gone grey. Both cues are geometry
+   and lightness, never hue, and neither is the only thing saying so.
+   `filter` here is on the ::before, which nothing else touches: `.lifting`
+   filters `.plq-body` itself, and the picked-up look owns ::before's
+   `background`, not its `filter`. */
+.ema-plaque[data-state="running"] .plq-body::before{
+  filter:drop-shadow(4px 5px 0 color-mix(in srgb,var(--slab-bg) 44%,transparent));
+}
+.ema-plaque[data-state="stopped"] .plq-body::before,
+.ema-plaque[data-state="unknown"] .plq-body::before{
+  filter:drop-shadow(2px 2px 0 color-mix(in srgb,var(--slab-bg) 26%,transparent));
+}
+.ema-plaque[data-state="stopped"] .burn,
+.ema-plaque[data-state="unknown"] .burn{opacity:.5}
+/* Weathered wood: the same board, gone grey, and still OPAQUE — the blob
+   sits behind this fill and must stay behind it. `:not([data-picked])`
+   rather than source order, so this and the picked-up fill are mutually
+   exclusive and can never fight over who was written last. */
+.ema-plaque[data-state="stopped"]:not([data-picked]) .plq-body::after,
+.ema-plaque[data-state="unknown"]:not([data-picked]) .plq-body::after{
+  background:
+    repeating-linear-gradient(93deg,transparent 0 10px,
+      color-mix(in srgb,var(--g-ink) 6%,transparent) 10px 11px),
+    linear-gradient(168deg,
+      color-mix(in srgb,var(--card-2) 82%,var(--rule)),
+      color-mix(in srgb,var(--card) 88%,var(--rule)) 54%);
+}
+
+/* --- the compact rendering gets the word too -------------------- */
+/* Same reason as the band above: a column of identical grey circles is not
+   a status, it is a decoration that happens to be coloured. */
+
+.hooklist .hookrow{
+  grid-template-columns:26px auto minmax(0,1.4fr) minmax(0,1fr)
+                        minmax(0,1fr) 32px;
+}
+.hookrow .hk-state{
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+  font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--faint);
+}
+.hookrow .hk-running .hk-w{color:var(--sage)}
+.hookrow .hk-crashed .hk-w{color:var(--danger)}
+.hookrow .hk-orphan .hk-w{color:var(--plum)}
+.hookrow .hk-incomplete .hk-w{color:var(--amber-ink)}
+
+/* --- responsive ------------------------------------------------- */
+
+@media (max-width:760px){
+  /* That padding was the board's own before the body was split out of the
+     host. Left on the host it insets the board twice AND pushes the rope's
+     static position 40px down, into the wood it is meant to hang above. */
+  .plaques .ema-plaque{padding:0;min-height:172px}
+  .plaques .ema-plaque .plq-body{min-height:172px;padding:40px 11px 11px}
+  .plaques{--rope-drop:26px}
+  .ema-plaque .plq-state{letter-spacing:.06em;padding:3.5px 6px}
+  .hooklist .hookrow{grid-template-columns:26px auto minmax(0,1fr) 32px}
+}
+
+@media (prefers-reduced-motion:reduce){
+  /* `transform:rotate(0deg)` is NOT `transform:none`: an identity transform
+     still makes the plaque a containing block, and the row's rope — which
+     hangs off the RACK — would snap to the width of whichever board you
+     happened to be pointing at, for exactly the users least able to
+     tolerate something jumping. */
+  .plaques .ema-plaque,
+  .plaques .ema-plaque:hover,
+  .plaques .ema-plaque:focus-within{transform:none}
+  html.js-motion .plaques .ema-plaque .plq-body{animation:none}
+  .plaques .ema-plaque .plq-body{transform:rotate(var(--plq-rot,0deg))}
+  .plaques .ema-plaque:hover .plq-body,
+  .plaques .ema-plaque:focus-within .plq-body{
+    transform:rotate(0deg) translateY(-2px);
+  }
+}
+
+/* ============================================================
+   THE VITALS RAIL — CPU, memory, players
+   ------------------------------------------------------------
+   A band of its own between the instance header and the tab
+   strip, not a column squeezed into the header. Three readings,
+   three different objects, one frame:
+
+     CPU      a torii standing in the tide. The crest line IS
+              the reading and it climbs the pillars; at full it
+              reaches the underside of the kasagi.
+     MEMORY   a chochin that fills with light and glows harder
+              the fuller it gets. Unlit means down.
+     PLAYERS  blossoms. A count out of a max is not a
+              percentage, so it gets no level: one mark per
+              seat, open where a player is here, a closed bud
+              where none is.
+
+   Everything the eye reads as "the value" moves on a TRANSITION
+   of transform or background-color, never on an animation --
+   transitions need no frames from the page, so a throttled tab
+   still lands on the right level. The only keyframes below are
+   ambience (the tide scrolling, the lantern breathing) and one
+   pop for a blossom opening, and none of them touches opacity.
+
+   Nothing in this band is a .card, a .btn or a .loadercard, so
+   it carries no wiggling polygon, declares no `> *` rule that
+   could outrank .p5-hl, and sets no z-index at all -- paint
+   order here is DOM order and nothing else.
+   ============================================================ */
+
+/* The tone, and the gate's own ink. Set per vital from data-tone below;
+   declared here as well, and in BOTH dark blocks, because a custom
+   property declared only at :root keeps its LIGHT value under a dark
+   theme. The three copies are identical on purpose -- they are token
+   references, and repeating them is so the next person to add one does not
+   have to find the rule the hard way. */
+:root{
+  --vt:var(--sage); --vt-soft:var(--sage-soft); --vt-gate:var(--plum);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --vt:var(--sage); --vt-soft:var(--sage-soft); --vt-gate:var(--plum);
+  }
+}
+:root[data-theme="dark"]{
+  --vt:var(--sage); --vt-soft:var(--sage-soft); --vt-gate:var(--plum);
+}
+
+/* --- the band ------------------------------------------------
+   Sits between .inst-head (bordered all round) and .tabs (which
+   already draws itself with border-top:0), so the three read as
+   one continuous slab. A recessed ground so the three plaques
+   on it have something to sit on.                             */
+.vitals{
+  border:var(--edge) solid var(--slab-bg);border-top:0;
+  background-color:var(--paper-2);background-image:var(--washi);
+  padding:15px;display:grid;gap:13px;
+  grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+}
+
+/* --- one reading --------------------------------------------- */
+.vital{
+  position:relative;overflow:hidden;min-width:0;
+  border:var(--edge) solid var(--slab-bg);
+  background-color:var(--card);background-image:var(--washi);
+  box-shadow:var(--lift-1);
+  padding:13px 14px 12px;
+  display:flex;flex-direction:column;
+  transition:background-color .45s var(--ease-out);
+}
+
+/* The tone, carried where it is visible even when the mechanism is empty.
+   The clipped ends are the house -8deg, cut rather than skewed so the bar
+   still spans the full width. */
+.vt-edge{
+  position:absolute;left:0;right:0;top:0;height:5px;
+  background-color:var(--vt);pointer-events:none;
+  clip-path:polygon(0 0,100% 0,calc(100% - 7px) 100%,7px 100%);
+  transition:background-color .45s var(--ease-out);
+}
+
+.vt-row{display:flex;gap:13px;align-items:center;min-width:0}
+.vt-art{position:relative;flex:none;width:62px;height:70px}
+.vt-read{min-width:0;flex:1}
+
+.vt-lbl{
+  display:flex;align-items:center;gap:6px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--faint);line-height:1;
+}
+.vt-dot{
+  width:7px;height:7px;flex:none;background-color:var(--vt);
+  clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);
+  transition:background-color .45s var(--ease-out);
+}
+.vt-num{
+  display:flex;align-items:baseline;gap:5px;margin-top:5px;
+  font-family:var(--num);font-weight:800;letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums;line-height:1;
+}
+/* Never broken across lines. "3.4" on one line and "GB" on the next stops
+   being a figure and starts being two words. */
+.vt-val{font-size:clamp(24px,3.1vw,31px);color:var(--text);white-space:nowrap}
+.vt-unit{font-size:13px;font-weight:700;color:var(--faint)}
+.vt-sub{
+  margin-top:6px;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.03em;color:var(--faint);line-height:1.35;
+}
+
+/* --- what the colour means -----------------------------------
+   calm / warning / danger, all out of tokens that already swap
+   with the theme, so neither block needs its own palette.      */
+.vital[data-tone="calm"]{--vt:var(--sage);--vt-soft:var(--sage-soft)}
+.vital[data-tone="warm"]{--vt:var(--gold);--vt-soft:var(--gold-soft)}
+.vital[data-tone="hot"]{--vt:var(--danger);--vt-soft:var(--danger-soft)}
+.vital[data-tone="off"]{--vt:var(--rule);--vt-soft:var(--paper-3)}
+.vital[data-tone="unknown"]{--vt:var(--faint);--vt-soft:var(--paper-3)}
+
+.vital[data-tone="warm"] .vt-sub,
+.vital[data-tone="hot"] .vt-sub{color:var(--vt);font-weight:700}
+/* Near the limit the whole plaque takes the wash, so it is the card that
+   catches the eye rather than a word in it. */
+.vital[data-tone="hot"]{background-color:var(--vt-soft)}
+/* A number that is not a reading must not look like one. */
+.vital[data-tone="off"] .vt-val,
+.vital[data-tone="unknown"] .vt-val{color:var(--faint)}
+/* Down is not the same as unreadable: the art stays, paled. */
+.vital[data-tone="off"] .vt-art{opacity:.42}
+
+/* --- CPU: a torii standing in the tide -----------------------
+   .vt-tide spans EXACTLY the water's range -- the ground line
+   to the underside of the kasagi -- so translating it by its
+   own height maps 0..100 onto the gate with no hard-coded pixel
+   anywhere. The gate paints over the water (DOM order), so the
+   silhouette stays crisp at every level.                       */
+.vt-torii > i,
+.vt-torii > .vt-gate{position:absolute}
+
+.vt-tide{
+  left:0;right:0;top:7px;bottom:9px;
+  transform:translateY(100%);
+  background-color:color-mix(in srgb,var(--vt) 38%,transparent);
+  transition:transform .75s var(--ease-out),
+    background-color .45s var(--ease-out);
+}
+/* The crest. Full-strength and 2.5px, because this line is the reading --
+   the wash behind it is only there so the water has a body. */
+.vt-tide::after{
+  content:"";position:absolute;left:0;right:0;top:-2px;height:2.5px;
+  background-color:var(--vt);
+}
+/* and the scallop riding on it. */
+.vt-tide::before{
+  content:"";position:absolute;left:-13px;right:-13px;top:-6px;height:7px;
+  background-image:radial-gradient(ellipse 6.5px 6px at 50% 100%,
+    var(--vt) 70%,transparent 72%);
+  background-size:13px 7px;background-repeat:repeat-x;
+  background-position:0 0;
+  animation:vtTide 2.9s linear infinite;
+}
+@keyframes vtTide{from{background-position:0 0}to{background-position:-13px 0}}
+
+/* The high-water mark: 85%, where CPU stops being busy and starts being a
+   problem. Drawn over the water so it stays findable when submerged. */
+.vt-mark{left:6px;right:6px;top:7px;bottom:9px;pointer-events:none}
+.vt-mark::before{
+  content:"";position:absolute;left:0;right:0;top:15%;height:0;
+  border-top:1.5px dashed color-mix(in srgb,var(--gold-ink) 65%,transparent);
+}
+
+.vt-ground{
+  left:0;right:0;bottom:6px;height:3px;
+  background-color:color-mix(in srgb,var(--text) 24%,transparent);
+}
+
+.vt-gate{inset:0;color:var(--vt-gate)}
+.vt-gate i{position:absolute;display:block;background-color:currentColor}
+/* kasagi — the top beam, ends turned up, same cut as .rack .kasagi */
+.vt-gate .kasagi{
+  left:1px;right:1px;top:4px;height:6px;
+  clip-path:polygon(0 60%,4% 0,96% 0,100% 60%,100% 100%,0 100%);
+}
+.vt-gate .shimaki{left:7px;right:7px;top:11px;height:3px}
+.vt-gate .gakuzuka{left:calc(50% - 2.5px);width:5px;top:14px;height:7px}
+.vt-gate .nuki{left:9px;right:9px;top:21px;height:4px}
+.vt-gate .post{top:10px;bottom:8px;width:9px}
+.vt-gate .post.l{left:11px;clip-path:polygon(16% 0,84% 0,100% 100%,0 100%)}
+.vt-gate .post.r{right:11px;clip-path:polygon(16% 0,84% 0,100% 100%,0 100%)}
+
+/* --- Memory: a chochin that fills with light -----------------
+   .body clips with overflow plus its own border-radius, so the
+   light is cut to the paper barrel without a mask or a
+   clip-path id that could collide with anything else.          */
+.vt-chochin > i,
+.vt-chochin > .body{position:absolute}
+.vt-chochin .cord{
+  left:calc(50% - 1.25px);top:0;width:2.5px;height:8px;
+  background-color:var(--slab-bg);
+}
+/* The wa — the hoops at each end. NARROWER than the belly, which is the
+   whole difference between a chochin and a capsule. */
+.vt-chochin .cap{
+  left:calc(50% - 8.5px);width:17px;height:5px;
+  background-color:var(--slab-bg);
+}
+.vt-chochin .cap.top{top:7px}
+.vt-chochin .cap.bot{top:56px}
+.vt-chochin .tassel{
+  left:calc(50% - 1.5px);top:61px;width:3px;height:8px;
+  background-color:var(--shrine);
+}
+/* The belly. Rounded hard enough at both ends that the paper tapers into
+   the hoops instead of meeting them square. */
+.vt-chochin .body{
+  left:calc(50% - 21px);width:42px;top:11px;height:46px;
+  overflow:hidden;border:var(--edge) solid var(--slab-bg);
+  border-radius:36% 36% 33% 33%/30% 30% 26% 26%;
+  background-color:var(--card-2);
+}
+.vt-chochin .lit{
+  position:absolute;inset:0;transform:translateY(100%);
+  background-color:var(--vt);
+  background-image:linear-gradient(180deg,rgba(255,255,255,.36),
+    rgba(255,255,255,0) 44%,rgba(36,27,40,.17));
+  transition:transform .75s var(--ease-out),
+    background-color .45s var(--ease-out);
+}
+.vt-chochin .ribs{
+  position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(180deg,transparent 0 6px,
+    color-mix(in srgb,var(--text) 20%,transparent) 6px 7.4px);
+}
+/* The glow is opacity-driven from JS (it is the SECOND reading of the same
+   number: level, and how hard it is burning). Its animation is scale only,
+   so it can never argue with that inline opacity. */
+.vt-chochin .glow{
+  left:calc(50% - 36px);top:4px;width:72px;height:62px;
+  opacity:0;pointer-events:none;border-radius:50%;
+  background-image:radial-gradient(closest-side,
+    color-mix(in srgb,var(--vt) 88%,transparent) 12%,transparent 74%);
+  transition:opacity .6s var(--ease-out);
+}
+html.js-motion .vt-chochin{animation:sway 6.4s ease-in-out infinite}
+.vt-chochin{transform-origin:50% 3px}
+html.js-motion .vt-chochin .glow{animation:vtHalo 3.4s ease-in-out infinite}
+@keyframes vtHalo{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+
+/* --- "running, but Crafty sent no figure" --------------------
+   Distinct from a stopped server, which keeps its art and is
+   paled by data-tone="off". Two different silences that must
+   not look alike.
+
+   Deliberately NOT transitioned. Fading a "no data" marker in
+   buys nothing, and it would make the marker itself depend on
+   the document timeline advancing -- the one thing that cannot
+   be relied on. It appears the instant the class lands.        */
+.vt-nod{
+  inset:0;opacity:0;pointer-events:none;
+  background-image:repeating-linear-gradient(-45deg,transparent 0 5px,
+    color-mix(in srgb,var(--faint) 26%,transparent) 5px 10px);
+}
+.vt-art.is-blank .vt-nod{opacity:1}
+.vt-art.is-blank .vt-gate,
+.vt-art.is-blank .vt-tide,
+.vt-art.is-blank .vt-mark,
+.vt-art.is-blank .body,
+.vt-art.is-blank .cord,
+.vt-art.is-blank .cap,
+.vt-art.is-blank .tassel{opacity:.34}
+
+/* --- Players: one blossom per seat ---------------------------
+   No art box and no level, because a count out of a max is not
+   a percentage. The field sits on the floor of the plaque so
+   the three cards still line up.                               */
+.vital-players .vt-seats{
+  margin-top:auto;padding-top:11px;min-height:28px;
+  display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;
+}
+.vt-petals{display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start}
+/* An empty seat has to be legible or "17 seats free" is only a sentence.
+   --rule is too close to the card in both themes, so the buds are a wash
+   of --faint instead: present, clearly not open. */
+.vt-petal{
+  width:12px;height:12px;flex:none;
+  background-color:color-mix(in srgb,var(--faint) 45%,transparent);
+  -webkit-mask-image:var(--mon-mask);mask-image:var(--mon-mask);
+  -webkit-mask-size:contain;mask-size:contain;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+  -webkit-mask-position:center;mask-position:center;
+  transform:scale(.66);
+  transition:background-color .45s var(--ease-out),
+    transform .4s var(--ease-spring);
+}
+.vt-petal.on{background-color:var(--vt);transform:none}
+/* A seat changing hands. NO fill-mode, and instance.js strips `.just` on a
+   setTimeout rather than on animationend -- a throttled tab never fires
+   animationend, and a blossom abandoned mid-pop would sit at a third of
+   its size for good. */
+.vt-petal.just{animation:vtPetal .42s var(--ease-spring)}
+@keyframes vtPetal{
+  0%{transform:scale(.3) rotate(-34deg)}
+  60%{transform:scale(1.16) rotate(6deg)}
+  100%{transform:none}
+}
+.vt-more{
+  font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;
+  color:var(--vt);align-self:center;
+}
+
+/* --- the first reading arrives, it does not fill up ----------
+   instance.js sets this for exactly one style flush on the very
+   first update. Two reasons, and the second is the important
+   one: a gauge that animates from empty to 46% on page load is
+   animating a change that never happened, and -- if the
+   document timeline is stalled, as it is in a throttled or
+   hidden view -- an opening transition would never run at all
+   and every level would sit at zero while the numerals beside
+   it read correctly. Landing the first value with no transition
+   makes the opening state right under any timeline, and only
+   real changes move after that.                                */
+.vitals.vt-still .vt-tide,
+.vitals.vt-still .vt-chochin .lit,
+.vitals.vt-still .vt-chochin .glow,
+.vitals.vt-still .vt-petal,
+.vitals.vt-still .vt-edge,
+.vitals.vt-still .vt-dot,
+.vitals.vt-still .vital{transition:none}
+
+/* --- narrow ---------------------------------------------------
+   Two up with Players across the foot, then one up on a phone.
+   The rail is the thing the user asked to be able to see, so it
+   keeps its size rather than collapsing into a strip.          */
+@media (max-width:860px){
+  .vitals{grid-template-columns:repeat(2,minmax(0,1fr));padding:13px;gap:11px}
+  .vital-players{grid-column:1 / -1}
+  .vital{padding:11px 12px 10px}
+  .vt-art{width:54px;height:62px}
+  .vt-row{gap:11px}
+  .vt-val{font-size:21px}
+  .vt-chochin .body{left:calc(50% - 18px);width:36px;height:40px;top:10px}
+  .vt-chochin .cap{left:calc(50% - 7.5px);width:15px}
+  .vt-chochin .cap.top{top:6px}
+  .vt-chochin .cap.bot{top:49px}
+  .vt-chochin .tassel{top:54px;height:7px}
+  .vt-chochin .glow{left:calc(50% - 31px);width:62px;height:54px}
+}
+@media (max-width:430px){
+  .vitals{grid-template-columns:minmax(0,1fr)}
+  .vt-val{font-size:24px}
+  .vt-petal{width:11px;height:11px}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .vt-tide::before,
+  .vt-chochin,
+  .vt-chochin .glow,
+  .vt-petal.just{animation:none}
+  .vt-tide,
+  .vt-chochin .lit,
+  .vt-chochin .glow,
+  .vt-petal,
+  .vt-edge,
+  .vt-dot,
+  .vital{transition:none}
+}
+
+/* ============================================================
+   ACTIVITY — THE SHRINE ROAD
+
+   A job is a walk between two torii. The rope strung between
+   them is a shimenawa; the length already walked is gold leaf;
+   a diamond knot sits at every phase boundary; and the working
+   charm — the bee, or the pig when something is being hauled —
+   rides the rope at the job's own percent. Where the charm IS
+   on the rope is the progress, which is legible from across the
+   room in a way no rectangle ever is.
+
+   Nothing here starts from opacity:0 with fill:both, every
+   animation names a keyframe that exists (`foil`, `monTurn`,
+   `sevPulse` are the theme's own), and the two new custom
+   properties are declared at :root AND in both dark blocks.
+   ============================================================ */
+
+:root{
+  --jb-rope:#E4D3C6;
+  --jb-rope-ink:#C7AF9C;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --jb-rope:#3A2D41;
+    --jb-rope-ink:#4E3C59;
+  }
+}
+:root[data-theme="dark"]{
+  --jb-rope:#3A2D41;
+  --jb-rope-ink:#4E3C59;
+}
+
+/* One utility, namespaced, because the drawer hides a dozen small things
+   that must keep their identity (and their DOM node) while they are away. */
+.jb-hid{display:none !important}
+
+/* --- the drawer ------------------------------------------------ */
+
+/* Declared in full rather than as a patch on the block above. Three agents
+   are in this stylesheet at once and the drawer is the one thing here that
+   must not depend on which of them lands first; restating a rule that is
+   already correct costs nothing, and this block is last. */
+#drawer{
+  position:fixed;right:0;bottom:0;width:min(440px,100vw);z-index:var(--z-drawer);
+  display:flex;flex-direction:column;gap:0;max-height:min(72vh,640px);
+  background:var(--card);border:var(--edge) solid var(--slab-bg);
+  border-right:0;border-bottom:0;box-shadow:-6px -6px 0 var(--sakura);
+  animation:slam .3s cubic-bezier(.2,.9,.3,1.1) both;
+}
+#drawer[hidden]{display:none}
+#drawer > header{
+  position:relative;display:flex;align-items:center;gap:9px;
+  padding:10px 14px 11px;cursor:pointer;
+  background:var(--slab-bg);color:var(--slab-fg);
+}
+#drawer > header h3{
+  flex:none;margin:0;font-family:var(--disp);font-size:12.5px;
+  text-transform:uppercase;letter-spacing:.02em;
+}
+#drawer > header .btn.icon{flex:none}
+@media (max-width:760px){
+  #drawer{width:100vw;max-height:70vh}
+}
+
+/* The gate to the road, at header scale: the same four pieces every rail
+   is built from, in the slab's own ink so it reads on the dark beam. */
+#drawer > header .jb-torii{margin-right:1px}
+#drawer > header .jb-torii i{background:var(--slab-fg)}
+#drawer > header .jb-torii .nuk,
+#drawer > header .jb-torii .pst{
+  background:color-mix(in srgb,var(--slab-fg) 74%,transparent);
+}
+
+.jb-sum{
+  flex:1;min-width:0;font-family:var(--mono);font-size:10px;letter-spacing:.11em;
+  text-transform:uppercase;color:color-mix(in srgb,var(--slab-fg) 62%,transparent);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+
+/* The rope along the header's bottom edge: a collapsed drawer still shows
+   that something is moving, which is the whole point of collapsing it. */
+.jb-hdrrope{
+  position:absolute;left:0;right:0;bottom:0;height:3px;overflow:hidden;
+  background:repeating-linear-gradient(115deg,var(--jb-rope) 0 6px,
+    var(--jb-rope-ink) 6px 9px);
+  opacity:0;transition:opacity var(--t-move) ease;
+}
+#drawer.busy .jb-hdrrope{opacity:1}
+.jb-hdrrope > i{
+  display:block;height:100%;width:0;background:var(--gold-leaf);
+  background-size:220% 100%;transition:width .5s var(--ease-out);
+}
+html.js-motion #drawer.busy .jb-hdrrope > i{animation:foil 3.6s linear infinite}
+
+#drawer .body{
+  overflow:auto;padding:12px;display:flex;flex-direction:column;gap:12px;
+  background-color:var(--paper);background-image:var(--washi);
+}
+/* `display:flex` on an id-scoped selector outranks the user agent's
+   `[hidden]{display:none}`, so collapsing the drawer by setting `hidden` on
+   the body did nothing at all. It has to be said here. */
+#drawer .body[hidden]{display:none}
+
+/* The live region. Status only — a drawer that reads three hundred download
+   lines aloud is not an accessible drawer. */
+.jb-say{
+  position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;
+  overflow:hidden;clip-path:inset(50%);white-space:nowrap;
+}
+
+.jb-empty{
+  display:flex;align-items:center;gap:10px;padding:16px 4px;
+  color:var(--faint);font-size:12.5px;
+}
+.jb-empty svg{color:var(--rose);flex:none}
+
+/* --- one job --------------------------------------------------- */
+
+.jobcard{
+  position:relative;padding:11px 12px 11px 16px;
+  border:var(--edge) solid var(--slab-bg);
+  background-color:var(--card);background-image:var(--washi);
+}
+/* the spine: the job's state, readable before you have read anything */
+.jobcard::before{
+  content:"";position:absolute;left:0;top:0;bottom:0;width:5px;
+  background:var(--rose);
+}
+.jobcard.done{border-color:var(--slab-bg);background-color:var(--card)}
+.jobcard.done::before{background:var(--sage)}
+.jobcard.error{border-color:var(--danger);background-color:var(--danger-soft)}
+.jobcard.error::before{background:var(--danger)}
+.jobcard.hushed::before{background:var(--amber-ink)}
+
+html.js-motion .jobcard{animation:jb-cardIn .3s var(--ease-out) both}
+@keyframes jb-cardIn{
+  from{transform:translateX(28px) skewX(-4deg)}
+  to{transform:none}
+}
+
+/* --- the head -------------------------------------------------- */
+
+.jb-head{display:flex;align-items:center;gap:9px;min-width:0}
+.jb-mon{
+  flex:none;width:16px;height:16px;background:var(--rose);
+  -webkit-mask:var(--mon-mask) no-repeat center/contain;
+  mask:var(--mon-mask) no-repeat center/contain;
+}
+.jobcard.done .jb-mon{background:var(--sage)}
+.jobcard.error .jb-mon{background:var(--danger)}
+.jobcard.hushed .jb-mon{background:var(--amber-ink)}
+html.js-motion .jobcard.running .jb-mon{animation:monTurn 9s linear infinite}
+
+.jb-name{
+  flex:1;min-width:0;font-family:var(--num);font-weight:800;font-size:13.5px;
+  line-height:1.25;overflow-wrap:anywhere;
+}
+.jb-pct{
+  flex:none;font-family:var(--disp);font-size:15px;color:var(--rose);
+  font-variant-numeric:tabular-nums;line-height:1;
+}
+.jobcard.done .jb-pct{color:var(--sage)}
+.jobcard.error .jb-pct{color:var(--danger)}
+.jobcard.hushed .jb-pct{color:var(--amber-ink)}
+.jb-head .btn.icon{flex:none}
+
+/* --- the road -------------------------------------------------- */
+
+.jb-rail{
+  position:relative;display:flex;align-items:flex-end;gap:5px;
+  height:48px;margin:10px 0 8px;
+}
+
+/* torii — the same four pieces the racks are built from, at rail scale */
+.jb-torii{position:relative;flex:none;width:20px;height:24px}
+.jb-torii .kas{
+  position:absolute;left:-2px;right:-2px;top:0;height:4px;background:var(--rose);
+  clip-path:polygon(0 62%,9% 0,91% 0,100% 62%,100% 100%,0 100%);
+}
+.jb-torii .nuk{
+  position:absolute;left:1px;right:1px;top:7px;height:2.5px;
+  background:color-mix(in srgb,var(--rose) 76%,var(--slab-bg));
+}
+.jb-torii .pst{
+  position:absolute;top:3px;width:3px;height:21px;
+  background:color-mix(in srgb,var(--rose) 84%,var(--slab-bg));
+}
+.jb-torii .pst.l{left:3.5px}
+.jb-torii .pst.r{right:3.5px}
+/* The far gate is the destination, so it is gold until it is reached. */
+.jb-torii.end .kas{background:var(--gold)}
+.jb-torii.end .nuk{background:color-mix(in srgb,var(--gold) 76%,var(--slab-bg))}
+.jb-torii.end .pst{background:color-mix(in srgb,var(--gold) 84%,var(--slab-bg))}
+.jobcard.done .jb-torii.end .kas{background:var(--sage)}
+.jobcard.done .jb-torii.end .nuk,
+.jobcard.done .jb-torii.end .pst{
+  background:color-mix(in srgb,var(--sage) 80%,var(--slab-bg));
+}
+.jobcard.error .jb-torii .kas{background:var(--danger)}
+.jobcard.error .jb-torii .nuk,.jobcard.error .jb-torii .pst{
+  background:color-mix(in srgb,var(--danger) 78%,var(--slab-bg));
+}
+
+.jb-track{position:relative;flex:1;min-width:0;height:100%}
+
+/* shimenawa — twisted, not a tube */
+.jb-rope{
+  position:absolute;left:0;right:0;bottom:4px;height:9px;overflow:hidden;
+  border:2px solid var(--slab-bg);
+  background:repeating-linear-gradient(115deg,var(--jb-rope) 0 6px,
+    var(--jb-rope-ink) 6px 9px);
+}
+.jobcard.hushed .jb-rope{border-color:var(--amber-ink)}
+.jb-rope-done{
+  position:absolute;left:0;top:0;bottom:0;width:0;
+  background:var(--gold-leaf);background-size:220% 100%;
+  transition:width .45s var(--ease-out);
+}
+/* the twine wraps, so the walked length still reads as rope */
+.jb-rope-done::after{
+  content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(115deg,transparent 0 7px,
+    color-mix(in srgb,var(--slab-bg) 46%,transparent) 7px 9px);
+}
+html.js-motion .jobcard.running:not(.seeking) .jb-rope-done{
+  animation:foil 3.4s linear infinite;
+}
+.jobcard.done .jb-rope-done{
+  background:linear-gradient(90deg,var(--sage),
+    color-mix(in srgb,var(--sage) 60%,#fff));
+}
+.jobcard.error .jb-rope-done{background:linear-gradient(90deg,var(--danger),#ff5f6d)}
+
+/* A job that has not reported a percent yet has not stopped: the charm
+   waits at the near gate and a short length of rope is drawn along it. */
+.jobcard.seeking .jb-rope-done{transition:none}
+.jobcard.seeking .jb-charm{transition:none}
+html.js-motion .jobcard.seeking .jb-rope-done{
+  animation:jb-seek 1.6s var(--ease-out) infinite;
+}
+@keyframes jb-seek{
+  from{transform:translateX(-115%)}
+  to{transform:translateX(400%)}
+}
+
+/* the knots — one per phase boundary */
+.jb-knot{
+  position:absolute;bottom:10.5px;width:9px;height:9px;z-index:2;
+  transform:translate(-50%,50%) rotate(45deg);
+  background:var(--paper);border:2px solid var(--slab-bg);
+  transition:background var(--t-move) ease,box-shadow var(--t-move) ease;
+}
+.jb-knot.lit{background:var(--gold)}
+.jb-knot.now{background:var(--rose);box-shadow:0 0 0 2px var(--rose-soft)}
+html.js-motion .jobcard.running .jb-knot.now{
+  animation:jb-knot 1.6s ease-in-out infinite;
+}
+/* The halo pulses, not the knot: the knot's own transform already carries
+   its translate and its 45deg, and an animated `scale` composes with that
+   and walks it off the rope. */
+@keyframes jb-knot{
+  0%,100%{box-shadow:0 0 0 2px var(--rose-soft)}
+  50%{box-shadow:0 0 0 6px var(--rose-soft)}
+}
+.jobcard.done .jb-knot.lit{background:var(--sage)}
+.jobcard.error .jb-knot.now{background:var(--danger);box-shadow:none}
+
+/* the charm that walks it */
+.jb-charm{
+  position:absolute;left:0;top:0;bottom:0;width:0;z-index:3;
+  transition:left .45s var(--ease-out);
+}
+/* `max-width:none` is load-bearing: the charm is a zero-width anchor, and
+   the global `img{max-width:100%}` resolves that to a 26px image nought
+   pixels wide. The walking mascot simply was not there. */
+.jb-art{
+  position:absolute;left:50%;bottom:19px;transform:translateX(-50%);
+  width:26px;height:26px;max-width:none;display:block;image-rendering:pixelated;
+}
+.jb-bead{
+  position:absolute;left:50%;bottom:10.5px;width:10px;height:10px;
+  transform:translate(-50%,50%) rotate(45deg);
+  background:var(--gold);border:2px solid var(--slab-bg);
+}
+.jobcard.done .jb-bead{background:var(--sage)}
+.jobcard.error .jb-bead{background:var(--danger)}
+
+/* --- what is happening right now -------------------------------- */
+
+.jb-now{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}
+.jb-phase{
+  flex:none;font-family:var(--disp);font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--rose);
+}
+.jobcard.done .jb-phase{color:var(--sage)}
+.jobcard.error .jb-phase{color:var(--danger)}
+.jb-phaseno{
+  flex:none;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--faint);
+}
+.jb-step{
+  flex:1 1 100%;font-family:var(--mono);font-size:11px;line-height:1.45;
+  color:var(--faint);overflow-wrap:anywhere;
+}
+/* The sentence that says what went wrong is not a caption. */
+.jobcard.error .jb-step{color:var(--danger)}
+
+.jb-meta{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:5px;
+  font-family:var(--mono);font-size:10.5px;color:var(--faint);
+}
+.jb-clock{font-variant-numeric:tabular-nums}
+.jb-eta{color:var(--gold-ink);font-variant-numeric:tabular-nums}
+/* The one thing the old drawer could not say: it has gone quiet. An
+   install that is working and an install that has hung looked identical. */
+.jb-hush{display:inline-flex;align-items:center;gap:6px;color:var(--amber-ink)}
+.jb-hush::before{
+  content:"";flex:none;width:7px;height:7px;background:var(--amber-ink);
+  transform:rotate(45deg);
+}
+html.js-motion .jobcard.hushed .jb-hush::before{
+  animation:sevPulse 1.5s ease-in-out infinite;
+}
+
+/* --- how much of it there is ------------------------------------ */
+
+.jb-scale{display:flex;flex-direction:column;gap:5px;margin-top:8px}
+.jb-tally{display:flex;align-items:flex-end;gap:2px;height:11px;overflow:hidden}
+.jb-tally b{
+  flex:1 1 0;min-width:2px;height:6px;background:var(--rule);
+  clip-path:polygon(50% 0,100% 40%,79% 100%,21% 100%,0 40%);
+  transition:background .3s ease,height .3s ease;
+}
+.jb-tally b.on{background:var(--rose);height:11px}
+.jobcard.done .jb-tally b.on{background:var(--sage)}
+.jobcard.error .jb-tally b.on{background:var(--danger)}
+.jb-nums{
+  display:flex;gap:9px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;
+}
+.jb-count{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums}
+.jb-haul{color:var(--faint)}
+
+/* --- the log ---------------------------------------------------- */
+
+.jb-logwrap{margin-top:9px}
+.jb-logtog{
+  display:flex;align-items:center;gap:6px;width:100%;padding:5px 9px;
+  border:0;cursor:pointer;text-align:left;
+  background:var(--slab-bg);color:var(--slab-fg);
+  font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.jb-logtog svg{flex:none;transition:transform var(--t-move) var(--ease-out)}
+.jb-logtog.shut svg{transform:rotate(-90deg)}
+.jb-logtog:focus-visible{outline:3px solid var(--rose);outline-offset:2px}
+.jb-log{
+  max-height:148px;overflow:auto;overscroll-behavior:contain;
+  padding:8px 10px;background:#120E15;color:#D9CFD6;
+  border:2px solid var(--slab-bg);border-top:0;
+  font-family:var(--mono);font-size:11px;line-height:1.5;
+}
+.jb-log .ln{white-space:pre-wrap;overflow-wrap:anywhere}
+.jb-log .ln.warn{color:#F3CE7A}
+.jb-log .ln.bad{color:#FF97A5}
+.jb-log:focus-visible{outline:3px solid var(--rose);outline-offset:-3px}
+/* Lines are appended once and only once now, so this plays once per line
+   instead of replaying on every frame — and it moves, it does not fade,
+   because a stalled timeline must never be able to leave text invisible. */
+html.js-motion .jb-log .ln{animation:jb-lineIn .2s var(--ease-out) both}
+@keyframes jb-lineIn{
+  from{transform:translateX(-7px)}
+  to{transform:none}
+}
+
+/* --- small screens ---------------------------------------------- */
+
+@media (max-width:460px){
+  .jb-rail{height:44px}
+  .jb-art{width:22px;height:22px;bottom:17px}
+  .jb-haul{display:none}
+  .jb-log{max-height:120px}
+}
+
+/* --- reduced motion ---------------------------------------------- */
+
+@media (prefers-reduced-motion:reduce){
+  .jb-rope-done,.jb-charm,.jb-knot,.jb-tally b,.jb-hdrrope > i,
+  .jb-hdrrope,.jb-logtog svg{transition:none}
+  html.js-motion .jobcard,
+  html.js-motion .jb-log .ln,
+  html.js-motion .jobcard.running .jb-mon,
+  html.js-motion .jobcard.running .jb-knot.now,
+  html.js-motion .jobcard.running:not(.seeking) .jb-rope-done,
+  html.js-motion .jobcard.seeking .jb-rope-done,
+  html.js-motion .jobcard.hushed .jb-hush::before,
+  html.js-motion #drawer.busy .jb-hdrrope > i{animation:none}
+  /* With nothing sweeping it, a fixed length of gold would be a claim about
+     progress that no frame has made. Show none of it. */
+  .jobcard.seeking .jb-rope-done{width:0 !important}
+}
+
+/* The log's line counter. It sits beside the toggle, so it has to read as a
+   quiet annotation rather than as a second control. */
+.jb-logn{
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+  color:var(--faint);font-weight:600;white-space:nowrap;
+}
+
+/* ============================================================
+   THE ENDLESS FEED — catalogue browsing that keeps going
+   ============================================================ */
+.feed-foot{
+  display:flex;justify-content:center;align-items:center;
+  padding:20px 0 6px;min-height:56px;
+}
+.feed-foot .note{width:100%}
+/* Watched by an IntersectionObserver, 700px ahead of itself, so the next
+   page is already arriving by the time the last row is on screen. Zero
+   height on purpose: it is a tripwire, not a spacer. */
+.feed-sentinel{height:1px;width:100%;pointer-events:none}
+.feed-end{
+  display:flex;align-items:center;gap:12px;color:var(--faint);
+  font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+}
+/* A closing mark, so the bottom of a catalogue reads as an ending rather
+   than as a list that failed to load any more. */
+.feed-end::before,.feed-end::after{
+  content:"";height:2px;width:34px;flex:none;
+  background:linear-gradient(90deg,transparent,var(--rule));
+}
+.feed-end::after{background:linear-gradient(90deg,var(--rule),transparent)}
+.feed-count{margin-left:auto}

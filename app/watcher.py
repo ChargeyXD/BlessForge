@@ -35,10 +35,8 @@ def load() -> dict:
 
 
 def _save(state: dict) -> None:
-    try:
-        _path().write_text(json.dumps(state, indent=2))
-    except OSError as e:
-        log.warning("could not save update state: %s", e)
+    if not config.write_state(_path(), json.dumps(state, indent=2)):
+        log.warning("could not save update state")
 
 
 async def check_all() -> dict:

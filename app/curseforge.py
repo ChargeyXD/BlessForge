@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 import urllib.parse
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -570,4 +571,248 @@ async def match_fingerprints(prints: list[int]) -> dict[int, dict]:
                 "mod_id": match.get("id"),
                 "file": _slim_file(f),
             }
+    return out
+
+
+# --- project detail ----------------------------------------------------
+#
+# What the detail popup on a mod row reads. Two things here are deliberate
+# and worth not undoing:
+#
+#  * Every URL that reaches the browser as an `href` is filtered to http(s).
+#    `sourceUrl`, `issuesUrl` and `wikiUrl` are typed by a third-party
+#    project author into a form; `javascript:` in one of them is a script
+#    the operator never wrote, running inside the operator's control panel.
+#  * The long description is HTML written by that same third party, and it
+#    NEVER crosses to the browser as markup. It is flattened here into a
+#    list of typed text blocks, so the front end is handed data it can only
+#    put through `textContent`. That is stricter than a sanitiser, and it
+#    has no allow-list for a later change to get wrong.
+
+_SAFE_SCHEMES = ("http://", "https://")
+
+_BLOCK_CHARS = 1400          # per block, after whitespace collapse
+_MAX_BLOCKS = 140            # a README-sized description, not a novel
+_MAX_HTML = 400_000          # refuse to parse an absurd body at all
+
+
+def safe_url(url: Any) -> str | None:
+    """An upstream URL, or None unless it is plainly http(s)."""
+    if not url:
+        return None
+    text = str(url).strip()
+    return text if text.lower().startswith(_SAFE_SCHEMES) else None
+
+
+_SKIP_TAGS = {"script", "style", "noscript", "iframe", "svg", "head",
+              "template", "object", "embed"}
+_HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+_BLOCK_TAGS = {
+    "p", "div", "section", "article", "header", "footer", "main", "aside",
+    "ul", "ol", "dl", "table", "thead", "tbody", "tr", "blockquote", "pre",
+    "figure", "figcaption", "li", "dt", "dd", "details", "summary", "center",
+    *_HEADINGS,
+}
+
+
+class _Flatten(HTMLParser):
+    """Third-party HTML in, typed text blocks out. No markup survives.
+
+    Block kinds are the handful the popup can draw: `h` (with a level),
+    `p`, `li`, `quote`, `code` and `rule`. Anything else collapses into a
+    paragraph, which is the right failure: an unusual tag loses its styling
+    and keeps its words.
+
+    Links are flattened to their text on purpose. A description is the one
+    place an author could put an arbitrary destination in front of an
+    operator, and nothing in this popup is worth that -- the project's own
+    source/issues/wiki links come from named fields instead, filtered.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[dict] = []
+        self._buf: list[str] = []
+        self._kind = "p"
+        self._level = 0
+        self._skip = 0
+
+    # -- internals
+    def _flush(self) -> None:
+        text = " ".join("".join(self._buf).split())
+        self._buf = []
+        if not text or len(self.blocks) >= _MAX_BLOCKS:
+            return
+        block: dict[str, Any] = {"t": self._kind, "text": text[:_BLOCK_CHARS]}
+        if self._kind == "h":
+            block["level"] = self._level or 2
+        self.blocks.append(block)
+
+    def _open(self, tag: str) -> None:
+        self._flush()
+        if tag in _HEADINGS:
+            self._kind, self._level = "h", _HEADINGS[tag]
+        elif tag in ("li", "dt", "dd"):
+            self._kind, self._level = "li", 0
+        elif tag == "blockquote":
+            self._kind, self._level = "quote", 0
+        elif tag == "pre":
+            self._kind, self._level = "code", 0
+        else:
+            self._kind, self._level = "p", 0
+
+    # -- HTMLParser
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        tag = tag.lower()
+        if tag in _SKIP_TAGS:
+            self._skip += 1
+            return
+        if self._skip:
+            return
+        if tag == "br":
+            self._flush()
+        elif tag == "hr":
+            self._flush()
+            if len(self.blocks) < _MAX_BLOCKS:
+                self.blocks.append({"t": "rule"})
+        elif tag in ("td", "th"):
+            if self._buf:
+                self._buf.append(" · ")
+        elif tag in _BLOCK_TAGS:
+            self._open(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in _SKIP_TAGS:
+            self._skip = max(0, self._skip - 1)
+            return
+        if self._skip:
+            return
+        if tag in _BLOCK_TAGS:
+            self._flush()
+            self._kind, self._level = "p", 0
+
+    def handle_data(self, data: str) -> None:
+        if self._skip or not data:
+            return
+        self._buf.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._flush()
+
+
+def description_blocks(html_text: Any) -> list[dict]:
+    """Flatten a CurseForge description into blocks the front end can draw."""
+    if not html_text or not isinstance(html_text, str):
+        return []
+    parser = _Flatten()
+    try:
+        parser.feed(html_text[:_MAX_HTML])
+        parser.close()
+    except Exception:
+        # A malformed body is worth losing; it is not worth failing on.
+        pass
+    return parser.blocks[:_MAX_BLOCKS]
+
+
+def _gallery(m: dict) -> list[dict]:
+    out = []
+    for shot in (m.get("screenshots") or [])[:8]:
+        full = safe_url(shot.get("url")) or safe_url(shot.get("thumbnailUrl"))
+        if not full:
+            continue
+        out.append({
+            "url": full,
+            "thumb": safe_url(shot.get("thumbnailUrl")) or full,
+            "title": shot.get("title") or "",
+            "description": shot.get("description") or "",
+        })
+    return out
+
+
+_LOADER_NAME = {v: k for k, v in LOADER_TYPE.items() if v}
+
+
+async def get_description(mod_id: int) -> str:
+    """The project page's long description, as raw HTML."""
+    data = await _get(f"/v1/mods/{mod_id}/description")
+    return data if isinstance(data, str) else ""
+
+
+async def project_detail(
+    mod_id: int,
+    *,
+    game_version: str | None = None,
+    mod_loader: str | None = None,
+) -> dict:
+    """Everything the detail popup shows for one CurseForge project.
+
+    The project itself is fetched first and is fatal if it fails -- without
+    it there is nothing to draw. The description and the build on offer are
+    then fetched together and are both optional: a project page with no
+    description, or no build published for this (Minecraft, loader) pair, is
+    a normal state and not an error to put in front of anyone.
+    """
+    raw = await _get(f"/v1/mods/{mod_id}")
+    if not raw:
+        raise CurseForgeError(f"CurseForge has no project {mod_id}")
+
+    async def _body() -> list[dict]:
+        try:
+            return description_blocks(await get_description(mod_id))
+        except Exception:
+            return []
+
+    async def _offer() -> dict | None:
+        try:
+            files = await list_files(
+                mod_id, game_version=game_version, mod_loader=mod_loader,
+                page_size=20,
+            )
+        except Exception:
+            return None
+        return files[0] if files else None
+
+    body, offer = await asyncio.gather(_body(), _offer())
+
+    links = raw.get("links") or {}
+    logo = raw.get("logo") or {}
+    indexes = raw.get("latestFilesIndexes") or []
+
+    out = _slim_project(raw)
+    out.pop("latest_files", None)
+    out.update({
+        "kind": "mod",
+        "url": safe_url(links.get("websiteUrl")),
+        "logo_full": safe_url(logo.get("url")) or out.get("logo"),
+        "source_url": safe_url(links.get("sourceUrl")),
+        "issues_url": safe_url(links.get("issuesUrl")),
+        "wiki_url": safe_url(links.get("wikiUrl")),
+        "discord_url": None,
+        "donation_urls": [],
+        # CurseForge's Core API publishes no licence on a project at all --
+        # it is on the web page and not in the API. Saying so is better than
+        # an empty row, which reads as "we failed to load it".
+        "license": None,
+        "follows": raw.get("thumbsUpCount"),
+        "date_created": raw.get("dateCreated"),
+        "date_modified": raw.get("dateModified"),
+        "date_released": raw.get("dateReleased"),
+        # CurseForge states no client/server split anywhere in its API. The
+        # front end already knows to say "side unknown" for that.
+        "client_side": None,
+        "server_side": None,
+        "loaders": sorted({
+            _LOADER_NAME[i["modLoader"]] for i in indexes
+            if i.get("modLoader") in _LOADER_NAME
+        }),
+        "game_versions": sorted({
+            i["gameVersion"] for i in indexes if i.get("gameVersion")
+        }, reverse=True)[:40],
+        "gallery": _gallery(raw),
+        "body_blocks": body,
+        "body_format": "html",
+        "offer": offer,
+    })
     return out
