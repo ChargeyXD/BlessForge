@@ -434,8 +434,15 @@ export async function render(ctx) {
     showEditor(ctx, doc, () => open(path, { quiet: true }));
   }
 
-  await loadUsage();
+  // Sizing the sidebar walks the whole server directory through Crafty --
+  // ten seconds on a 253-mod instance -- while the listing this tab exists
+  // for comes back in under thirty milliseconds. Awaiting both in turn left
+  // the tab on its skeleton for fourteen seconds. loadUsage() already paints
+  // its own placeholder and repaints when it lands, so let it run alongside
+  // rather than in front.
+  const sizing = loadUsage().catch(() => {});
   await open(path);
+  sizing.then(() => {});
   return { node };
 }
 
