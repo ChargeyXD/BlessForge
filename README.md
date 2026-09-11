@@ -878,7 +878,7 @@ immediately rather than waiting out a DNS timeout on a font.
 
 ```bash
 for t in test_loader_detection test_job_stream test_install_decisions \
-         test_roulette test_boot_verdict; do
+         test_roulette test_boot_verdict test_fleet_state; do
   python dev/tools/$t.py | tail -1
 done
 python dev/tools/check_frontend.py
