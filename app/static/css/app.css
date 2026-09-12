@@ -562,6 +562,53 @@ html.js-motion .modal{animation:pop .24s cubic-bezier(.2,.9,.3,1.3) both}
   body.rail-open #shell::after{
     content:"";position:fixed;inset:0;background:rgba(20,12,22,.5);z-index:calc(var(--z-nav) - 2);
   }
+
+  /* THE PAGE BEHIND THE DRAWER MUST NOT SCROLL.
+     ------------------------------------------------------------
+     The scrim fix above made every tap land on the drawer. A tap
+     was never the whole story: a DRAG that starts on the drawer
+     chains through to the document, because the rail is an
+     overlay and not itself a scroller. The page slides away under
+     the finger while the drawer stays put, which is what "the
+     sidebar is frozen" actually looks like. A screenshot cannot
+     show it and a hit test cannot either -- both are about a
+     single point, and this is about movement.
+
+     `position:fixed` rather than `overflow:hidden` because iOS
+     Safari honours the first and ignores the second for touch
+     scrolling. app.js supplies the `top` offset so the page does
+     not jump to 0 while it is locked, and restores the scroll on
+     close. */
+  body.scroll-locked{
+    position:fixed;left:0;right:0;width:100%;
+    overflow:hidden;overscroll-behavior:none;
+  }
+
+  /* A long rail has to be reachable on a short phone -- and it has to
+     stop its own scrolling from chaining out to the page the moment it
+     hits an end, which is the same fault one level down. */
+  body.rail-open #rail{overflow-y:auto;overscroll-behavior:contain}
+  .rail-fleet{overscroll-behavior:contain}
+
+  /* Clearly a drawer rather than a panel that happens to be over the
+     page: it comes off the left edge with a lip, and its own shadow
+     does the separating. */
+  body.rail-open #rail{
+    border-right:var(--edge) solid var(--band-rule);
+    box-shadow:18px 0 44px rgba(0,0,0,.45);
+  }
+
+  /* The rail footer's two controls are .btn.sm, which is a 36px target --
+     fine for a mouse, under every touch guideline for a finger, and these
+     two sit at the very bottom edge of the drawer where a thumb is least
+     accurate. Full size on touch only; the desktop rail keeps its compact
+     footer.
+     Specificity matters here: `.btn.icon.sm` is (0,3,0), so a plain
+     `.rail-foot .btn` at (0,2,0) loses to it and the icon button stays
+     36px. These have to name the same classes to outrank it. */
+  .rail-foot .btn.sm{min-height:44px}
+  .rail-foot .btn.icon.sm{width:44px;min-height:44px}
+
   #railtoggle{display:inline-flex!important}
   .fm{grid-template-columns:minmax(0,1fr)}
   .fm-side{display:flex;flex-wrap:wrap;overflow:hidden}

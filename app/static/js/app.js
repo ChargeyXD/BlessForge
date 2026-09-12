@@ -75,6 +75,43 @@ const routes = [
   },
 ];
 
+/* --- the mobile drawer ---------------------------------------
+   Opening it has to LOCK THE PAGE BEHIND IT, and that is not a
+   nicety. The rail is 300px of fixed overlay; the document
+   behind it is still scrollable; and the rail itself is not a
+   scroller. So on a touchscreen a drag that starts anywhere on
+   the open drawer chains straight through to the document and
+   scrolls the PAGE, while the drawer sits still under the
+   finger. It reads exactly like a frozen drawer, and it is
+   invisible to both a screenshot and a hit test -- every point
+   inside the drawer really is the topmost element, and every tap
+   really does land. Only a drag shows it.
+
+   `position:fixed` on body rather than `overflow:hidden`,
+   because iOS Safari ignores overflow:hidden on the body for
+   touch scrolling. Fixing it needs the scroll offset preserved
+   and restored, or dismissing the drawer jumps you to the top of
+   a long fleet -- which is its own bug, and the reason the
+   offset is captured rather than assumed to be zero.        */
+let railScrollY = 0;
+
+export function setRailOpen(open) {
+  const body = document.body;
+  const was = body.classList.contains('rail-open');
+  if (open === was) return;
+  if (open) {
+    railScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    body.classList.add('rail-open', 'scroll-locked');
+    body.style.top = `-${railScrollY}px`;
+  } else {
+    body.classList.remove('rail-open', 'scroll-locked');
+    body.style.top = '';
+    // `instant`: a smooth scroll here animates the page back up behind a
+    // drawer that has already gone, which looks like the app lurching.
+    window.scrollTo({ top: railScrollY, behavior: 'instant' });
+  }
+}
+
 let currentView = null;
 
 export function go(path, { replace } = {}) {
@@ -115,7 +152,7 @@ async function route() {
   main.classList.remove('routing');
   void main.offsetWidth;             // restart the entrance, not resume it
   main.classList.add('routing');
-  document.body.classList.remove('rail-open');
+  setRailOpen(false);
 
   let mod;
   try {
@@ -610,7 +647,7 @@ function buildShell() {
       onclick: (e) => {
         if (!document.body.classList.contains('rail-open')) return;
         if (e.target.closest('#rail, #railtoggle')) return;
-        document.body.classList.remove('rail-open');
+        setRailOpen(false);
       },
     },
       buildRail(),
@@ -619,7 +656,8 @@ function buildShell() {
           h('button.btn.icon.sm.ghost', {
             id: 'railtoggle', 'aria-label': 'Show the server list',
             style: { display: 'none' },
-            onclick: () => document.body.classList.toggle('rail-open'),
+            onclick: () => setRailOpen(
+              !document.body.classList.contains('rail-open')),
           }, icon('menu', 16)),
           h('div.crumbs', { id: 'crumbs' }),
           h('div.btnrow', { id: 'topactions' }),
@@ -722,7 +760,7 @@ async function boot() {
 // the button that opened it is underneath the open drawer.
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && document.body.classList.contains('rail-open')) {
-    document.body.classList.remove('rail-open');
+    setRailOpen(false);
     document.getElementById('railtoggle')?.focus();
   }
 });

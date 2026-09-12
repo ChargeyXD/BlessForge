@@ -1067,6 +1067,54 @@ console errors, both themes.
 
 ---
 
+## 5J. The mobile drawer, and the half of it a hit test cannot see
+
+The CasaOS instance found the first half and fixed it in `6a356a4`: the
+scrim was `body.rail-open::after`, so its z-index competed with `#shell`'s 2
+rather than with the rail's 60 — it painted over the open drawer and
+swallowed every tap. That diagnosis is right, the fix is right, and
+`v21-rail-mobile.mjs` is the right kind of test for it: hit-testing rather
+than screenshotting, because the drawer looks perfect in a picture.
+
+It was still reported as frozen, and the reason is that every check in that
+suite is about a **single point** — is this pixel the topmost element, does
+this tap land. The remaining fault was about **movement**.
+
+The rail is a fixed overlay and is not itself a scroller, and the document
+behind it was never locked. So a drag starting anywhere on the open drawer
+chained straight through to the page: the background slid away under the
+finger while the drawer sat still. From the other side of the screen that is
+indistinguishable from a drawer that has seized up, and neither a screenshot
+nor a hit test can see it.
+
+`setRailOpen` now owns the drawer's whole state — the class, the lock, and
+the scroll offset — and every one of the five places that used to poke
+`rail-open` directly goes through it. `position:fixed` on body rather than
+`overflow:hidden`, because iOS Safari honours the first and ignores the
+second for touch scrolling; the offset is captured and restored, or
+dismissing the drawer would jump you to the top of a long fleet. The rail
+itself became a scroller with `overscroll-behavior:contain`, which is the
+same fault one level down.
+
+Measured: page at 156 → open → `position:fixed`, `top:-156px` → an attempt
+to scroll to 2000 moves nothing → close → back to 156 exactly, across three
+consecutive runs.
+
+Two smaller things found with it: the rail footer's theme toggle and
+Activity button were 36px touch targets at the very bottom edge of the
+drawer, where a thumb is least accurate (`.btn.icon.sm` is (0,3,0), so the
+obvious `.rail-foot .btn` at (0,2,0) loses to it — the override has to name
+the same classes); and their test's `open()` helper poked `rail-open`
+directly, which now leaves the body fixed with no way back, so it drives the
+toggle instead.
+
+Seven checks added to `v21-rail-mobile.mjs` covering the drag dimension.
+They cannot be run from the Windows dev box — it has neither Docker nor
+puppeteer — so they are verified there by the equivalent assertions in a
+real browser and are **unrun on the box until someone runs that suite**.
+
+---
+
 ## 6. Earlier sessions (8 commits, `23b38e7..c62d607`)
 
 History. Kept for the traps it records, which are all still live.
