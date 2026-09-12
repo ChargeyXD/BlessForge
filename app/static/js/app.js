@@ -603,7 +603,16 @@ function buildShell() {
   document.body.append(
     h('div.grain', { 'aria-hidden': 'true' }),
     h('canvas#petals', { 'aria-hidden': 'true' }),
-    h('div#shell',
+    h('div#shell', {
+      // The scrim is #shell's own ::after, so a tap on the dimmed area lands
+      // on #shell itself. Without this the drawer could only be dismissed by
+      // navigating: once it is open it covers the toggle that opened it.
+      onclick: (e) => {
+        if (!document.body.classList.contains('rail-open')) return;
+        if (e.target.closest('#rail, #railtoggle')) return;
+        document.body.classList.remove('rail-open');
+      },
+    },
       buildRail(),
       h('div#col',
         h('header#topbar',
@@ -709,6 +718,15 @@ async function boot() {
 
 /* A global keyboard route: '/' focuses the nearest search box, which is the
    one shortcut a list-heavy tool genuinely earns. */
+// Escape closes the rail drawer. A keyboard user has no scrim to tap, and
+// the button that opened it is underneath the open drawer.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.body.classList.contains('rail-open')) {
+    document.body.classList.remove('rail-open');
+    document.getElementById('railtoggle')?.focus();
+  }
+});
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
   const tag = document.activeElement?.tagName;

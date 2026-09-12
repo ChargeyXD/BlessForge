@@ -551,7 +551,15 @@ html.js-motion .modal{animation:pop .24s cubic-bezier(.2,.9,.3,1.3) both}
     box-shadow:14px 0 30px rgba(0,0,0,.35);width:min(300px,84vw);flex-basis:auto;
   }
   body.rail-open #rail{transform:none}
-  body.rail-open::after{
+  /* The scrim has to live in #shell's stacking context, not body's.
+     #shell is position:relative z-index:2, so everything inside it -- the
+     rail at 60, the topbar at 59, this at 58 -- is ranked against its
+     siblings there and #shell as a whole is ranked against body at 2. Hung
+     off body, the scrim's 58 beat the shell's 2 and it painted over the open
+     rail, dimming it and swallowing every tap: the drawer opened and then
+     could not be touched. Inside #shell the three numbers mean what they
+     were written to mean, scrim under topbar under rail. */
+  body.rail-open #shell::after{
     content:"";position:fixed;inset:0;background:rgba(20,12,22,.5);z-index:calc(var(--z-nav) - 2);
   }
   #railtoggle{display:inline-flex!important}
