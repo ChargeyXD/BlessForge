@@ -81,7 +81,7 @@ export async function render(ctx) {
 
     mount(barHost, h('div.listbar',
       h('input.inp.grow', {
-        type: 'search', 'data-search': '1', value: query,
+        type: 'search', 'data-keep': 'mods-filter', value: query,
         placeholder: `Search ${all.length} ${dir}…`,
         'aria-label': `Search ${dir}`,
         oninput: debounce((e) => { query = e.target.value; paint(); }, 180),
@@ -528,13 +528,13 @@ export function openModBrowser(ctx, onDone, initial = {}) {
         h('input.inp.grow', {
           type: 'search', placeholder: 'Search mods…', autofocus: true,
           value: query, 'aria-label': 'Search mods',
-          oninput: (e) => { query = e.target.value; page = 0; search(); },
+          oninput: (e) => { query = e.target.value; search(); },
         }),
         segmented([
           { value: 'curseforge', label: 'CurseForge' },
           { value: 'modrinth', label: 'Modrinth' },
         ], source, (v) => {
-          source = v; prefs.set('mods.source', v); page = 0; search();
+          source = v; prefs.set('mods.source', v); search();
         }, 'Source'),
       ),
       h('p.muted', { style: { fontSize: '12.5px', marginBottom: '10px' } },

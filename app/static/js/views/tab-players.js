@@ -85,7 +85,7 @@ export async function render(ctx) {
         h('div',
           h('div.listbar',
             h('input.inp.grow', {
-              type: 'search', 'data-search': '1', value: query,
+              type: 'search', 'data-keep': 'player-filter', value: query,
               placeholder: `Search ${c.known} known players…`,
               'aria-label': 'Search players',
               oninput: debounce((e) => { query = e.target.value; paint(); }, 160),

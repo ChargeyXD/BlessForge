@@ -27,7 +27,7 @@ export are all verified end to end against them (§5D).
 |---|---|
 | Deployed | `http://<host>:8710`, healthy |
 | Version | 2.1.0, ~131 routes |
-| Tests | **171 backend checks** across six files, **197 front-end checks** (§9) |
+| Tests | **171 backend checks** across six files, **198 front-end checks** (§9) |
 | Servers in Crafty | **five**, §5D and §5F. `Perfect World` :25565 (NeoForge, 100), `Cozy Experience` :25566 (Fabric, 245), `Lucky Dip` :25567 (rolled, 44), `Roulette RB5-YR9-BC` :25568 (rolled, 72), `Tensura` :25569 (Forge 1.19.2, 223 — will not boot here, §5F) |
 
 **Committed on `main`.** `1d00eb8` is the rebuild and the six new features and
@@ -1115,6 +1115,102 @@ real browser and are **unrun on the box until someone runs that suite**.
 
 ---
 
+## 5K. Three bugs in the search boxes and the console (2026-09-16)
+
+### 5K.1 The add-mod search that threw on every keystroke
+
+`page` was removed from `openModBrowser` when that browser became an
+endless feed, and two assignments to it survived: one in the search input's
+`oninput`, one in the CurseForge/Modrinth switch. An ES module is always
+strict, so assigning to an undeclared name is a **ReferenceError**, not an
+implicit global. Both handlers threw before doing anything, which is
+exactly how it was reported -- typing did nothing and the switch did
+nothing.
+
+`node --input-type=module --check` accepts the file: this is a runtime
+error, not a parse error, and it waits until that line executes.
+`check_frontend.check_scope` now catches it. The scanner blanks comments
+and string bodies first, because an SVG attribute inside a template
+literal looks exactly like an assignment, and it is verified both ways --
+zero false positives on the tree as it stands, and it catches the real bug
+when it is put back.
+
+### 5K.2 Every filter bar threw the caret out of itself
+
+Reported as the search bar cancelling itself on every character.
+
+Every filter bar in the app repaints on `input`, because the thing beside
+the box genuinely changes as you type -- "All 245" becomes "All 3". `mount`
+is clear-then-append, so the `<input>` was destroyed and rebuilt with the
+bar, and **removing a focused element blurs it**. The value survived, being
+re-rendered from state; the focus did not. One character, then the caret
+left.
+
+`mount` now restores focus when the element that had it was a descendant
+of the container being rebuilt, along with the **selection range** --
+putting the caret back at the end would make editing the middle of a query
+impossible, which is a subtler version of the same bug. Each box carries a
+stable `data-keep` so it can be found again after the rebuild.
+
+Making it the default rather than an opt-in helper is the honest call:
+every filter bar needed it, and the next one somebody writes will too. The
+guard is narrow -- focus is only restored when the active element was
+inside THIS container -- so one panel's repaint can never steal the caret
+from another.
+
+Verified by typing `sodium` a character at a time: focus kept on all six,
+caret advanced correctly each time, and an edit in the middle of a query
+landed where it should.
+
+### 5K.3 The switch that worked and did not look like it
+
+`segmented` drew `aria-pressed` from the value passed at build time, which
+is correct only for callers that repaint the whole bar. The add-mod
+browser does not -- its bar is built once inside the modal and only the
+results repaint -- so switching CurseForge to Modrinth fetched the right
+catalogue while the control stayed visibly on CurseForge. The results
+changed and the switch did not, which reads as a switch that does nothing.
+
+It now moves on click, optimistically, and a caller that does repaint
+renders afterwards and wins.
+
+### 5K.4 The console arrived in clumps
+
+Crafty exposes no push channel, so the console is a poll-and-diff, and the
+interval was a flat **1.5s**. A booting server writes hundreds of lines
+into a window where nothing is sent at all, so the pane caught up in jumps
+rather than following.
+
+Measured first: one poll against a Crafty on the same machine costs about
+**19ms and under a kilobyte**. The interval was conservatism, not cost.
+
+It is adaptive now -- `CONSOLE_POLL_FAST` (0.2s) while output is flowing,
+easing off to `CONSOLE_POLL_IDLE` (0.6s) when it stops, and snapping back
+to fast the moment a line appears, because output arrives in bursts and the
+line that ends a quiet spell is the best predictor there is of the next
+one. Whether the server is running is asked for on a clock rather than
+every Nth poll; at the fast interval, every fifth pass would be once a
+second.
+
+| | before | after |
+|---|---|---|
+| while output is flowing | up to 1500ms | ~100-300ms |
+| first line after quiet | up to 1500ms | ~600ms worst |
+
+**What would make it truly push-based, and why it is not done here.** The
+container mounts only `/data`; it cannot see Crafty's server directories,
+so `logs/latest.log` cannot be tailed. Mounting Crafty's server root
+read-only and following the file would remove the poll entirely. That is a
+deployment change and an untestable code path from this box, so it is
+written down rather than shipped blind.
+
+`dev/mock/crafty.py` gained a `POST /__inject` seam for this -- it is not
+part of Crafty's API, it is what makes "does a line reach the browser
+promptly" a question the harness can answer at all. Without it the console
+could only be eyeballed, which is how a 1.5s interval went unnoticed.
+
+---
+
 ## 6. Earlier sessions (8 commits, `23b38e7..c62d607`)
 
 History. Kept for the traps it records, which are all still live.
@@ -1480,7 +1576,7 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 171 backend + 197 front-end checks
+# the whole suite: 171 backend + 198 front-end checks
 cd ~/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict test_fleet_state; do
   .venv/bin/python dev/tools/$t.py | tail -1

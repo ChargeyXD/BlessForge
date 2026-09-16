@@ -263,7 +263,7 @@ export async function render() {
 
       h('div.listbar', { style: { position: 'static' } },
         h('input.inp.grow', {
-          type: 'search', placeholder: 'Search decisions…',
+          type: 'search', placeholder: 'Search decisions…', 'data-keep': 'decision-filter',
           'aria-label': 'Search decisions',
           oninput: (e) => { listFilter = e.target.value; paintList(); },
         }),

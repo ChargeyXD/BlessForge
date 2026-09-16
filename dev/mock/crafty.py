@@ -200,6 +200,19 @@ async def stats(sid: str):
     return ok(STATS.get(sid, {}))
 
 
+@app.post("/__inject")
+async def inject(body: dict = Body(...)):
+    """Append a line to the log, so console latency can be measured.
+
+    Not part of Crafty's API -- it is the seam that makes "does a line
+    reach the browser promptly" a question this harness can answer at all.
+    Without it the console can only be eyeballed, which is how a 1.5s
+    poll interval went unnoticed.
+    """
+    LOG.append(str(body.get("line") or ""))
+    return ok({"lines": len(LOG)})
+
+
 @app.get("/api/v2/servers/{sid}/logs")
 async def logs(sid: str, raw: str = "true", file: str = ""):
     return ok(LOG if STATS.get(sid, {}).get("running") else [])

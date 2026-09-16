@@ -60,7 +60,7 @@ export async function render(ctx) {
 
     mount(barHost, h('div.listbar',
       h('input.inp.grow', {
-        type: 'search', 'data-search': '1', value: query,
+        type: 'search', 'data-keep': 'config-filter', value: query,
         placeholder: `Search ${data.count} config files…`,
         'aria-label': 'Search config files',
         oninput: debounce((e) => { query = e.target.value; paint(); }, 160),

@@ -97,8 +97,66 @@ export function clear(el) {
 }
 
 export function mount(el, ...kids) {
+  /* Focus survives the rebuild, when the focused thing was inside what is
+     being rebuilt. See the note on `mountKeepingFocus` below -- this used
+     to be an opt-in helper, and making it the default is the honest call:
+     every filter bar in the app repaints on `input`, so every one of them
+     needed it, and the next one somebody writes will too.
+
+     The guard is narrow on purpose. Focus is only restored when the
+     active element was a descendant of THIS container, so a repaint of
+     one panel can never steal the caret out of another, and a caller that
+     wants focus somewhere else still wins by moving it afterwards. */
+  const active = document.activeElement;
+  if (!active || active === el || !el.contains(active)) {
+    clear(el);
+    append(el, kids);
+    return el;
+  }
+  return mountKeepingFocus(el, ...kids);
+}
+
+/* A repaint that does not throw the caret out of the box you are typing in.
+   ------------------------------------------------------------
+   Every filter bar in this app repaints on `input`, because the thing
+   beside the box genuinely changes as you type -- "All 245" becomes "All
+   3", a segment appears, a count moves. `mount` is clear-then-append, so
+   the <input> is destroyed and rebuilt with it, and removing a focused
+   element blurs it. The value survives (it is re-rendered from state) but
+   the FOCUS does not: you type one character, the caret leaves, and the
+   next character goes nowhere. Reported, accurately, as the search bar
+   cancelling itself on every keystroke.
+
+   Restoring focus is not enough on its own -- putting the caret back at
+   the end would make it impossible to edit the middle of a query, which
+   is a subtler version of the same bug -- so the selection range comes
+   back too.
+
+   Give the input a stable `data-keep` and it is found again after the
+   rebuild. Without one, an input that happens to be reused by identity
+   still gets its focus back, which covers the simple cases for free. */
+export function mountKeepingFocus(el, ...kids) {
+  const active = document.activeElement;
+  const inside = !!active && el.contains(active) && active !== el;
+  const key = inside ? active.getAttribute('data-keep') : null;
+  let range = null;
+  if (inside) {
+    try { range = [active.selectionStart, active.selectionEnd, active.selectionDirection]; }
+    catch { range = null; }          // number/email inputs throw on selectionStart
+  }
+
   clear(el);
   append(el, kids);
+
+  if (!inside) return el;
+  const next = active.isConnected ? active
+    : (key ? el.querySelector(`[data-keep="${CSS.escape(key)}"]`) : null);
+  if (!next) return el;
+  next.focus({ preventScroll: true });
+  if (range && typeof next.setSelectionRange === 'function') {
+    try { next.setSelectionRange(range[0], range[1], range[2] || 'none'); }
+    catch { /* not a text input any more; focus alone is the win */ }
+  }
   return el;
 }
 
@@ -894,12 +952,33 @@ export function toggle(label, checked, onchange, { disabled, help } = {}) {
 }
 
 export function segmented(options, value, onchange, ariaLabel) {
-  return h('div.seg', { role: 'group', 'aria-label': ariaLabel || 'Options' },
+  /* The pressed segment moves on click, here, rather than waiting for the
+     caller to re-render the bar it lives in.
+
+     It used to be drawn purely from the `value` passed at build time,
+     which is correct only for callers that repaint the whole bar. The
+     add-mod browser does not -- its bar is built once inside the modal and
+     only the RESULTS repaint -- so switching CurseForge to Modrinth
+     fetched the right catalogue and the control stayed visibly on
+     CurseForge. The results changed and the switch did not, which reads as
+     a switch that does nothing.
+
+     Optimistic, and safe to be: a caller that does repaint renders after
+     this and wins, and a caller that rejects the change can pass the old
+     value back the same way. */
+  const group = h('div.seg', { role: 'group', 'aria-label': ariaLabel || 'Options' },
     ...options.map((o) => h('button', {
       type: 'button',
       'aria-pressed': String(o.value === value),
-      onclick: () => onchange(o.value),
+      onclick: (e) => {
+        const me = e.currentTarget;
+        for (const b of group.children) {
+          b.setAttribute('aria-pressed', String(b === me));
+        }
+        onchange(o.value);
+      },
     }, o.label)));
+  return group;
 }
 
 export function debounce(fn, ms = 260) {

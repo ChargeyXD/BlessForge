@@ -1166,15 +1166,25 @@ async def console_stream(server_id: str, source: str = "auto") -> StreamingRespo
     async def stream():
         seen: list[str] = []
         idle = 0
-        tick = 0
         running = False
+        # Adaptive. A flat 1.5s interval is why output arrived in clumps:
+        # a booting server writes hundreds of lines into a window where
+        # nothing is sent at all, so the console caught up in jumps rather
+        # than following. This runs fast while output is flowing and backs
+        # off when it stops, which puts the cost exactly where the value
+        # is -- and on the normal deployment, with Crafty on the same
+        # machine, one poll is about 19ms and under a kilobyte.
+        delay = config.CONSOLE_POLL_FAST
+        stats_at = 0.0
         try:
             while True:
-                # Whether the server is up changes on the scale of minutes,
-                # not of the 1.5s poll the console needs, so it is asked for
-                # every fifth pass instead of doubling the calls to Crafty.
-                tick += 1
-                want_stats = tick % 5 == 1
+                # Running/stopped changes on the scale of minutes, so it is
+                # asked for on a CLOCK rather than every Nth poll -- at the
+                # fast interval, every fifth pass would be once a second.
+                now = time.monotonic()
+                want_stats = now - stats_at >= config.CONSOLE_STATS_EVERY
+                if want_stats:
+                    stats_at = now
                 try:
                     snap = await _console_snapshot(server_id, source,
                                                    with_stats=want_stats)
@@ -1199,18 +1209,30 @@ async def console_stream(server_id: str, source: str = "auto") -> StreamingRespo
 
                 if fresh:
                     idle = 0
+                    # Straight back to the fast interval: output arrives
+                    # in bursts, so the line that ends a quiet spell is
+                    # the best predictor there is of the next one.
+                    delay = config.CONSOLE_POLL_FAST
                     yield "data: " + json.dumps({
                         "event": "lines", "lines": fresh,
                         "running": snap["running"], "source": snap["source"],
                     }) + "\n\n"
                 else:
                     idle += 1
-                    if idle % 10 == 0:
+                    # Ease off rather than drop straight to idle, so a
+                    # pause between two lines of one burst is not paid for
+                    # at the full idle interval.
+                    delay = min(config.CONSOLE_POLL_IDLE, delay * 1.6)
+                    # A heartbeat about every 15s of quiet, whatever the
+                    # interval happens to be, so the pane can tell
+                    # "nothing is happening" from "the stream died".
+                    if idle * delay >= 15:
+                        idle = 0
                         yield "data: " + json.dumps({
                             "event": "idle", "running": snap["running"],
                             "source": snap["source"],
                         }) + "\n\n"
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(delay)
         except asyncio.CancelledError:
             return
 

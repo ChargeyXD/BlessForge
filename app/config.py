@@ -22,6 +22,13 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
 # --- Crafty Controller -------------------------------------------------
 # CRAFTY_URL must include scheme + port, e.g. https://192.168.1.10:8443
 CRAFTY_URL = (os.environ.get("CRAFTY_URL", "") or "").rstrip("/")
@@ -81,6 +88,31 @@ DOWNLOAD_CONCURRENCY = _int("DOWNLOAD_CONCURRENCY", 8)
 UPLOAD_CHUNK_SIZE = _int("UPLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
 # Seconds to wait for Crafty to finish its loader install before overlaying.
 SERVER_READY_TIMEOUT = _int("SERVER_READY_TIMEOUT", 900)
+
+# How fast the console follows a server.
+#
+# Crafty exposes no push channel, so the console is a poll-and-diff. The
+# interval used to be a flat 1.5s, which is why output arrived in visible
+# clumps rather than line by line -- a booting server writes hundreds of
+# lines into a window where nothing is sent at all.
+#
+# It is now adaptive: fast while output is flowing, backing off to the idle
+# interval when it stops, and snapping back to fast the moment a line
+# appears. A poll costs about 19ms and under a kilobyte against a Crafty on
+# the same machine, which is the normal deployment, so the fast interval is
+# affordable exactly when it matters and is not paid for when it does not.
+CONSOLE_POLL_FAST = _float("CONSOLE_POLL_FAST", 0.2)
+# 0.6s, not 1.5s. The backoff is there to be polite to a Crafty across a
+# network; the normal deployment has it on the same machine, where a
+# poll measured 19ms and under a kilobyte. At 0.6s that is under 2
+# requests a second and about 1 KB/s for an idle console, and it halves
+# the worst case for the FIRST line of a burst -- which is the one that
+# decides whether the console feels live. Raise it if Crafty is remote.
+CONSOLE_POLL_IDLE = _float("CONSOLE_POLL_IDLE", 0.6)
+# Whether the server is up changes on the scale of minutes, so it is asked
+# for on a clock rather than every Nth poll -- at the fast interval, every
+# fifth pass would be once a second.
+CONSOLE_STATS_EVERY = _float("CONSOLE_STATS_EVERY", 5.0)
 # Default RAM for new instances (GB). Modpacks override via manifest hints.
 DEFAULT_MEM_MIN = _int("DEFAULT_MEM_MIN", 2)
 DEFAULT_MEM_MAX = _int("DEFAULT_MEM_MAX", 6)

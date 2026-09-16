@@ -319,6 +319,29 @@ def check_layering() -> None:
           not negatives, ", ".join(negatives[:3]))
 
 
+# --- 4b. nothing assigns to a name it never declared --------------------
+
+def check_scope() -> None:
+    """A ReferenceError that only fires when a handler runs.
+
+    ES modules are strict, so `page = 0` with no `page` in scope throws --
+    but `node --input-type=module --check` accepts the file, and the
+    failure waits until that exact line executes. Removing a variable and
+    leaving one of its assignments behind broke the add-mod search and its
+    CurseForge/Modrinth switch that way: both threw out of their handlers
+    before doing anything, and the only trace was a console error.
+    """
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).parent))
+        from _scope_scan import scan  # noqa: E402
+    except Exception as e:  # noqa: BLE001
+        check("the scope scanner could be loaded", False, str(e))
+        return
+    hits = scan(JS)
+    check("nothing assigns to a name it never declared", not hits,
+          "; ".join(f"{f.split('/')[-1]}:{line} {name}" for f, line, name in hits[:4]))
+
+
 # --- 5b. every animation names a keyframe that exists -------------------
 
 _ANIM_NAME = re.compile(r"animation(?:-name)?\s*:\s*([^;{}]+)")
@@ -386,6 +409,7 @@ def main() -> int:
     check_keyframes()
     print("--- API contract ---")
     check_api()
+    check_scope()
     print()
     if failures:
         print(f"{checks - len(failures)}/{checks} checks passed; "

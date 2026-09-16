@@ -190,7 +190,7 @@ export async function render(ctx) {
     h('div.listbar',
       statusPill, sourcePill, countPill,
       h('input.inp', {
-        type: 'search', placeholder: 'Filter lines…', 'data-search': '1',
+        type: 'search', placeholder: 'Filter lines…', 'data-keep': 'console-filter',
         'aria-label': 'Filter console lines',
         style: { maxWidth: '200px', minHeight: '36px' },
         oninput: debounce((e) => { query = e.target.value; repaint(); }, 150),

@@ -235,7 +235,7 @@ export async function render(ctx) {
             h('div.pad',
               h('div.listbar', { style: { position: 'static', marginBottom: '12px' } },
                 h('input.inp.grow', {
-                  type: 'search', placeholder: 'Search keys…',
+                  type: 'search', placeholder: 'Search keys…', 'data-keep': 'prop-filter',
                   'aria-label': 'Search server.properties keys',
                   oninput: debounce((e) => { propQuery = e.target.value; paint(); }, 160),
                   value: propQuery,

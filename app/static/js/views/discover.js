@@ -64,7 +64,7 @@ export async function render() {
       mode !== 'import'
         ? h('div.listbar',
           h('input.inp.grow', {
-            type: 'search', 'data-search': '1', value: query,
+            type: 'search', 'data-keep': 'discover-search', value: query,
             placeholder: mode === 'packs' ? 'Search modpacks…' : 'Search mods…',
             'aria-label': 'Search',
             oninput: debounce((e) => { query = e.target.value; search(); }, 260),
