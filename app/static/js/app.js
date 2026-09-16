@@ -23,6 +23,8 @@ import {
 } from './core.js';
 import { adoptRunning, onJobsChanged, jobsRunning, openDrawer, activeJobs } from './jobs.js';
 import { startPetals } from './petals.js';
+import { refreshSession, loginScreen, session, may, isAdmin, logout }
+  from './auth.js';
 
 /* --- shared application state -------------------------------- */
 
@@ -437,12 +439,17 @@ function startFleetPolling() {
 
 /* --- the rail -------------------------------------------------- */
 
+/* `needs` hides a destination somebody cannot use. The server refuses the
+   calls behind these screens regardless -- this only avoids offering a
+   door that opens onto a permission error. */
 const NAV = [
   { name: 'fleet', path: '/', label: 'Fleet', icon: 'server' },
   { name: 'groups', path: '/groups', label: 'Racks', icon: 'layers' },
-  { name: 'create', path: '/create', label: 'New server', icon: 'plus' },
+  { name: 'create', path: '/create', label: 'New server', icon: 'plus',
+    needs: 'server.create' },
   { name: 'discover', path: '/discover', label: 'Discover', icon: 'compass' },
-  { name: 'roulette', path: '/roulette', label: 'Mod Roulette', icon: 'dice' },
+  { name: 'roulette', path: '/roulette', label: 'Mod Roulette', icon: 'dice',
+    needs: 'roulette.use' },
   { name: 'settings', path: '/settings', label: 'Settings', icon: 'gear' },
 ];
 
@@ -463,6 +470,11 @@ function buildRail() {
     h('div.rail-lanterns', lantern('森'), lantern('狐', true)),
     h('div.rail-nav', { id: 'railnav' }),
     h('div.rail-fleet', { id: 'railfleet', 'aria-label': 'Servers' }),
+    // Who you are signed in as, and the way out. It sits above the
+    // controls rather than in a menu behind an avatar: on a panel where
+    // several people have different powers, "which of us am I right now"
+    // is worth a line of its own.
+    h('div.rail-who', { id: 'railwho' }),
     h('div.rail-foot',
       h('button.btn.icon.sm.ghost', {
         id: 'themebtn', 'aria-label': 'Switch between light and dark',
@@ -476,12 +488,30 @@ function buildRail() {
   );
 }
 
+function paintWho() {
+  const host = $('#railwho');
+  if (!host || !session.user) return;
+  const u = session.user;
+  mount(host,
+    h('div.who-card',
+      h('span.who-mark', { 'aria-hidden': 'true' },
+        (u.display || u.username).slice(0, 1).toUpperCase()),
+      h('div.who-body',
+        h('div.who-name.trunc', { title: u.username }, u.display || u.username),
+        h('div.who-role.mono', session.roles?.[u.role] ? u.role : u.role)),
+      h('button.btn.icon.xs.ghost', {
+        'aria-label': `Sign out of ${u.username}`, title: 'Sign out',
+        onclick: () => logout(),
+      }, icon('power', 12))));
+}
+
 function paintNav() {
   const host = $('#railnav');
   if (!host) return;
+  paintWho();
   mount(host,
     h('div.sec', 'BlessForge'),
-    ...NAV.map((n) => h('a.navlink', {
+    ...NAV.filter((n) => !n.needs || may(n.needs)).map((n) => h('a.navlink', {
       href: `#${n.path}`,
       'aria-current': state.route.name === n.name ? 'page' : null,
     }, hl(), icon(n.icon, 17), h('span', n.label),
@@ -686,6 +716,39 @@ function checkDisplayFont() {
   setTimeout(mark, 2500);
 }
 
+/* Nothing is drawn until we know who is asking.
+   ------------------------------------------------------------
+   The server refuses unauthenticated requests on its own, so
+   this is not the security boundary -- it is the difference
+   between a login screen and a fleet page full of failed
+   requests. `/api/auth/session` is public precisely so this
+   question can be asked before anything else. */
+async function gate() {
+  await refreshSession();
+  if (session.authenticated && !session.user?.must_change_password) return true;
+
+  const host = document.createElement('div');
+  document.body.append(host);
+  return new Promise((resolve) => {
+    const show = (mustChangeFor) => {
+      mount(host, loginScreen({
+        mustChangeFor,
+        onSignedIn: async () => {
+          await refreshSession();
+          if (session.user?.must_change_password) {
+            show(session.user.username);      // straight into the change
+            return;
+          }
+          host.remove();
+          resolve(true);
+        },
+      }));
+    };
+    show(session.authenticated && session.user?.must_change_password
+      ? session.user.username : null);
+  });
+}
+
 async function boot() {
   applyTheme(readTheme());
   // Entrance animations start from opacity 0 and would leave the page blank
@@ -695,6 +758,9 @@ async function boot() {
   // being painted still runs timers, and that is exactly the case this
   // protects against.
   setTimeout(() => document.documentElement.classList.add('js-motion'), 0);
+  // The gate paints its own screen, so js-motion is already on and the
+  // torii animates. Everything below this line assumes a signed-in user.
+  await gate();
   buildShell();
   checkDisplayFont();
   startPetals($('#petals'));

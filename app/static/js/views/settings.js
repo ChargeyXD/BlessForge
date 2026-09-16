@@ -16,6 +16,7 @@ import {
 } from '../core.js';
 import { run } from '../jobs.js';
 import { state, refreshHealth, topActions } from '../app.js';
+import { session, isAdmin } from '../auth.js';
 
 export async function render() {
   const node = h('div.wrap');
@@ -41,11 +42,51 @@ export async function render() {
   const listHost = h('div');
 
   function paint() {
+    const adminHost = h('div');
+    // Loaded on demand, and only for an admin. The server refuses these
+    // endpoints to anyone else regardless; not asking for them keeps a
+    // 403 out of the console on every visit to Settings.
+    if (isAdmin()) {
+      import('./admin.js')
+        .then((m) => m.adminPanel())
+        .then((panel) => mount(adminHost,
+          h('div.panel.adm-panel', { style: { marginTop: '18px' } },
+            h('header', icon('shield', 15), h('h3', 'Administration'),
+              h('span.sp', 'admins only')),
+            h('div.pad', panel))))
+        .catch((e) => mount(adminHost,
+          h('div.note.bad', { style: { marginTop: '18px' } },
+            `The admin panel would not load: ${e.message}`)));
+    }
+
     mount(node,
       h('div.sec-head.mon',
         h('div',
           h('p.eyebrow', 'BlessForge · ', h('b', 'version 2.1')),
           h('h2', 'Settings'))),
+
+      /* Your own account, for everybody. An admin can reset anybody's
+         password; this is how you change your OWN, which needs the
+         current one and is therefore a different operation. */
+      h('div.panel', { style: { marginBottom: '18px' } },
+        h('header', icon('user', 15), h('h3', 'Your account'),
+          h('span.sp', session.user?.username || '')),
+        h('div.pad',
+          h('div.acct-row',
+            h('div',
+              h('div.acct-name', session.user?.display || session.user?.username),
+              h('div.mono.muted',
+                `${session.user?.role || 'member'} · signed in for up to `
+                + `${session.sessionDays} days`)),
+            h('button.btn.sm', { onclick: changeOwnPassword },
+              hl(), icon('key', 13), h('span', 'Change password'))),
+          session.user?.is_admin ? null : h('p.muted',
+            { style: { fontSize: '12.5px', marginTop: '10px' } },
+            'Forgotten your password, or need to reach another server? '
+            + 'An admin can sort both out — there is no self-service reset '
+            + 'here on purpose.'))),
+
+      adminHost,
 
       h('div.grid.g2', { style: { alignItems: 'start' } },
         /* --- connections ------------------------------------- */
@@ -435,4 +476,43 @@ export async function render() {
 
   paint();
   return { node };
+}
+
+/* Changing your own password. Needs the current one, which is what makes
+   it different from an admin reset: an unattended, signed-in browser must
+   not be a way to take the account over. */
+function changeOwnPassword() {
+  let current = '';
+  let next = '';
+  let again = '';
+  const { close: shut } = modal({
+    title: 'Change your password',
+    body: h('div.adm-form',
+      field('Current password', h('input.inp', {
+        type: 'password', autocomplete: 'current-password', autofocus: true,
+        oninput: (e) => { current = e.target.value; },
+      })),
+      field('New password', h('input.inp', {
+        type: 'password', autocomplete: 'new-password',
+        oninput: (e) => { next = e.target.value; },
+      }), 'At least 10 characters.'),
+      field('New password again', h('input.inp', {
+        type: 'password', autocomplete: 'new-password',
+        oninput: (e) => { again = e.target.value; },
+      })),
+      h('p.muted', { style: { fontSize: '12.5px' } },
+        'Every other browser signed in as you will be signed out.')),
+    footer: h('div.btnrow',
+      h('button.btn.ghost', { onclick: () => shut() }, h('span', 'Cancel')),
+      h('button.btn.primary', {
+        onclick: async () => {
+          if (next !== again) { toast('The two new passwords do not match.', 'bad'); return; }
+          try {
+            await api.post('/api/auth/password', { current, password: next });
+            toast('Password changed. Other sessions signed out.', 'ok');
+            shut();
+          } catch (e) { toastError(e); }
+        },
+      }, hl(), h('span', 'Change it'))),
+  });
 }

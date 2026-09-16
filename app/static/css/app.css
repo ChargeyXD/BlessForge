@@ -3358,3 +3358,328 @@ html.js-motion .jb-log .ln{animation:jb-lineIn .2s var(--ease-out) both}
 }
 .feed-end::after{background:linear-gradient(90deg,var(--rule),transparent)}
 .feed-count{margin-left:auto}
+
+/* ============================================================
+   THE GATE — signing in
+   ------------------------------------------------------------
+   A torii with a shimenawa drawn across it. The rope is shut
+   while you are outside, and it parts when you are let through
+   — which is the one moment in this app where an animation is
+   carrying meaning rather than decorating a transition.
+
+   Nothing here animates from opacity:0 with fill:both. The
+   card arrives by translating, the rope parts by scaling, and
+   a stalled document timeline leaves a readable, usable login
+   form rather than an invisible one. That failure mode has
+   shipped twice in this codebase and it would be at its worst
+   here: a login screen nobody can see is an app nobody can
+   enter.
+   ============================================================ */
+#gate{
+  position:fixed;inset:0;z-index:calc(var(--z-modal) + 10);
+  display:grid;place-items:center;padding:24px;
+  background:var(--paper);overflow:auto;
+}
+/* The ground: the same wash and scene the app uses, so the login is
+   plainly the front door of THIS building. */
+#gate .gate-sky{
+  position:absolute;inset:0;pointer-events:none;
+  background-image:
+    radial-gradient(900px 520px at 16% -10%,
+      color-mix(in srgb,var(--sakura) 26%,transparent), transparent 62%),
+    radial-gradient(760px 480px at 92% 6%,
+      color-mix(in srgb,var(--plum) 22%,transparent), transparent 58%),
+    linear-gradient(to bottom,
+      color-mix(in srgb,var(--paper) 58%,transparent) 0%,
+      color-mix(in srgb,var(--paper) 88%,transparent) 62%),
+    var(--backdrop);
+  background-repeat:no-repeat;
+  background-size:auto,auto,auto,cover;
+  background-position:0 0,0 0,0 0,center bottom;
+}
+
+#gate .gate-card{
+  position:relative;width:min(380px,100%);
+  padding:74px 26px 26px;
+  background-color:var(--card);background-image:var(--washi);
+  border:var(--edge) solid var(--slab-bg);
+  box-shadow:var(--lift-3);
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+}
+html.js-motion #gate .gate-card{animation:gateIn .42s var(--ease-out) both}
+@keyframes gateIn{from{transform:translateY(16px) scale(.985)}to{transform:none}}
+
+/* --- the torii ------------------------------------------------ */
+#gate .gate-torii{
+  position:absolute;left:50%;top:-34px;width:210px;height:104px;
+  transform:translateX(-50%);pointer-events:none;
+}
+#gate .g-kasagi{
+  position:absolute;left:0;right:0;top:0;height:11px;
+  background:var(--shrine);
+  clip-path:polygon(0 38%,5% 0,95% 0,100% 38%,97% 100%,3% 100%);
+}
+#gate .g-nuki{
+  position:absolute;left:8%;right:8%;top:22px;height:7px;background:var(--shrine-deep);
+}
+#gate .g-post{
+  position:absolute;top:9px;bottom:0;width:11px;background:var(--shrine);
+}
+#gate .g-post.l{left:16%}
+#gate .g-post.r{right:16%}
+
+/* The rope. Two halves that meet in the middle: `transform-origin` at the
+   outer edge means parting them is a scaleX to zero from the centre out,
+   which reads as a rope being drawn aside rather than fading. */
+#gate .g-rope{
+  position:absolute;left:12%;right:12%;top:40px;height:9px;
+  background:repeating-linear-gradient(112deg,
+    var(--shrine) 0 7px, color-mix(in srgb,var(--shrine) 52%,var(--slab-bg)) 7px 14px);
+  box-shadow:0 2px 0 color-mix(in srgb,var(--shrine) 30%,transparent);
+  transform-origin:50% 50%;
+  transition:transform .5s var(--ease-out),opacity .5s linear;
+}
+#gate .g-shide{
+  position:absolute;top:47px;width:12px;height:22px;background:var(--paper-2);
+  clip-path:polygon(0 0,100% 0,100% 40%,55% 40%,55% 70%,100% 70%,100% 100%,0 100%);
+  transform-origin:50% 0;
+  transition:transform .5s var(--ease-out),opacity .45s linear;
+}
+#gate .g-shide.a{left:26%}
+#gate .g-shide.b{left:50%;margin-left:-6px}
+#gate .g-shide.c{right:26%}
+html.js-motion #gate .g-shide{animation:shideSway 4.6s ease-in-out infinite}
+html.js-motion #gate .g-shide.b{animation-delay:-1.5s}
+html.js-motion #gate .g-shide.c{animation-delay:-2.9s}
+@keyframes shideSway{0%,100%{rotate:-3deg}50%{rotate:3deg}}
+
+/* Let through: the rope parts and the paper streamers lift away. */
+#gate.opening .g-rope{transform:scaleX(0);opacity:.3}
+#gate.opening .g-shide{transform:translateY(-16px) scale(.6);opacity:0;animation:none}
+#gate.opening .gate-card{
+  transition:transform .5s var(--ease-out),opacity .4s linear .12s;
+  transform:translateY(-10px) scale(1.02);opacity:0;
+}
+
+#gate .gate-mark img{image-rendering:auto;display:block}
+#gate .gate-name{
+  font-family:var(--disp);font-size:26px;text-transform:uppercase;
+  letter-spacing:-.02em;margin:6px 0 0;
+}
+#gate .gate-sub{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 16px;text-align:center;
+}
+#gate .gate-form{display:flex;flex-direction:column;gap:11px;width:100%}
+#gate .gate-form .inp{text-align:center}
+#gate .gate-foot{
+  font-size:12px;color:var(--faint);text-align:center;line-height:1.55;
+  margin:16px 0 0;
+}
+#gate .gate-err{
+  background:var(--danger-soft);color:var(--danger);
+  border-left:4px solid var(--danger);
+  padding:9px 12px;font-size:13px;font-weight:700;
+}
+
+/* Wrong password: the gate refuses to budge. Translate only, so a stalled
+   timeline leaves the form exactly where it was. */
+html.js-motion #gate.shaking .gate-card{animation:gateNo .42s ease-in-out}
+@keyframes gateNo{
+  0%,100%{transform:translateX(0)}
+  15%{transform:translateX(-9px)}
+  35%{transform:translateX(8px)}
+  55%{transform:translateX(-5px)}
+  78%{transform:translateX(3px)}
+}
+
+@media (max-width:420px){
+  #gate .gate-card{padding:66px 18px 20px}
+  #gate .gate-torii{width:180px}
+}
+
+/* --- who is signed in ------------------------------------------
+   An ema plaque hung in the rail: the same object the racks use
+   for a server, because "this is the thing this account is" is
+   the same idea. It lives above the controls rather than behind
+   an avatar menu -- on a panel where several people have
+   different powers, which one you are right now is worth a line
+   of its own.                                                    */
+.rail-who{padding:8px 12px 0;position:relative;z-index:2}
+.who-card{
+  display:flex;align-items:center;gap:10px;padding:9px 10px;
+  background:var(--band-card);border:2px solid var(--band-rule);
+  clip-path:polygon(0 0,100% 0,100% 100%,7px 100%,0 calc(100% - 7px));
+}
+.who-mark{
+  width:28px;height:28px;flex:none;display:grid;place-items:center;
+  background:var(--shrine);color:var(--band-fg);
+  font-family:var(--disp);font-size:13px;line-height:1;
+  clip-path:polygon(50% 0,100% 26%,100% 100%,0 100%,0 26%);
+}
+.who-body{flex:1;min-width:0}
+.who-name{font-family:var(--num);font-weight:800;font-size:13px;color:var(--band-fg)}
+.who-role{
+  font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--band-mid);margin-top:1px;
+}
+.rail-who .btn{color:var(--band-mid)}
+.rail-who .btn.ghost::after{background:transparent;border-color:var(--band-rule)}
+.rail-who .btn.ghost:hover::after{background:var(--danger-soft);border-color:var(--danger)}
+.rail-who .btn:hover{color:var(--danger)}
+
+/* ============================================================
+   ADMINISTRATION — the register and the ledger
+   ------------------------------------------------------------
+   Accounts are ofuda: paper talismans on a shrine wall, one per
+   person, each with the initial burnt into its seal. It is the
+   same object the Tune screen uses for "something was done on
+   your behalf", which is the right echo — an account is a
+   standing grant of authority, and this is the paper that says
+   so.
+
+   The ledger below it is deliberately plainer. It is a log; the
+   thing an admin wants from it is to find one line quickly, and
+   ornament between the eye and that line is a cost.
+   ============================================================ */
+.adm{display:block}
+.adm-head{
+  display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:14px;
+}
+.adm-head > div:first-child{flex:1;min-width:0}
+.adm-title{
+  font-family:var(--disp);font-size:15px;text-transform:uppercase;
+  letter-spacing:.02em;margin:0;
+}
+.adm-sub{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--faint);margin:3px 0 0}
+
+/* --- the register ---------------------------------------------- */
+.ofuda-wall{display:grid;gap:12px}
+@media (min-width:1100px){.ofuda-wall{grid-template-columns:1fr 1fr}}
+
+.ofuda-user{
+  position:relative;display:flex;gap:12px;align-items:flex-start;
+  padding:13px 14px 13px 12px;
+  background-color:var(--card);background-image:var(--washi);
+  border:var(--edge) solid var(--slab-bg);
+  box-shadow:var(--lift-1);
+  /* A strip of paper with its lower-left corner torn off. */
+  clip-path:polygon(0 0,100% 0,100% 100%,9px 100%,0 calc(100% - 9px));
+  transition:transform var(--t-move) var(--ease-out),
+             box-shadow var(--t-move) var(--ease-out);
+}
+.ofuda-user:hover{transform:translate(-2px,-2px);box-shadow:var(--lift-2)}
+/* Suspended: the paper greys out but stays legible. Not opacity — a
+   translucent card over a patterned ground is unreadable, which is the
+   same argument the disabled buttons are written around. */
+.ofuda-user.off{
+  background-color:var(--paper-2);border-color:var(--rule);box-shadow:none;
+}
+.ofuda-user.off .ou-name{color:var(--faint);text-decoration:line-through}
+.ofuda-user.boss{border-color:var(--gold)}
+.ofuda-user.boss::before{
+  content:"";position:absolute;left:-1px;right:-1px;top:-3px;height:3px;
+  background:var(--gold-leaf);background-size:200% 100%;
+}
+html.js-motion .ofuda-user.boss::before{animation:foil 6s linear infinite}
+
+.ou-seal{
+  width:34px;height:34px;flex:none;display:grid;place-items:center;
+  background:var(--shrine);color:#fff;
+  font-family:var(--disp);font-size:15px;line-height:1;
+  clip-path:polygon(50% 0,100% 26%,100% 100%,0 100%,0 26%);
+}
+.ofuda-user.boss .ou-seal{background:var(--gold);color:#241B28}
+.ofuda-user.off .ou-seal{background:var(--rule)}
+.ou-body{flex:1;min-width:0}
+.ou-top{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.ou-name{font-family:var(--num);font-weight:800;font-size:14.5px}
+.ou-line{font-size:11px;color:var(--mid);margin-top:4px;
+  display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}
+.ou-dot{color:var(--rule)}
+.ou-acts{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+
+/* --- making an account ------------------------------------------ */
+.adm-form{padding:16px;display:block}
+.adm-static{
+  display:flex;align-items:baseline;gap:10px;margin-bottom:16px;
+  padding-bottom:10px;border-bottom:2px solid var(--rule-2);
+}
+.adm-sec{
+  font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);margin:20px 0 10px;
+  display:flex;align-items:center;gap:10px;
+}
+.adm-sec::after{content:"";flex:1;height:2px;background:var(--rule-2)}
+
+.rolepick{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.rolecard{
+  text-align:left;padding:10px 12px;cursor:pointer;
+  border:2px solid var(--rule);background:var(--paper-2);
+  display:flex;flex-direction:column;gap:3px;
+  transition:border-color var(--t-tap),background var(--t-tap),
+             transform var(--t-tap) var(--ease-spring);
+}
+.rolecard:hover{transform:translateY(-2px);border-color:var(--sakura-deep)}
+.rolecard.on{border-color:var(--rose);background:var(--rose-soft)}
+.rc-name{font-family:var(--num);font-weight:800;font-size:13px;
+  text-transform:capitalize}
+.rc-what{font-size:11.5px;color:var(--mid);line-height:1.4}
+
+.permgrid{display:grid;gap:5px}
+.permrow{
+  display:grid;grid-template-columns:auto auto 1fr auto;gap:10px;
+  align-items:baseline;padding:7px 10px;cursor:pointer;
+  border:2px solid transparent;background:var(--paper-2);
+  transition:border-color var(--t-tap),background var(--t-tap);
+}
+.permrow:hover{border-color:var(--rule)}
+.permrow.on{background:var(--sage-soft)}
+.permrow.byrole{cursor:default;opacity:.85}
+.pr-key{font-size:11px;font-weight:700;color:var(--rose)}
+.permrow.on .pr-key{color:var(--sage)}
+.pr-what{font-size:12px;color:var(--mid)}
+.pr-src{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint)}
+
+.scope-all{display:flex;align-items:center;gap:10px;padding:9px 10px;
+  background:var(--paper-2);border:2px solid var(--rule);cursor:pointer;
+  font-size:13px}
+.scope-pick{margin-top:12px}
+.sp-head{font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--faint);margin-bottom:7px}
+
+.acct-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.acct-row > div:first-child{flex:1;min-width:0}
+.acct-name{font-family:var(--num);font-weight:800;font-size:15px}
+
+/* --- the ledger -------------------------------------------------- */
+.ledger{margin-top:4px}
+.led-bar{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.led-bar .inp{min-height:38px}
+.led-bar select.inp{max-width:170px}
+.led-list{
+  border:var(--edge) solid var(--rule);background:var(--card);
+  max-height:min(56vh,560px);overflow:auto;
+}
+.led-row{
+  display:grid;gap:10px;align-items:baseline;padding:8px 12px;
+  grid-template-columns:78px 96px 150px 110px 1fr auto;
+  border-bottom:1.5px solid var(--rule-2);font-size:12px;
+}
+.led-row:last-child{border-bottom:0}
+.led-row:hover{background:var(--sakura-soft)}
+/* A refusal is the entry an admin most wants to find, so it is the one
+   that is marked rather than the one that blends in. */
+.led-row.no{background:color-mix(in srgb,var(--danger-soft) 60%,transparent)}
+.led-row.no .led-what{color:var(--danger)}
+.led-when{color:var(--faint);font-size:10.5px}
+.led-who{font-weight:700;color:var(--rose)}
+.led-what{color:var(--text);font-size:11px}
+.led-where{color:var(--mid);font-size:11px}
+.led-detail{color:var(--faint);font-size:11.5px;min-width:0}
+@media (max-width:900px){
+  .led-row{grid-template-columns:1fr 1fr;gap:4px 10px}
+  .led-detail{grid-column:1 / -1}
+}

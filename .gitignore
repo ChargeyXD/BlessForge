@@ -15,3 +15,13 @@ dev/ui-tests/*.png
 # Crafty HAR capture used while reverse-engineering the API. Carries LAN
 # addresses and server names; kept out of the repo.
 *.har
+
+# Account state. It lives under STATE_DIR (/data/state) and so is already
+# outside the repo -- these are belt and braces for the case where somebody
+# points STATE_DIR at the checkout while developing. users.json holds
+# password hashes and sessions.json holds live session keys; neither should
+# ever be capable of reaching a commit.
+users.json
+sessions.json
+audit.jsonl
+fleet-state.json

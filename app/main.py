@@ -10,13 +10,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import (FileResponse, RedirectResponse, Response,
-                               StreamingResponse)
+from fastapi import (Body, FastAPI, File, HTTPException, Query, Request,
+                     UploadFile)
+from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
+                               Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 
 from app import (
     ai,
+    auth,
     backups,
     cache,
     clientscan,
@@ -30,6 +32,7 @@ from app import (
     files,
     fleetgroups,
     installer,
+    policy,
     loaders,
     modrinth,
     mods as modmgr,
@@ -398,11 +401,21 @@ async def minecraft_versions() -> dict:
 
 
 @app.get("/api/instances")
-async def instances() -> dict:
+async def instances(request: Request) -> dict:
     try:
         servers = await crafty.list_servers()
     except Exception as e:
         raise _err(e)
+
+    # Filter to what this account may actually reach. The per-server routes
+    # already answer 404 for anything out of scope, so the data was never
+    # exposed -- but the LIST was, and "there is a server here you cannot
+    # touch" is itself something a scoped user has no business knowing. It
+    # also stops the rail offering rows that lead to a dead screen.
+    user = getattr(request.state, "user", None)
+    if user:
+        servers = [s for s in servers
+                   if auth.in_scope(user, s.get("server_id"), _rack_of)]
 
     async def enrich(s: dict) -> dict:
         sid = s.get("server_id")
@@ -2825,6 +2838,372 @@ class _StaticCache(StaticFiles):
             # .js, .css, .html and anything else we might add later.
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
+
+
+# ======================================================================
+# ACCOUNTS
+# ----------------------------------------------------------------------
+# One middleware decides whether a request may proceed, using the table in
+# app/policy.py. Doing it here rather than with a dependency on each route
+# means there is exactly one place where the answer is computed, and no
+# way to add a route that forgets to ask.
+#
+# It is deliberately ahead of the routes rather than inside them: a 401
+# must not depend on a handler having been reached.
+# ======================================================================
+
+COOKIE = "bf_session"
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()[:60]
+    return getattr(getattr(request, "client", None), "host", "") or ""
+
+
+def _is_https(request: Request) -> bool:
+    if request.headers.get("x-forwarded-proto", "").lower() == "https":
+        return True
+    return request.url.scheme == "https"
+
+
+def _set_session_cookie(response: Response, token: str, request: Request,
+                        max_age: int) -> None:
+    """HttpOnly, SameSite=Lax, Secure when the connection is.
+
+    HttpOnly so a script cannot read it, which is what turns an XSS into a
+    stolen session. SameSite=Lax so another site cannot make the browser
+    send it on a POST -- that is the CSRF defence, and it is why there is
+    no separate CSRF token to manage.
+
+    Secure is set only on HTTPS on purpose: a LAN box on plain HTTP is the
+    normal deployment, and a Secure cookie there is simply never sent,
+    which would lock everybody out rather than protect them.
+    """
+    response.set_cookie(
+        COOKIE, token, max_age=max_age, httponly=True, samesite="lax",
+        secure=_is_https(request), path="/",
+    )
+
+
+def _rack_of(server_id: str) -> str | None:
+    """Which rack a server hangs on, for scope-by-rack."""
+    try:
+        return fleetgroups.document().get("assign", {}).get(server_id)
+    except Exception:
+        return None
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    path = request.url.path
+    # The shell, its assets and the login screen have to load before
+    # anybody can log in. Nothing under /api is exempt except by rule.
+    if not path.startswith("/api"):
+        return await call_next(request)
+
+    method = request.method.upper()
+    if method == "OPTIONS":
+        return await call_next(request)
+
+    permission, scoped = policy.required(method, path)
+    if permission == policy.PUBLIC:
+        return await call_next(request)
+
+    user = auth.session_user(request.cookies.get(COOKIE))
+    if not user:
+        return JSONResponse({"detail": "Sign in to continue.",
+                             "error": "unauthenticated"}, status_code=401)
+
+    # A password that must change is a half-open door: allow exactly the
+    # calls needed to close it, and nothing else.
+    if user.get("must_change") and path not in (
+            "/api/auth/password", "/api/auth/session", "/api/auth/logout"):
+        return JSONResponse(
+            {"detail": "Set a new password before continuing.",
+             "error": "password_change_required"}, status_code=403)
+
+    if permission == policy.DENY:
+        return JSONResponse({"detail": "Not found."}, status_code=404)
+
+    if permission == policy.ADMIN:
+        if user.get("role") != "admin":
+            auth.audit(actor=user["username"], action="denied.admin",
+                       detail=f"{method} {path}", ip=_client_ip(request),
+                       ok=False)
+            return JSONResponse({"detail": "Admins only.",
+                                 "error": "forbidden"}, status_code=403)
+    elif permission != policy.ANY and not auth.may(user, permission):
+        auth.audit(actor=user["username"], action="denied.permission",
+                   detail=f"{method} {path} needs {permission}",
+                   ip=_client_ip(request), ok=False)
+        return JSONResponse(
+            {"detail": f"You do not have permission to do that ({permission}).",
+             "error": "forbidden", "needs": permission}, status_code=403)
+
+    if scoped:
+        sid = policy.server_id_of(path)
+        if sid and not auth.in_scope(user, sid, _rack_of):
+            auth.audit(actor=user["username"], action="denied.scope",
+                       server_id=sid, detail=f"{method} {path}",
+                       ip=_client_ip(request), ok=False)
+            # 404, not 403: whether a server exists is itself information,
+            # and a user with no business touching it has no business
+            # learning that it is there.
+            return JSONResponse({"detail": "Not found."}, status_code=404)
+
+    request.state.user = user
+    response = await call_next(request)
+
+    # Record what was done, not what was merely looked at. A log where
+    # every poll appears is a log nobody reads.
+    if method != "GET" and response.status_code < 400 \
+            and permission not in (policy.ANY, policy.PUBLIC):
+        auth.audit(actor=user["username"], action=_action_for(method, path),
+                   server_id=policy.server_id_of(path) or "",
+                   detail=f"{method} {path}", ip=_client_ip(request))
+    return response
+
+
+_ACTION_NAMES = [
+    (re.compile(r"^/api/instances/[^/]+/action/(\w+)"), "server.{0}"),
+    (re.compile(r"^/api/instances/[^/]+/command"), "console.command"),
+    (re.compile(r"^/api/instances/[^/]+/files/(\w+)"), "files.{0}"),
+    (re.compile(r"^/api/instances/[^/]+/mods/(\w[\w-]*)"), "mods.{0}"),
+    (re.compile(r"^/api/instances/[^/]+/plugins/(\w+)"), "plugins.{0}"),
+    (re.compile(r"^/api/instances/[^/]+/players/(\w+)"), "players.{0}"),
+    (re.compile(r"^/api/instances/[^/]+/backups/[^/]+/restore"), "backups.restore"),
+    (re.compile(r"^/api/instances/[^/]+/backups"), "backups.create"),
+    (re.compile(r"^/api/instances/[^/]+/configs/write"), "config.write"),
+    (re.compile(r"^/api/instances/[^/]+/properties"), "config.properties"),
+    (re.compile(r"^/api/instances/[^/]+/optimize"), "tune.apply"),
+    (re.compile(r"^/api/instances/[^/]+/fix/([\w-]+)"), "fix.{0}"),
+    (re.compile(r"^/api/install/modpack"), "server.install"),
+    (re.compile(r"^/api/provision/server"), "server.create"),
+    (re.compile(r"^/api/roulette/install"), "server.install-roulette"),
+    (re.compile(r"^/api/fleet/"), "racks.change"),
+    (re.compile(r"^/api/admin/users"), "admin.users"),
+    (re.compile(r"^/api/whitelist"), "decisions.change"),
+]
+
+
+def _action_for(method: str, path: str) -> str:
+    """A short, greppable name for the audit log."""
+    if method == "DELETE" and re.fullmatch(r"/api/instances/[^/]+", path):
+        return "server.delete"
+    for pattern, name in _ACTION_NAMES:
+        m = pattern.match(path)
+        if m:
+            return name.format(*m.groups()) if m.groups() else name
+    return f"{method.lower()}.{path.strip('/').replace('/', '.')}"[:60]
+
+
+# --- signing in ---------------------------------------------------------
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request, body: dict = Body(...)) -> Response:
+    auth.bootstrap()
+    username = str(body.get("username") or "")
+    try:
+        user = auth.authenticate(username, str(body.get("password") or ""))
+    except auth.AuthError as e:
+        auth.audit(actor=username or "?", action="auth.login",
+                   detail=str(e), ip=_client_ip(request), ok=False)
+        raise HTTPException(status_code=e.status, detail=str(e))
+
+    token, expires = auth.start_session(
+        user, agent=request.headers.get("user-agent", ""),
+        ip=_client_ip(request))
+    auth.audit(actor=user["username"], action="auth.login",
+               detail="signed in", ip=_client_ip(request))
+    payload = {"user": auth.public_user(user), "expires": expires}
+    response = JSONResponse(payload)
+    _set_session_cookie(response, token, request, auth.SESSION_TTL)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request) -> Response:
+    token = request.cookies.get(COOKIE)
+    user = auth.session_user(token)
+    if token:
+        auth.revoke(token)
+    if user:
+        auth.audit(actor=user["username"], action="auth.logout",
+                   detail="signed out", ip=_client_ip(request))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(COOKIE, path="/")
+    return response
+
+
+@app.get("/api/auth/session")
+async def auth_session(request: Request) -> dict:
+    """Who am I. Public, because the login screen asks it before signing in."""
+    auth.bootstrap()
+    user = auth.session_user(request.cookies.get(COOKIE))
+    return {
+        "authenticated": bool(user),
+        "user": auth.public_user(user) if user else None,
+        "default_password_in_use": auth.using_default_password(),
+        "roles": auth.ROLES,
+        "session_days": auth.SESSION_DAYS,
+    }
+
+
+@app.post("/api/auth/password")
+async def auth_password(request: Request, body: dict = Body(...)) -> dict:
+    """Change your own password. Requires the current one."""
+    user = auth.session_user(request.cookies.get(COOKIE))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to continue.")
+    current = str(body.get("current") or "")
+    if not auth.verify_password(user.get("password"), current):
+        auth.audit(actor=user["username"], action="auth.password",
+                   detail="wrong current password", ip=_client_ip(request),
+                   ok=False)
+        raise HTTPException(status_code=403,
+                            detail="That is not your current password.")
+    try:
+        auth.set_password(user["username"], str(body.get("password") or ""))
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    # Every OTHER session for this account dies: changing a password is
+    # what you do when you think somebody else has it.
+    kept = request.cookies.get(COOKIE)
+    auth.revoke_all(user["username"])
+    auth.audit(actor=user["username"], action="auth.password",
+               detail="changed their own password", ip=_client_ip(request))
+    token, _ = auth.start_session(user, agent=request.headers.get("user-agent", ""),
+                                 ip=_client_ip(request))
+    response = JSONResponse({"ok": True, "user": auth.public_user(user)})
+    _set_session_cookie(response, token, request, auth.SESSION_TTL)
+    del kept
+    return response
+
+
+# --- administration -----------------------------------------------------
+
+@app.get("/api/admin/permissions")
+async def admin_permissions() -> dict:
+    return {"permissions": auth.PERMISSIONS, "roles": auth.ROLES,
+            "role_permissions": auth.ROLE_PERMISSIONS,
+            "global_permissions": sorted(auth.GLOBAL_PERMISSIONS)}
+
+
+@app.get("/api/admin/users")
+async def admin_users() -> dict:
+    users = auth.list_users()
+    for u in users:
+        u["sessions"] = len(auth.sessions_for(u["username"]))
+    return {"items": users}
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(request: Request, body: dict = Body(...)) -> dict:
+    try:
+        user = auth.create_user(
+            username=str(body.get("username") or ""),
+            password=str(body.get("password") or ""),
+            role=str(body.get("role") or "member"),
+            display=str(body.get("display") or ""),
+            permissions=body.get("permissions"),
+            scope=body.get("scope"),
+            must_change=bool(body.get("must_change", True)),
+        )
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    actor = request.state.user["username"]
+    auth.audit(actor=actor, action="admin.users.create",
+               detail=f"created {user['username']} as {user['role']}",
+               ip=_client_ip(request))
+    return {"user": auth.public_user(user)}
+
+
+@app.post("/api/admin/users/{username}")
+async def admin_update_user(username: str, request: Request,
+                            body: dict = Body(...)) -> dict:
+    try:
+        user = auth.update_user(
+            username,
+            role=body.get("role"), display=body.get("display"),
+            permissions=body.get("permissions"), scope=body.get("scope"),
+            disabled=body.get("disabled"), unlock=body.get("unlock"),
+        )
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    auth.audit(actor=request.state.user["username"], action="admin.users.update",
+               detail=f"changed {username}: "
+                      + ", ".join(k for k, v in body.items() if v is not None),
+               ip=_client_ip(request))
+    return {"user": auth.public_user(user)}
+
+
+@app.post("/api/admin/users/{username}/password")
+async def admin_set_password(username: str, request: Request,
+                             body: dict = Body(...)) -> dict:
+    """An admin resets somebody's password. This is the support system.
+
+    There is no self-service reset by design, so this is the ONLY way back
+    in for a user who has forgotten theirs -- which is why it forces a
+    change on next login and kills every session they had.
+    """
+    try:
+        auth.set_password(username, str(body.get("password") or ""),
+                          must_change=bool(body.get("must_change", True)))
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    dropped = auth.revoke_all(username)
+    auth.audit(actor=request.state.user["username"],
+               action="admin.users.password",
+               detail=f"reset the password for {username}; "
+                      f"{dropped} session(s) ended",
+               ip=_client_ip(request))
+    return {"ok": True, "sessions_ended": dropped}
+
+
+@app.delete("/api/admin/users/{username}")
+async def admin_delete_user(username: str, request: Request) -> dict:
+    if username == request.state.user["username"]:
+        raise HTTPException(status_code=409,
+                            detail="You cannot delete your own account.")
+    try:
+        auth.delete_user(username)
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    auth.audit(actor=request.state.user["username"], action="admin.users.delete",
+               detail=f"deleted {username}", ip=_client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/admin/users/{username}/sessions")
+async def admin_user_sessions(username: str) -> dict:
+    return {"items": auth.sessions_for(username)}
+
+
+@app.delete("/api/admin/users/{username}/sessions")
+async def admin_end_sessions(username: str, request: Request) -> dict:
+    dropped = auth.revoke_all(username)
+    auth.audit(actor=request.state.user["username"],
+               action="admin.users.sessions",
+               detail=f"ended {dropped} session(s) for {username}",
+               ip=_client_ip(request))
+    return {"ok": True, "ended": dropped}
+
+
+@app.get("/api/admin/audit")
+async def admin_audit(limit: int = 200, actor: str = "", action: str = "",
+                      server_id: str = "", since: float = 0.0,
+                      q: str = "") -> dict:
+    return {"items": auth.audit_entries(limit=limit, actor=actor, action=action,
+                                        server_id=server_id, since=since,
+                                        query=q)}
+
+
+@app.get("/api/admin/audit/actions")
+async def admin_audit_actions() -> dict:
+    return {"actions": auth.audit_actions(),
+            "actors": sorted({u["username"] for u in auth.list_users()})}
 
 
 # The backdrop, resolved server-side rather than probed from the browser.

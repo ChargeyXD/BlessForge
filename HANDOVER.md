@@ -27,7 +27,7 @@ export are all verified end to end against them (§5D).
 |---|---|
 | Deployed | `http://<host>:8710`, healthy |
 | Version | 2.1.0, ~131 routes |
-| Tests | **171 backend checks** across six files, **198 front-end checks** (§9) |
+| Tests | **329 backend checks** across nine files (284 offline + 45 over HTTP), **216 front-end checks** (§9) |
 | Servers in Crafty | **five**, §5D and §5F. `Perfect World` :25565 (NeoForge, 100), `Cozy Experience` :25566 (Fabric, 245), `Lucky Dip` :25567 (rolled, 44), `Roulette RB5-YR9-BC` :25568 (rolled, 72), `Tensura` :25569 (Forge 1.19.2, 223 — will not boot here, §5F) |
 
 **Committed on `main`.** `1d00eb8` is the rebuild and the six new features and
@@ -1211,6 +1211,116 @@ could only be eyeballed, which is how a 1.5s interval went unnoticed.
 
 ---
 
+## 5L. Accounts (2026-09-16)
+
+BlessForge shipped with no authentication: anyone who could reach the port
+could delete a world. This adds accounts, sessions, a permission model, a
+scope model and an audit trail, with **no new dependency** — `hashlib.scrypt`
+and `secrets` are enough to do it properly, and there is still no database.
+
+### 5L.1 What is where
+
+| | |
+|---|---|
+| `app/auth.py` | accounts, password hashing, sessions, permissions, the audit log |
+| `app/policy.py` | which permission each of the 146 API routes needs |
+| `app/static/js/auth.js` | the session on the client, and the login gate |
+| `app/static/js/views/admin.js` | the register and the ledger |
+| `/data/state/users.json` | accounts and hashed passwords |
+| `/data/state/sessions.json` | live sessions, keyed by the token's **hash** |
+| `/data/state/audit.jsonl` | append-only; a crash costs the last line, not the file |
+
+### 5L.2 The security decisions, and why
+
+**scrypt, not PBKDF2.** Memory-hard, so a GPU farm attacking a stolen
+`users.json` gets far less leverage. n=2^14 costs ~60ms per verification:
+slow enough to hurt an offline attack, fast enough that nobody notices
+signing in. The parameters are stored *with* each hash so they can be
+raised later without invalidating existing accounts.
+
+**`hmac.compare_digest`, never `==`.** A plain comparison returns early on
+the first wrong byte, and how long it took is a measurement of how much of
+the hash you guessed.
+
+**Sessions store only the token's SHA-256.** A leaked `sessions.json` is a
+list of useless hashes rather than a drawer of working keys — the same
+argument as for passwords, and it is tested by asserting the raw token
+does not appear in the file.
+
+**A wrong username and a wrong password give the identical message**, and
+an unknown username still pays for a decoy scrypt call so a fast rejection
+cannot be read as "no such user".
+
+**Lockout is per ACCOUNT, not per IP.** An attacker behind a rotating
+proxy defeats an IP counter; locking the account is what protects the
+account. Eight failures, fifteen minutes, and an admin can clear it.
+
+**The cookie is HttpOnly, SameSite=Lax, Max-Age 30 days, Secure only on
+HTTPS.** HttpOnly is what stops an XSS becoming a stolen session.
+SameSite=Lax is the CSRF defence, which is why there is no separate CSRF
+token to manage. Secure is conditional because the normal deployment is a
+LAN box on plain HTTP, where an unconditional Secure cookie is simply
+never sent — that would lock everyone out rather than protect them.
+
+**Out of scope reads as 404, not 403.** Whether a server exists is itself
+information. The fleet LIST is filtered the same way, so a scoped user
+does not learn what they cannot touch.
+
+### 5L.3 Permission and scope are two questions
+
+"May this user do this kind of thing" and "may they do it to THAT server"
+are separate. Collapsing them means a permission list per server, which
+nobody maintains. A rule names a permission; the server id comes out of
+the path and is checked against the user's scope, which may be given as
+servers, as **racks** (so a server moved onto a rack is covered without
+anybody re-granting), or as everything.
+
+Four roles — admin, operator, member, guest — are shorthand over the
+seventeen permissions, not a parallel system. An admin is *every*
+permission by definition rather than by a list that drifts.
+
+### 5L.4 One table, and a test that keeps it honest
+
+The 146 routes are gated by one ordered table in `policy.py` rather than by
+146 decorators, because the answer to "what can a guest actually reach"
+has to be readable in one place. `required()` returns DENY for anything it
+does not recognise, so **a new route is unreachable until somebody decides
+who may call it** — and `test_policy.py` walks the routes FastAPI actually
+serves and fails if any is unmatched. It caught five on its first run.
+
+### 5L.5 Upgrading from a version with no accounts
+
+There are no credentials to hand somebody who is upgrading, so the first
+start creates `admin` / `password`, flagged must-change. The next screen
+after that first sign-in is a password change **that cannot be skipped** —
+the middleware allows exactly three endpoints until it is done.
+
+That default is a real risk while it lasts, which is why
+`/api/auth/session` reports it and why `password_problem` specifically
+refuses `password` as the replacement.
+
+**There is deliberately no self-service reset and no sign-up.** Both are
+ways in for someone who should not be here. An admin sets passwords; doing
+so ends every session that account had.
+
+The last admin cannot demote, disable or delete themselves — locking every
+admin out of a self-hosted panel with no reset email is unrecoverable from
+the UI, so it is refused with an explanation.
+
+### 5L.6 What it was checked against
+
+`test_auth.py` 79 checks, `test_policy.py` 34, `test_auth_http.py` 45 over
+real HTTP against a running server — including that the raw token never
+reaches disk, that a disabled account's live sessions die immediately,
+that an admin reset ends them, and that a scoped user's fleet list
+contains only what they may reach.
+
+`test_auth_http.py` walks the FIRST-RUN path, so it needs a fresh
+`STATE_DIR` and says so clearly rather than failing thirty checks
+confusingly when pointed at a set-up instance.
+
+---
+
 ## 6. Earlier sessions (8 commits, `23b38e7..c62d607`)
 
 History. Kept for the traps it records, which are all still live.
@@ -1576,7 +1686,7 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 171 backend + 198 front-end checks
+# the whole suite: 284 offline + 45 HTTP backend, 216 front-end
 cd ~/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict test_fleet_state; do
   .venv/bin/python dev/tools/$t.py | tail -1
