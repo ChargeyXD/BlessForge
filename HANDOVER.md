@@ -129,7 +129,8 @@ override.
 app/
   main.py         2575  FastAPI: every route, static serving with cache headers
   diagnostics.py  1285  health checks, crash-log parsing, findings
-  roulette.py     1274  Mod Roulette: pool, seeded deal, verify, top-up, export
+  roulette.py     1330  Mod Roulette: pool, random deal, verify, vet, top-up, export
+  kinship.py       520  Libraries, add-on parents, conflict families, the Inspector report
   installer.py    1224  the install pipeline (loader ladder lives in provision)
   ai.py           1179  Ollama client, action vocabulary, re-validation
   crafty.py        898  Crafty API client — the only thing that talks to Crafty,
@@ -525,12 +526,56 @@ the same function rather than growing a second copy.
 modpack nobody chose: set constraints, pull a lever, get a hand, accept it and
 BlessForge installs the server **and** hands back a CurseForge export zip.
 
-**The seed contract is the feature.** A roll is identified by a short seed
-(`QRT-8KM-4Z`, alphabet minus I/L/O/0/1 so it survives being read aloud), and
-the same seed with the same constraints deals the same hand. The generator is
-a port of the design prototype's JavaScript, pinned against its output in
-`dev/tools/test_roulette.py` — change one half without the other and every
-seed anyone has shared stops reproducing, silently.
+**There is no seed (2026-09-21).** There was one — a short code, and a PRNG
+ported from the design prototype so a seed typed in the browser and one typed
+here agreed. It worked and nobody wanted it: a roulette whose appeal is not
+knowing what you will get does not need a machine for getting it twice. The
+draw is now `random`, and the only thing left with a name is the export
+archive (`mint_roll_id`, clock plus four letters — it identifies a file, not a
+hand). `prng`, `mint_seed`, `normalise_seed` and `SEED_RE` are gone; a test
+asserts they stay gone, because leaving them would leave two ways to deal.
+
+**The hand is vetted as a set, not just as a list (2026-09-21).** This is the
+part that was missing, and it is in `app/kinship.py` + `roulette.vet_hand`.
+Verifying that every mod loads says nothing about whether they belong
+*together*, and two things kept coming out of a roll that should not have:
+
+- **Add-ons without the mod they add to.** "Create: Steam 'n' Rails" in a pack
+  with no Create. Worse, `_with_dependencies` then pulled Create in silently at
+  install time, so a hand of 120 became a server of 121 with an uninvited
+  headline mod nobody chose. A rolled add-on now **brings its parent in as a
+  companion** (`adopted_for`, which does not count against your mod count, the
+  same standing a dependency has) or is dropped with a reason.
+- **Mods that refuse to sit together.** Two recipe viewers, two light engines,
+  four biome generators. The catalogues' own `incompatible` declarations are
+  honoured first; `kinship.CONFLICT_FAMILIES` covers the far larger set nobody
+  declares, as "at most N of this family" with the reason written down.
+- **Bare libraries.** Rolling Fabric API spends a slot on a jar you were
+  getting for free. Dropped, unless it is on `kinship.NOT_LIBRARIES` — the
+  short list of content mods CurseForge files under "API and Library" anyway
+  (The One Probe, Jade, Waystones…).
+
+The shape is borrowed from Rearth's Modpack-Inspector, which answers the same
+questions about an *installed* pack by reading bytecode. We have no jars yet,
+so they are answered from what publishers declare — weaker, and available
+early enough to change the hand. `kinship.study()` returns that report and the
+screen's Lineage face is drawn from it.
+
+Two things that had to be got right and were not, at first:
+
+- The report has to be computed on the hand that actually goes out. The rounds
+  over-deal, so the last in-loop report described 49 mods for a 37-mod hand and
+  the Lineage panel named families the list underneath it did not contain.
+- The trim to `count` can itself orphan an add-on, if a parent and its add-on
+  were both dealt and the parent falls outside the first `want`. `fill_hand`
+  therefore vets once more **after** trimming.
+
+**Quilt is not offered (2026-09-21).** `packs.py` cannot install a Quilt loader
+unattended ("Quilt and unknown loaders must be installed manually"), so every
+Quilt roll ended as an instance that could never start, after the user had
+waited through the whole deal. `roulette.LOADERS` is NeoForge/Forge/Fabric, and
+`merge_constraints` corrects a stored Quilt preference rather than obeying it.
+BlessForge still *imports* a Quilt pack somebody hands it.
 
 Where the design's guesswork needed correcting:
 
@@ -1450,11 +1495,17 @@ missing from disk.
     The first roll on a version nobody has tried is therefore a wait with no
     progress on screen until the UI renders the job. Rolls after it take
     ~2.5 s.
-20. **A seed reproduces a hand against the pool it was dealt from.** Scoring
-    per mod makes that robust — a 30-mod catalogue update disturbed nothing
-    in testing — but a mod leaving the catalogue, or the version/loader
-    changing, will change the hand. The export records the seed so a pack is
-    reproducible even when the roll is not.
+20. ~~**A seed reproduces a hand.**~~ Withdrawn 2026-09-21; a roll is a
+    genuine draw now and does not come round again. The archive it writes is
+    still kept, so the *pack* is reproducible even though the roll is not.
+20b. **The add-on and conflict rules read what publishers declare**, which is
+    thinner than reading the jars. A mod family nobody filled in metadata for,
+    and that is not in `kinship.CONFLICT_FAMILIES`, can still put two
+    alternatives in one hand. The table is meant to be added to.
+20c. **Adopting a parent outside the pool costs one extra catalogue call**
+    (`_fetch_parent`) per such add-on. Rare in practice — the pool holds the
+    most-downloaded few hundred per category, which is where parents live —
+    but a hand full of obscure add-ons will be slower to deal.
 21. **`server_side` is only known for mods Modrinth has.** A CurseForge
     exclusive that is client-only and not on the curated name list can still
     reach a hand. It is then caught at install by the ordinary client-only
@@ -1686,9 +1737,10 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 284 offline + 45 HTTP backend, 216 front-end
+# the whole suite: 325 offline + 45 HTTP backend, 218 front-end
+#   39, 10, 31, 76, 26, 30, 79, 34 and 218
 cd ~/blessforge
-for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict test_fleet_state; do
+for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict test_fleet_state test_auth test_policy; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
 .venv/bin/python dev/tools/check_frontend.py | tail -1

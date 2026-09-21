@@ -168,7 +168,13 @@ async def get_projects(ids: Iterable[str]) -> dict[str, dict]:
             "id": p.get("id"),
             "slug": p.get("slug"),
             "name": p.get("title"),
+            "summary": p.get("description"),
             "logo": p.get("icon_url"),
+            "downloads": p.get("downloads") or 0,
+            # Carried so callers can tell a library from a mod without a
+            # second round trip -- `kinship.describe_refs` runs this over a
+            # whole hand's dependencies at once.
+            "categories": p.get("categories") or [],
             "client_side": p.get("client_side"),
             "server_side": p.get("server_side"),
         }

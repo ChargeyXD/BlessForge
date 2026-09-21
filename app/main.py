@@ -32,6 +32,7 @@ from app import (
     files,
     fleetgroups,
     installer,
+    kinship,
     policy,
     loaders,
     modrinth,
@@ -1022,6 +1023,56 @@ async def download_export(filename: str):
     return FileResponse(path, media_type="application/zip", filename=safe)
 
 
+@app.get("/api/instances/{server_id}/roll")
+async def instance_roll(server_id: str) -> dict:
+    """The roulette hand this server was built from, if it was.
+
+    The archive the roll wrote is kept on disk, so a rolled server can hand
+    back the exact pack it was installed from rather than one rebuilt from
+    what is currently in its mods folder. Whether that archive is still
+    *there* is a question about the filesystem, which is why this exists as a
+    route instead of being read out of the manifest the client already has.
+    """
+    try:
+        manifest = await crafty.read_studio_manifest(server_id)
+    except Exception:
+        manifest = {}
+    roll = manifest.get("roll") or {}
+    roll_id = roll.get("roll_id") or ""
+    ready = bool(roll_id) and roulette.export_path(roll_id).is_file()
+    return {
+        "rolled": bool(roll),
+        "roll": roll,
+        "export_ready": ready,
+        "download": f"/api/instances/{server_id}/roll-export" if ready else "",
+    }
+
+
+@app.get("/api/instances/{server_id}/roll-export")
+async def download_roll_export(server_id: str):
+    """The CurseForge pack this rolled server was installed from."""
+    try:
+        manifest = await crafty.read_studio_manifest(server_id)
+    except Exception:
+        manifest = {}
+    roll_id = ((manifest.get("roll") or {}).get("roll_id")) or ""
+    if not roll_id:
+        raise HTTPException(
+            status_code=404,
+            detail="this server was not built by the roulette, so there is no "
+                   "rolled pack to hand back — export it instead")
+    path = roulette.export_path(roll_id)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="the rolled pack is no longer on disk — export the server "
+                   "instead, which rebuilds one from what is installed")
+    name = (manifest.get("pack") or {}).get("name") or roll_id
+    return FileResponse(
+        path, media_type="application/zip",
+        filename=f"{re.sub(r'[^A-Za-z0-9._ -]+', '', name) or roll_id}.zip")
+
+
 @app.get("/api/updates")
 async def update_summary() -> dict:
     """The last scheduled sweep for newer mod builds."""
@@ -1361,10 +1412,15 @@ async def roulette_meta() -> dict:
         ],
         "intensity": roulette.INTENSITY_LABELS,
         "defaults": roulette.DEFAULT_CONSTRAINTS,
-        "loaders": ["Forge", "NeoForge", "Fabric", "Quilt"],
+        "loaders": roulette.LOADERS,
         "sources": ["curseforge", "modrinth", "both"],
         "host": specs.effective_host(),
-        "seed": roulette.mint_seed(),
+        # What the vetting pass will enforce, so the screen can say what it
+        # is about to do rather than only reporting it afterwards.
+        "families": [
+            {k: f[k] for k in ("key", "title", "why", "limit", "kind")}
+            for f in kinship.CONFLICT_FAMILIES
+        ],
     }
 
 
@@ -1416,7 +1472,7 @@ def _pool_view(pool: dict, allowed: list[dict], c: dict) -> dict:
 
 @app.post("/api/roulette/roll")
 async def roulette_roll(body: dict = Body(default={})) -> dict:
-    """Pull the lever. Deterministic: same seed + constraints == same hand.
+    """Pull the rope. A fresh draw every time -- there is no seed.
 
     Returned as a job rather than a plain response because dealing a hand of
     120 mods means pinning 120 real builds, one catalogue request each. That
@@ -1424,9 +1480,9 @@ async def roulette_roll(body: dict = Body(default={})) -> dict:
     for fifteen seconds reads as a hang.
     """
     c = roulette.merge_constraints(body.get("constraints") or body)
-    seed = roulette.normalise_seed(body.get("seed"))
+    roll_id = roulette.mint_roll_id()
     holds = [str(h) for h in (body.get("holds") or [])]
-    job = registry.create("roulette_roll", f"Rolling {seed}")
+    job = registry.create("roulette_roll", "Dealing a hand")
 
     async def run(j) -> dict:
         j.set_step("Reading the pool", 4)
@@ -1441,7 +1497,7 @@ async def roulette_roll(body: dict = Body(default={})) -> dict:
         # against what its publisher actually declares, and on a version the
         # catalogues have half-updated to a third of a hand can fail that. A
         # single over-deal silently hands back a short pack; rounds top it up.
-        filled = await roulette.fill_hand(seed, pool["mods"], c, holds, job=j)
+        filled = await roulette.fill_hand(pool["mods"], c, holds, job=j)
         hand, dropped = filled["hand"], filled["dropped"]
         for p in dropped[:12]:
             j.log_line(f"Dropped {p['name']}: {p['reason']}", "warn")
@@ -1451,13 +1507,15 @@ async def roulette_roll(body: dict = Body(default={})) -> dict:
 
         j.set_step("Reading the odds", 94)
         return {
-            "seed": seed,
+            "roll_id": roll_id,
             "constraints": c,
             "hand": hand,
             "dropped": dropped,
             "short": filled["short"],
+            "adopted": filled["adopted"],
             "rounds": filled["rounds"],
             "fill_note": filled["note"],
+            "inspection": filled["inspection"],
             "compatibility": roulette.compatibility_report(hand, c),
             "summary": roulette.summarise(hand, c, specs.effective_host()),
             "pool": _pool_view(pool, allowed, c),
@@ -1477,11 +1535,17 @@ async def roulette_reroll(body: dict = Body(...)) -> dict:
         raise HTTPException(400, "hand and mod are both required")
     try:
         pool = await roulette.build_pool(c["minecraft"], c["loader"], c["source"])
-        seed = roulette.normalise_seed(body.get("seed"))
-        fresh = roulette.reroll_one(seed, hand, target, pool["mods"], c)
+        fresh, refused = await roulette.reroll_verified(
+            hand, target, pool["mods"], c)
+        # One slot changing can orphan an add-on or put two of a family in the
+        # same hand, so the swap is vetted exactly like a full deal. Without
+        # this, rerolling was the one way back into the bug.
+        fresh, problems, inspection = await roulette.vet_hand(fresh, c, pool["mods"])
         return {
-            "seed": seed,
             "hand": fresh,
+            "dropped": refused + problems,
+            "inspection": inspection,
+            "compatibility": roulette.compatibility_report(fresh, c),
             "summary": roulette.summarise(fresh, c, specs.effective_host()),
         }
     except ValueError as e:
@@ -1497,12 +1561,12 @@ async def roulette_install(body: dict = Body(...)) -> dict:
     if not hand:
         raise HTTPException(400, "no hand supplied — pull the lever first")
     c = roulette.merge_constraints(body.get("constraints") or {})
-    seed = roulette.normalise_seed(body.get("seed"))
-    name = (body.get("server_name") or f"Roulette {seed}").strip()
+    roll_id = roulette.safe_roll_id(body.get("roll_id"))
+    name = (body.get("server_name") or f"Roulette {roll_id}").strip()
     job = registry.create("roulette", f"Rolling {name}", server_name=name)
 
     registry.start(job, lambda j: roulette.install_roll(
-        j, seed=seed, constraints=c, hand=hand, server_name=name,
+        j, roll_id=roll_id, constraints=c, hand=hand, server_name=name,
         port=int(body.get("port", 25565)), motd=body.get("motd"),
         optimize=bool(body.get("optimize", True)),
     ))
@@ -1527,12 +1591,19 @@ async def roulette_preview_export(body: dict = Body(...)) -> dict:
     if not hand:
         raise HTTPException(400, "no hand supplied")
     c = roulette.merge_constraints(body.get("constraints") or {})
-    c["seed"] = roulette.normalise_seed(body.get("seed"))
+    c["roll_id"] = roulette.safe_roll_id(body.get("roll_id"))
     cf = [m for m in hand if m.get("source") == "curseforge"]
+    loader_id = await curseforge.loader_build_id(c["minecraft"], c["loader"])
     return {
         "files": len(cf),
         "bundled": len(hand) - len(cf),
         "manifest_only": len(hand) == len(cf),
+        "adopted": sum(1 for m in hand if m.get("adopted_for")),
+        # The CurseForge app refuses a manifest whose loader id carries no
+        # build number, so whether one exists for this version is the single
+        # most useful thing to say before anybody downloads the zip.
+        "loader_id": loader_id,
+        "portable": bool(loader_id),
         "note": (
             "Every rolled mod is on CurseForge, so the export is a small "
             "manifest the CurseForge app can open directly."

@@ -758,63 +758,101 @@ html.js-motion .to-reveal.revealed{transform:none}
 /* ============================================================
    MOD ROULETTE — the shrine rope
    ------------------------------------------------------------
-   "Pull the lever" was a button that said "pull the lever". This
-   is a suzu rope you actually drag: grab it, pull it down, let go,
-   and it snaps back and rings. Keyboard and touch get the same
-   result without the drag — Enter or a tap pulls it — because a
-   gesture-only control is one nobody on a phone can use.
+   "Pull the lever" was a button that said "pull the lever", and
+   the rope that replaced it was a div with a height transition:
+   it moved while you touched it and was a photograph the rest of
+   the time. It is simulated now — roulette.js runs a spring for
+   the length, a pendulum for the sway and a second, looser one
+   for the tassel, and drives all of it through the four custom
+   properties below.
+
+   Which means the CSS here has one job that matters: BE RIGHT AT
+   REST. Every variable has a sensible fallback and every default
+   is the hanging pose, so a stalled timeline (a background tab, a
+   throttled preview pane) leaves a rope hanging still rather than
+   a rope that never appears. Nothing here starts from opacity 0.
    ============================================================ */
 .ropebay{
   position:relative;display:flex;flex-direction:column;align-items:center;
-  padding:6px 0 18px;user-select:none;overflow:hidden;
+  padding:4px 0 16px;user-select:none;overflow:hidden;
+  --sway:0deg;
 }
-.suzu{
-  width:66px;height:52px;position:relative;z-index:2;
-  background:radial-gradient(ellipse at 50% 30%,#F0D584,var(--gold-ink) 72%);
-  border:2.5px solid var(--slab-bg);border-radius:46% 46% 38% 38%/60% 60% 40% 40%;
-  box-shadow:0 6px 18px -6px color-mix(in srgb,var(--gold) 70%,transparent);
+/* The whole rig hangs from the top of the panel. Rotating each piece about
+   its own top edge is what makes the sway read as a hinge rather than as a
+   sprite sliding sideways. */
+.rig{
+  position:relative;display:flex;flex-direction:column;align-items:center;
   transform-origin:50% 0;
 }
-.ropebay.ringing .suzu{animation:suzuRing .7s var(--ease-out)}
-@keyframes suzuRing{
-  0%,100%{transform:rotate(0)}
-  18%{transform:rotate(-9deg)}42%{transform:rotate(7deg)}
-  66%{transform:rotate(-4deg)}84%{transform:rotate(2deg)}
+.suzu{
+  width:64px;height:50px;position:relative;z-index:2;
+  background:radial-gradient(ellipse at 42% 26%,#F5DE97,var(--gold-ink) 74%);
+  border:2.5px solid var(--slab-bg);border-radius:46% 46% 38% 38%/60% 60% 40% 40%;
+  box-shadow:0 6px 18px -6px color-mix(in srgb,var(--gold) 70%,transparent),
+             inset -6px -4px 10px -6px rgba(0,0,0,.45);
+  transform-origin:50% 0;
+  transform:rotate(var(--bell,0deg));
+}
+/* The ridged band every suzu has, and the slot the clapper swings in. */
+.suzu::before{
+  content:"";position:absolute;left:8%;right:8%;top:52%;height:7px;
+  background:repeating-linear-gradient(90deg,
+    color-mix(in srgb,var(--slab-bg) 40%,transparent) 0 2px,transparent 2px 6px);
+  opacity:.55;
 }
 .suzu::after{
-  content:"";position:absolute;left:50%;bottom:-6px;width:12px;height:12px;
-  margin-left:-6px;border-radius:50%;background:var(--slab-bg);
+  content:"";position:absolute;left:50%;bottom:-5px;width:14px;height:9px;
+  margin-left:-7px;border-radius:0 0 50% 50%;background:var(--slab-bg);
+}
+.suzu .clapper{
+  position:absolute;left:50%;bottom:-2px;width:7px;height:7px;margin-left:-3.5px;
+  border-radius:50%;background:var(--slab-bg);opacity:.85;
+  transform:translateX(var(--clap,0px));
 }
 .rope{
-  width:44px;position:relative;z-index:1;cursor:grab;touch-action:none;
+  width:46px;position:relative;z-index:1;cursor:grab;touch-action:none;
   border:0;padding:0;background:none;display:block;
+  transform-origin:50% 0;
+  transform:rotate(var(--sway,0deg));
 }
 .rope:active{cursor:grabbing}
 .rope .cord{
-  width:26px;height:var(--rope-len,150px);margin:0 auto;
+  position:relative;width:26px;height:var(--rope-len,132px);margin:0 auto;
   background:repeating-linear-gradient(20deg,
     var(--shrine) 0 9px,var(--shrine-deep) 9px 18px);
   border:2.5px solid var(--slab-bg);border-top:0;
-  transition:height .42s var(--ease-spring);
 }
-.rope.dragging .cord{transition:none}
+/* Bindings down the rope. They are what makes the length change read as a
+   rope stretching rather than as a rectangle being scaled. */
+.rope .cord .knot{
+  position:absolute;left:-4px;right:-4px;height:8px;
+  background:var(--gold-ink);border:2px solid var(--slab-bg);
+  border-radius:3px;
+}
+.rope .cord .knot:nth-child(1){top:22%}
+.rope .cord .knot:nth-child(2){top:52%}
+.rope .cord .knot:nth-child(3){top:79%}
 .rope .tassel{
   width:44px;height:34px;margin:-2px auto 0;
   background:repeating-linear-gradient(90deg,
     var(--paper) 0 6px,transparent 6px 11px);
   border:2.5px solid var(--slab-bg);border-top:0;
   clip-path:polygon(0 0,100% 0,86% 100%,14% 100%);
+  transform-origin:50% 0;
+  transform:rotate(var(--sway-lag,0deg));
 }
 .rope:hover .cord{filter:brightness(1.08)}
 .rope:focus-visible{outline:3px solid var(--rose);outline-offset:6px}
 .ropebay .hint{
   font-family:var(--mono);font-size:10px;letter-spacing:.16em;
   text-transform:uppercase;color:var(--faint);margin-top:12px;text-align:center;
+  transition:color var(--t-tap);
 }
 .ropebay.pulled .hint{color:var(--rose)}
+.ropebay.pulled .cord{filter:brightness(1.14) saturate(1.1)}
 .ropebay .burst{position:absolute;inset:0;pointer-events:none;z-index:3}
 .ropebay .burst i{
-  position:absolute;left:50%;top:36%;width:9px;height:12px;
+  position:absolute;left:50%;top:30%;width:9px;height:12px;
   background:var(--sakura);border-radius:50% 50% 50% 50%/60% 60% 40% 40%;
   animation:burst .9s var(--ease-out) forwards;
 }
@@ -822,6 +860,19 @@ html.js-motion .to-reveal.revealed{transform:none}
   from{transform:translate(0,0) rotate(0);opacity:1}
   to{transform:translate(var(--bx),var(--by)) rotate(var(--br));opacity:0}
 }
+.rope-note{font-size:12px;line-height:1.5;text-align:center;margin:0 auto;
+  max-width:40ch}
+/* How much of the catalogue survived your constraints, read at a glance. */
+.poolcount{
+  display:flex;align-items:baseline;justify-content:center;gap:7px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--faint);
+  padding:9px 12px;border:2px solid var(--rule);background:var(--paper-2);
+}
+.poolcount b{font-family:var(--num);font-size:17px;letter-spacing:-.02em;
+  color:var(--rose)}
+.poolcount i{width:3px;height:3px;border-radius:50%;background:var(--rule);
+  align-self:center}
 
 /* --- roulette constraint dials -------------------------------- */
 .dials{display:grid;gap:13px}
@@ -903,6 +954,16 @@ html.js-motion .to-reveal.revealed{transform:none}
 .reelrow.held{background:var(--gold-soft)}
 .reelrow.held::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
   background:var(--gold)}
+/* A mod that came in because one of its add-ons was rolled. Indented and
+   quieter, so the list reads as "these are yours, and this came with that
+   one" rather than as 121 equal rows. */
+.reelrow.companion{padding-left:26px;background:var(--paper-2)}
+.reelrow.companion::before{
+  content:"";position:absolute;left:12px;top:50%;width:8px;height:2px;
+  background:var(--gold);
+}
+.reelrow.companion:hover{background:var(--sakura-soft)}
+.reelrow.companion .nm{font-size:12.5px}
 .reelrow .ico{width:30px;height:30px;flex:none;border:2px solid var(--rule);
   object-fit:cover;background:var(--paper-2)}
 .reelrow .who{flex:1;min-width:0}
@@ -912,12 +973,63 @@ html.js-motion .reel.dealing .reelrow{animation:dealIn .3s var(--ease-out) both}
 @keyframes dealIn{from{transform:translateX(26px) rotate(1.2deg)}
   to{transform:none}}
 
-.seedbox{
-  font-family:var(--mono);font-size:19px;font-weight:700;letter-spacing:.18em;
-  text-align:center;padding:13px;border:var(--edge) solid var(--slab-bg);
-  background:var(--gold-leaf);background-size:220% 100%;
-  animation:foil 7s linear infinite;color:#241B28;text-transform:uppercase;
-  box-shadow:var(--lift-1);
+/* --- what came back: three faces of one panel ------------------
+   The hand, its lineage and what was turned away used to be a
+   panel, a modal and a toast. They are the same answer read three
+   ways, so they are one panel with a switch. */
+.outcome .facebar{padding:10px 14px 0;display:flex;justify-content:center}
+.outcome .facebar .seg{width:100%}
+.outcome .faces{padding-top:10px}
+.outcome .faces .reel{border-left:0;border-right:0;border-bottom:0}
+
+/* the composition strip: content, add-ons, brought-in, as one bar */
+.compo{display:flex;height:12px;border:2px solid var(--slab-bg);overflow:hidden;
+  background:var(--paper-2)}
+.compo-part{min-width:2px;transition:flex-grow var(--t-move) var(--ease-out)}
+.compo-part.content{background:var(--rose)}
+.compo-part.addons{background:var(--plum)}
+.compo-part.brought{background:var(--gold)}
+
+.lin-sec{display:grid;gap:8px}
+.lin-head{display:flex;align-items:center;gap:7px;color:var(--faint)}
+.lin-head h4{margin:0;font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+.lin-row{
+  border:2px solid var(--rule);background:var(--card);padding:9px 11px;
+  display:grid;gap:5px;
+  transition:border-color var(--t-tap),transform var(--t-tap) var(--ease-out);
+}
+.lin-row:hover{border-color:var(--sakura-deep);transform:translateX(3px)}
+.lin-row.bad{border-color:var(--danger)}
+.lin-row .fn{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.lin-row .nm{font-family:var(--num);font-weight:700;font-size:13.5px}
+.lin-parent{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* The add-ons hang off their parent like shide off a rope. */
+.lin-kids{display:flex;flex-wrap:wrap;gap:6px;padding-left:14px;position:relative}
+.lin-kids::before{
+  content:"";position:absolute;left:4px;top:-4px;bottom:9px;width:2px;
+  background:var(--gold);
+}
+.lin-kids .kid{
+  font-family:var(--mono);font-size:10px;padding:3px 7px;
+  background:var(--gold-soft);border:1.5px solid var(--gold);
+  color:var(--text);
+}
+.libgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:7px}
+.lib{border:1.5px solid var(--rule);background:var(--paper-2);padding:6px 9px;
+  display:grid;gap:1px;min-width:0}
+.lib .nm{font-family:var(--num);font-weight:700;font-size:12px;
+  overflow-wrap:anywhere}
+.lib .fn{font-family:var(--mono);font-size:9.5px;color:var(--faint);
+  overflow-wrap:anywhere}
+
+/* the rules dialog: what the vetting pass will do, before it does it */
+.rulelist{display:grid;gap:10px}
+.rulerow{display:flex;gap:10px;align-items:flex-start}
+.rulemark{
+  width:28px;height:28px;flex:none;display:grid;place-items:center;
+  border:2px solid var(--rule);background:var(--paper-2);color:var(--rose);
+  border-radius:50%;
 }
 
 /* ============================================================

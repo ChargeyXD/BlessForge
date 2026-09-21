@@ -165,6 +165,13 @@ RULES: list[Rule] = [
     _r("POST", "/api/instances/{server_id}/fix/versions", "mods.manage", True),
     _r("POST", "/api/instances/{server_id}/loader/reinstall", "tune.apply", True),
     _r("POST", "/api/instances/{server_id}/export", "files.read", True),
+    # Reading and downloading the pack a server was rolled from is the same
+    # permission as exporting it: both hand back what is installed. It is
+    # deliberately NOT gated on `roulette.use` -- that is the right to spend
+    # somebody's catalogue quota dealing new hands, not the right to look at
+    # a server you already have.
+    _r("GET", "/api/instances/{server_id}/roll", "server.view", True),
+    _r("GET", "/api/instances/{server_id}/roll-export", "files.read", True),
 
     # The assistant can change a server, so it needs what it would change.
     _r("POST", "/api/instances/{server_id}/ai/analyse", "server.view", True),

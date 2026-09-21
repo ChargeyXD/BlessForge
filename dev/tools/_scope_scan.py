@@ -97,8 +97,51 @@ def blank(src: str) -> str:
     return "".join(out)
 
 
+def _comma_declarators(src: str) -> set[str]:
+    """Every name bound by the comma form: `let a = 1, b = 2, c;`.
+
+    The plain binder above stops at the first `=`, so only `a` is ever seen
+    and every later assignment to `b` reads as undeclared. Nothing in the
+    front end used the comma form until the roulette's rope integrator did,
+    and then four of its five springs were reported as bugs that were not
+    there. Walking the declarator list at bracket depth 0 is the whole fix;
+    it adds only the leading identifier of each declarator, so it cannot
+    excuse a real assignment to something nobody declared.
+    """
+    names: set[str] = set()
+    for m in re.finditer(r"\b(?:let|const|var)\s", src):
+        i, depth, start, parts = m.end(), 0, m.end(), []
+        while i < len(src):
+            ch = src[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and ch == ",":
+                parts.append(src[start:i])
+                start = i + 1
+            elif depth == 0 and ch == ";":
+                break
+            elif depth == 0 and ch == "\n":
+                # A declaration can wrap, but only after a comma. Stopping
+                # at every newline would miss the wrapped ones; stopping at
+                # none would run a semicolon-less declaration into the next
+                # statement and start excusing assignments there.
+                if not src[:i].rstrip().endswith(","):
+                    break
+            i += 1
+        parts.append(src[start:i])
+        for part in parts:
+            lead = re.match(r"\s*([\w$]+)", part)
+            if lead:
+                names.add(lead.group(1))
+    return names
+
+
 def declared_in(src: str) -> set[str]:
-    names = set(GLOBALS)
+    names = set(GLOBALS) | _comma_declarators(src)
     for pattern in _BINDERS:
         for m in re.finditer(pattern, src):
             names |= set(re.findall(r"[\w$]+", m.group(1)))

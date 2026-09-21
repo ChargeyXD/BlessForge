@@ -1129,6 +1129,14 @@ export function countUp(el, to, { decimals = 0, duration = 700, suffix = '' } = 
     return el;
   }
   const from = 0;
+  // Land on the answer FIRST, then animate up to it. The obvious order --
+  // start at zero and count -- has the same failure as an entrance animation
+  // that starts at opacity 0: if the document timeline never advances, the
+  // first frame never runs and the element keeps the value it was born with.
+  // For a fade that means invisible; here it means a panel confidently
+  // reporting that a 120-mod hand contains 0 mods, which is worse, because
+  // nothing about it looks broken.
+  el.textContent = target.toFixed(decimals) + suffix;
   const started = performance.now();
   const step = (now) => {
     const t = Math.min(1, (now - started) / duration);

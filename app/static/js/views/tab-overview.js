@@ -8,7 +8,7 @@
 
 import {
   h, hl, mount, icon, api, toast, toastError, pill, bar, bytes, num,
-  duration, ago, loadingFox, empty, copyText,
+  duration, ago, loadingFox, empty, copyText, frag,
 } from '../core.js';
 import { run } from '../jobs.js';
 
@@ -16,6 +16,7 @@ export async function render(ctx) {
   const node = h('div', { style: { display: 'grid', gap: '18px' } });
   const diagHost = h('div');
   const playerHost = h('div');
+  const packHost = h('div');
 
   function paint() {
     const m = ctx.manifest;
@@ -122,6 +123,10 @@ export async function render(ctx) {
                 'Snapshots taken before destructive changes',
                 () => ctx.go('backups')),
             )),
+
+          h('div.panel', { id: 'packpanel' },
+            h('header', icon('archive', 15), h('h3', 'CurseForge pack')),
+            h('div.pad', packHost)),
 
           h('div.panel',
             h('header', icon('flask', 15), h('h3', 'Boot test')),
@@ -250,6 +255,96 @@ export async function render(ctx) {
       h('div.wrapany', { style: { fontSize: '13px' } }, f.detail));
   }
 
+  /* --- the pack this server is, as a file ----------------------
+     Two different things wearing one name, and the difference
+     matters. A server the roulette built has an *archive on disk*
+     — the exact zip it was installed from, kept at install time —
+     and handing that back is a file copy. Any other server can
+     only be described from its install manifest, which means
+     rebuilding a manifest and pulling every non-CurseForge jar
+     back out of Crafty. The panel offers whichever it has, and
+     says which one it is giving you. */
+  let packLoaded = false;
+  async function loadPack(force) {
+    if (packLoaded && !force) return;
+    packLoaded = true;
+    mount(packHost, h('div.skel', { style: { height: '54px' } }));
+    let info = { rolled: false };
+    try {
+      info = await api.get(`/api/instances/${ctx.id}/roll`);
+    } catch { /* not fatal — the rebuild path works regardless */ }
+    const roll = info.roll || {};
+
+    const rebuild = h('button.btn.sm.ghost.block', {
+      style: { marginTop: '9px' },
+      onclick: exportPack,
+    }, icon('archive', 13),
+      h('span', info.export_ready ? 'Rebuild from what is installed now'
+        : 'Export as a CurseForge pack'));
+
+    if (!info.rolled) {
+      mount(packHost,
+        h('p.muted', { style: { fontSize: '13px' } },
+          'Write this server out as a CurseForge modpack zip — a manifest of '
+          + 'every mod it was installed with, plus any jar that has no '
+          + 'CurseForge entry bundled inside it. It imports into the '
+          + 'CurseForge app, and back into BlessForge.'),
+        rebuild);
+      return;
+    }
+
+    mount(packHost,
+      h('div.chiprow', { style: { marginBottom: '10px' } },
+        pill('rolled', 'gold', 'Built by the Mod Roulette'),
+        roll.intensity ? pill(roll.intensity, 'plum') : null,
+        roll.adopted
+          ? pill(`${roll.adopted} brought in`, 'ok',
+            'Mods that came in because one of their add-ons was rolled')
+          : null),
+      h('div', { style: { display: 'grid', gap: '7px', marginBottom: '10px' } },
+        detailRow('Rolled', roll.rolled_at ? ago(roll.rolled_at * 1000) : '—'),
+        detailRow('Rolled mods', String(roll.hand ?? '—')),
+        detailRow('Jars installed', String(roll.installed ?? '—')),
+        detailRow('In the manifest', `${roll.curseforge_mods ?? '?'} CurseForge`
+          + (roll.bundled_mods ? `, ${roll.bundled_mods} bundled` : ''))),
+      info.export_ready
+        ? frag(
+          h('a.btn.sm.block', {
+            href: info.download,
+            download: '',
+          }, hl(), icon('download', 13),
+            h('span', `Download the rolled pack${roll.export_bytes
+              ? ` · ${bytes(roll.export_bytes)}` : ''}`)),
+          h('p.muted', { style: { fontSize: '12px', marginTop: '7px' } },
+            'The exact zip this server was installed from, kept since the '
+            + 'roll. Not rebuilt — byte for byte what went in.'))
+        : h('div.note.warn',
+          h('b', 'The rolled pack is no longer on disk'),
+          'It was written when the roll was installed and something has '
+          + 'removed it since. Rebuilding from the install manifest gives '
+          + 'you the same mods.'),
+      rebuild);
+  }
+
+  function exportPack() {
+    run(`/api/instances/${ctx.id}/export`, { bundle_others: true }, {
+      title: `Export — ${ctx.name}`,
+      onEnd: (rec) => {
+        if (rec.status !== 'done') return;
+        const r = rec.result || {};
+        toast(`${r.curseforge_mods ?? '?'} mods in the manifest`
+          + ((r.bundled || []).length ? `, ${r.bundled.length} bundled.` : '.'),
+        'ok', { title: 'Pack written', timeout: 10000 });
+        if (r.download) {
+          const a = h('a', { href: r.download, download: '' });
+          document.body.append(a);
+          a.click();
+          a.remove();
+        }
+      },
+    });
+  }
+
   /* --- who is on ---------------------------------------------- */
   async function loadPlayers() {
     mount(playerHost, h('div.skel', { style: { height: '54px' } }));
@@ -297,6 +392,7 @@ export async function render(ctx) {
   paint();
   loadDiagnostics(false);
   loadPlayers();
+  loadPack(false);
 
   return {
     node,

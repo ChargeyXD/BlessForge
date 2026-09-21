@@ -528,13 +528,13 @@ From a checkout on the box (needs the venv, not the container):
 ```bash
 cd /path/to/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions \
-         test_roulette test_boot_verdict test_fleet_state; do
+         test_roulette test_boot_verdict test_fleet_state          test_auth test_policy; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
 .venv/bin/python dev/tools/check_frontend.py | tail -2
 ```
 
-Expected: 39, 10, 31, 35, 26, 30 backend checks and 197 front-end checks,
+Expected: 39, 10, 31, 75, 26, 30, 79, 34 backend checks and 218 front-end checks,
 all passing. `check_frontend.py` wants `node` on PATH for its parse check and skips
 it cleanly if node is absent — but that is the check worth having, because
 `node --check <file>` alone parses an ES module as a *script* and will accept a

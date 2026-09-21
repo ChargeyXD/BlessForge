@@ -6,12 +6,17 @@ comes back is a *hand*: a specific set of mods, drawn from the live CurseForge
 and Modrinth catalogues, that can then be installed as a real server and
 exported as a CurseForge modpack zip.
 
-Two properties make this more than a shuffle:
+Three properties make this more than a shuffle:
 
-  * **A pull is reproducible.** Every roll is identified by a short seed, and
-    re-entering that seed with the same constraints deals the same hand,
-    exactly. That is what makes a roll shareable: send someone `QRT-8KM-4Z`
-    and your constraints and they get your pack, not one like it.
+  * **The hand holds together.** A roll used to deal add-ons without the mods
+    they add to, and alternatives that refuse to sit beside each other. Every
+    hand now goes through `kinship`: bare libraries are not dealt, an add-on
+    brings its parent in or leaves, and a family that should only have one
+    member in a pack only gets one.
+
+  * **Every mod is real.** Nothing enters a hand until the catalogue has been
+    asked for a build that declares this exact Minecraft version and a loader
+    this server can run. What fails is replaced, not quietly subtracted.
 
   * **The odds are honest.** The panel that says "this will not boot" is
     computed from the same facts the installer will act on -- declared file
@@ -19,9 +24,10 @@ Two properties make this more than a shuffle:
     code path at all. It is not decoration.
 
 The randomness is deliberately *not* uniform. Categories the user marks
-preferred enter the draw three times; banned ones do not enter at all. That
+preferred are weighted toward the hand; banned ones do not enter at all. That
 keeps a roll feeling authored rather than arbitrary while still surprising the
-person who asked for it.
+person who asked for it. It is otherwise a genuine draw: there is no seed, no
+saved roll and no way to ask for the same hand twice, which is the point.
 
 Everything here is read-only against the catalogues until the user accepts a
 hand; `install_roll` is the only function that touches Crafty.
@@ -32,75 +38,43 @@ import asyncio
 import hashlib
 import io
 import json
-import posixpath
 import random
 import re
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
-from app import config, crafty, curseforge, deps, installer, modrinth, packs
+from app import (config, crafty, curseforge, deps, installer, kinship,
+                 modrinth, packs)
 from app.jobs import Job
 
-# --- the deterministic core --------------------------------------------
+# --- naming a roll ------------------------------------------------------
 #
-# xfnv1a hash into mulberry32, ported from the design prototype so that a
-# seed dealt in the browser and a seed dealt here agree. `dev/tools/
-# test_roulette.py` pins the port against the original JS output; changing
-# either half without the other silently breaks every shared seed.
+# There used to be a seed here, and a hash-into-PRNG ported from the design
+# prototype so that a seed typed in the browser and a seed typed here agreed.
+# It worked, and nobody wanted it: a roulette whose whole appeal is not
+# knowing what you will get does not need a machine for getting it twice.
+#
+# What is left is a label. A roll still needs *a* name -- the export it writes
+# is a file on disk, and a file needs a filename -- so one is minted per pull
+# from the clock and four random letters. It identifies an archive. It does
+# not reproduce anything.
 
-_M32 = 0xFFFFFFFF
-
-
-def _imul(a: int, b: int) -> int:
-    """JavaScript's Math.imul, kept unsigned."""
-    return (a * b) & _M32
-
-
-def prng(seed: str) -> Callable[[], float]:
-    """A seeded generator producing floats in [0, 1)."""
-    h = (1779033703 ^ len(seed)) & _M32
-    for ch in seed:
-        h = _imul(h ^ ord(ch), 3432918353)
-        h = ((h << 13) | (h >> 19)) & _M32
-    state = h
-
-    def nxt() -> float:
-        nonlocal state
-        state = (state + 0x6D2B79F5) & _M32
-        t = _imul(state ^ (state >> 15), 1 | state)
-        t = (((t + _imul(t ^ (t >> 7), 61 | t)) & _M32) ^ t) & _M32
-        return ((t ^ (t >> 14)) & _M32) / 4294967296
-
-    return nxt
+ROLL_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 
-# Deliberately excludes I, L, O, 0 and 1: a seed is meant to be read off a
-# screen and typed back in by someone else.
-SEED_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-SEED_RE = re.compile(r"^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{2}$")
+def mint_roll_id() -> str:
+    tag = "".join(random.choice(ROLL_ALPHABET) for _ in range(4))
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-{tag}"
 
 
-def mint_seed() -> str:
-    pick = lambda k: "".join(random.choice(SEED_ALPHABET) for _ in range(k))  # noqa: E731
-    return f"{pick(3)}-{pick(3)}-{pick(2)}"
-
-
-def normalise_seed(raw: str | None) -> str:
-    """Accept what a person actually types; mint one if it is unusable."""
-    if not raw:
-        return mint_seed()
-    cleaned = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
-    # Map the ambiguous glyphs onto what the alphabet uses.
-    cleaned = cleaned.translate(str.maketrans({"I": "J", "L": "J", "O": "Q",
-                                               "0": "Q", "1": "2"}))
-    if len(cleaned) < 8:
-        cleaned = (cleaned + mint_seed().replace("-", ""))[:8]
-    cleaned = cleaned[:8]
-    return f"{cleaned[:3]}-{cleaned[3:6]}-{cleaned[6:8]}"
+def safe_roll_id(raw: str | None) -> str:
+    """Whatever came in, reduced to something that can be a filename."""
+    cleaned = re.sub(r"[^A-Za-z0-9-]", "", (raw or "").upper())[:40]
+    return cleaned or mint_roll_id()
 
 
 # --- categories ---------------------------------------------------------
@@ -460,6 +434,13 @@ def merge_constraints(raw: dict | None) -> dict:
     c["count"] = max(5, min(300, int(c.get("count") or 60)))
     c["intensity"] = max(1, min(5, int(c.get("intensity") or 3)))
     c["quality"] = max(0, min(50, int(c.get("quality") or 0)))
+    # A loader the installer cannot set up unattended is not a choice, it is
+    # a dead end reached after a two-minute deal. A stored preference from
+    # before Quilt was withdrawn lands here and is corrected rather than
+    # refused.
+    wanted = str(c.get("loader") or "").strip().lower()
+    c["loader"] = next((l for l in LOADERS if l.lower() == wanted),
+                       DEFAULT_CONSTRAINTS["loader"])
     return c
 
 
@@ -499,72 +480,82 @@ def eligible(pool_mods: list[dict], c: dict) -> list[dict]:
     return out
 
 
-def _constraint_fingerprint(c: dict) -> str:
-    """Everything a hand depends on, in a stable order.
+def _weight(m: dict, c: dict) -> float:
+    """How many tickets this mod holds in the draw.
 
-    The seed alone is not enough to reproduce a hand -- the constraints
-    choose the pool it is drawn from. Both go into the generator, so the same
-    seed under different constraints deals a different hand, and says so.
+    Applied as `u ** (1 / weight)`, which is the distribution of the best of
+    `weight` uniform draws -- the same thumb on the scale that handing a mod
+    three tickets would give, without building the ticket array. A preferred
+    category is roughly three times as likely to come up; it is never made
+    exclusive, because "preferred" that means "only" is a filter wearing a
+    weight's clothes.
     """
-    return "|".join([
-        c["minecraft"], c["loader"], c["source"], str(c["count"]),
-        str(c["intensity"]), str(c["quality"]),
-        json.dumps(c["categories"], sort_keys=True),
-        json.dumps(c["toggles"], sort_keys=True),
-    ])
+    return float(PREFERRED_WEIGHT
+                 if c["categories"].get(m["category"]) == PREFERRED else 1)
 
 
-def deal(seed: str, pool_mods: list[dict], c: dict,
-         holds: list[str] | None = None) -> list[dict]:
-    """Draw a hand. Same seed + same constraints + same holds == same hand."""
+def deal(pool_mods: list[dict], c: dict, holds: list[str] | None = None,
+         rng: random.Random | None = None) -> list[dict]:
+    """Draw a hand at random from what the constraints allow.
+
+    `rng` exists so the tests can pin a draw; nothing in the app passes one,
+    and a roll is a fresh draw every time.
+    """
+    rng = rng or random
     allowed = eligible(pool_mods, c)
     held_names = set(holds or [])
     kept = [m for m in allowed if m["name"] in held_names]
     rest = [m for m in allowed if m["name"] not in held_names]
 
-    # Each mod is scored independently from the seed and its own name, and
-    # the highest scores win. The design drew from an array of tickets
-    # instead, which works but makes every pick depend on the length and
-    # order of that array -- so refreshing the pool, or one mod leaving the
-    # catalogue, silently reshuffled the whole hand and a shared seed stopped
-    # reproducing. Scoring per mod means an unrelated change to the pool only
-    # matters if the new mod actually outscores something that was picked.
-    #
-    # Preference is applied as u ** (1 / weight), which is the distribution
-    # of the best of `weight` draws -- the same thumb on the scale that three
-    # tickets gave, without the ordering dependency.
-    base = f"{seed}|{_constraint_fingerprint(c)}|{','.join(sorted(held_names))}"
-    scored: list[tuple[float, str, dict]] = []
-    for m in rest:
-        weight = PREFERRED_WEIGHT if c["categories"].get(m["category"]) == PREFERRED else 1
-        u = prng(f"{base}|{m['source']}:{m['project_id']}|{m['name']}")()
-        scored.append((u ** (1.0 / weight), m["name"], m))
-
-    # Sorted by score, then by name so that two identical scores -- possible
-    # but vanishingly unlikely -- still resolve the same way every time.
+    scored = [(rng.random() ** (1.0 / _weight(m, c)), m["name"], m) for m in rest]
     scored.sort(key=lambda row: (-row[0], row[1]))
     want = max(0, c["count"] - len(kept))
     return kept + [row[2] for row in scored[:want]]
 
 
-def reroll_one(seed: str, hand: list[dict], target: str, pool_mods: list[dict],
-               c: dict) -> list[dict]:
+def reroll_one(hand: list[dict], target: str, pool_mods: list[dict], c: dict,
+               rng: random.Random | None = None) -> list[dict]:
     """Replace a single mod in a hand, leaving every other slot alone."""
+    rng = rng or random
     taken = {m["name"] for m in hand}
     candidates = [m for m in eligible(pool_mods, c) if m["name"] not in taken]
     if not candidates:
         raise ValueError("nothing else fits your constraints for that slot")
-    base = f"{seed}|slot|{target}|{_constraint_fingerprint(c)}"
-    best = max(
-        candidates,
-        key=lambda m: (
-            prng(f"{base}|{m['source']}:{m['project_id']}|{m['name']}")()
-            ** (1.0 / (PREFERRED_WEIGHT
-                       if c["categories"].get(m["category"]) == PREFERRED else 1)),
-            m["name"],
-        ),
-    )
+    best = max(candidates,
+               key=lambda m: (rng.random() ** (1.0 / _weight(m, c)), m["name"]))
     return [best if m["name"] == target else m for m in hand]
+
+
+async def reroll_verified(hand: list[dict], target: str, pool_mods: list[dict],
+                          c: dict, tries: int = 6) -> tuple[list[dict], list[dict]]:
+    """Reroll one slot into a mod that is known to exist for this version.
+
+    `reroll_one` picks from the pool, and a pool entry is a catalogue listing,
+    not a file -- it can perfectly well have no build for this exact
+    Minecraft version. Dropping one of those into a verified hand put the one
+    unverified mod in the pack back, through the only door left open, and it
+    would not surface until the install. So the replacement is pinned here,
+    and a replacement that cannot be pinned is replaced in turn.
+    """
+    taken = {m["name"] for m in hand}
+    refused: list[dict] = []
+    for _ in range(max(1, tries)):
+        pruned = [m for m in pool_mods
+                  if m["name"] not in taken
+                  and m["name"] not in {r["name"] for r in refused}]
+        candidate = reroll_one(hand, target, pruned, c)
+        picked = next((m for m in candidate if m["name"] not in taken), None)
+        if picked is None:
+            break
+        fresh = dict(picked)
+        resolved, problems = await resolve_hand([fresh], c)
+        if resolved:
+            return [resolved[0] if m["name"] == target else m
+                    for m in hand], refused
+        refused.extend(problems or [{"name": picked["name"], "kind": "no-file",
+                                     "reason": "no usable file"}])
+    raise ValueError(
+        "nothing else in the pool has a verified build for that slot")
 
 
 # --- reading the hand ---------------------------------------------------
@@ -647,8 +638,15 @@ def summarise(hand: list[dict], c: dict, host: dict | None = None) -> dict:
 # to import with MinecraftUnsupportedModLoader.
 LOADER_MANIFEST_ID = {
     "forge": "forge", "neoforge": "neoforge", "fabric": "fabric",
-    "quilt": "quilt",
 }
+
+# What the roulette will roll for. Quilt is deliberately absent: `packs.py`
+# cannot install a Quilt loader unattended ("Quilt and unknown loaders must be
+# installed manually"), so every Quilt roll ended as an instance that could
+# never start, after the user had waited through the whole deal. BlessForge
+# still *imports* a Quilt pack somebody hands it -- this is only about what
+# the roulette is allowed to promise.
+LOADERS = ["NeoForge", "Forge", "Fabric"]
 
 
 def _loader_ok(declared: list[str], loader: str, mc: str) -> bool:
@@ -667,8 +665,6 @@ def _loader_ok(declared: list[str], loader: str, mc: str) -> bool:
         # NeoForge for 1.20.1 is a Forge fork and still reads mods.toml; from
         # 1.20.2 the descriptor was renamed and a Forge-only jar cannot load.
         return "neoforge" in have or ("forge" in have and mc.startswith("1.20.1"))
-    if want == "quilt":
-        return "quilt" in have or "fabric" in have
     return want in have
 
 
@@ -804,6 +800,11 @@ async def resolve_hand(hand: list[dict], c: dict, job: Job | None = None
             m["declared_versions"] = best.get("game_versions") or []
             m["declared_loaders"] = best.get("loaders") or []
             m["version_match"] = why
+            # What this build says it needs, embeds, and will not sit beside.
+            # Only available once a specific file has been chosen -- a project
+            # has no dependencies, a file does -- which is why the kinship
+            # pass runs after this one and not before it.
+            m["relations"] = kinship.relations_from_build(best, m["source"])
             # CurseForge ships the file's own hashes; keeping the sha1 is what
             # lets the side-check below be exact rather than a guess from the
             # mod's name.
@@ -832,7 +833,197 @@ async def resolve_hand(hand: list[dict], c: dict, job: Job | None = None
     return resolved, problems
 
 
-async def fill_hand(seed: str, pool_mods: list[dict], c: dict,
+# --- does this hand hold together? --------------------------------------
+#
+# Everything above asks "is this mod real and will it load". This asks the
+# question that was missing: "do these mods belong in the same folder". It is
+# where the two complaints that started this rewrite are answered -- add-ons
+# dealt without their parent, and mods dealt against each other.
+
+
+def _pool_index(pool_mods: list[dict]) -> tuple[dict, dict]:
+    """The pool keyed the two ways a parent gets identified."""
+    by_ref = {kinship.ref(m["source"], m["project_id"]): m for m in pool_mods}
+    by_name = {kinship.norm(m["name"]): m for m in pool_mods}
+    return by_ref, by_name
+
+
+def _record_from_project(project: dict, source: str) -> dict:
+    """A pool-shaped candidate from a catalogue entry we went and fetched.
+
+    Only used for a parent the pool never saw. The pool is a sample of the
+    catalogue -- the most-downloaded few hundred per category -- and a rolled
+    add-on's parent is occasionally outside it. Refusing to adopt in that case
+    would drop the add-on for a reason that is about our sampling rather than
+    about the mod.
+    """
+    cats = project.get("categories") or []
+    return {
+        "source": source,
+        "project_id": project.get("id"),
+        "file_id": None,
+        "name": project.get("name") or "",
+        "slug": project.get("slug"),
+        "summary": project.get("summary") or "",
+        "logo": project.get("logo"),
+        "url": project.get("url"),
+        "downloads": project.get("downloads") or 0,
+        "updated": project.get("updated"),
+        "size": 0,
+        "file_name": None,
+        "release_type": "release",
+        "cf_categories": cats if source == "curseforge" else [],
+        "mr_categories": cats if source == "modrinth" else [],
+        "category": _bucket(cats if source == "curseforge" else [],
+                            cats if source == "modrinth" else []) or "utility",
+        "server_side": project.get("server_side"),
+        "flag": None,
+        "flag_why": {},
+        "age_days": round(_age_days(project.get("updated"))),
+    }
+
+
+async def vet_hand(hand: list[dict], c: dict, pool_mods: list[dict],
+                   job: Job | None = None, adopt: bool = True
+                   ) -> tuple[list[dict], list[dict], dict]:
+    """Drop what does not belong here, and fetch what should have come along.
+
+    Three rules, in this order, because each one changes what the next sees:
+
+      1. **A bare library is not a roll.** It adds nothing anybody can point
+         at in-game, and if the hand needs it the dependency pass installs it
+         anyway -- so rolling one spends a slot on a jar the user would have
+         got for free. Modpack-Inspector calls these out in an installed pack;
+         here they are caught before the pack exists.
+
+      2. **An add-on brings its parent, or it leaves.** This is the one that
+         was actually reported: a hand full of Create add-ons and no Create.
+         The parent is adopted where the constraints allow it -- as a
+         companion, not as a slot, the same standing a dependency has -- and
+         where they do not, the add-on goes instead of quietly dragging a
+         headline mod in at install time that nobody chose.
+
+      3. **One of each family.** Two recipe viewers, two light engines, four
+         biome generators: each passes every check the installer makes and the
+         pack still comes apart. The catalogues' own incompatibility
+         declarations are honoured first; `kinship.CONFLICT_FAMILIES` covers
+         the far larger set nobody declares.
+
+    Returns (hand, problems, report). The report is the Inspector's read of
+    what survived, which is what the UI's Lineage panel is drawn from.
+    """
+    if not hand:
+        return hand, [], kinship.study([], {}, {})
+
+    if job:
+        job.set_step("Checking the hand holds together", 90)
+
+    by_ref, by_name = _pool_index(pool_mods)
+    problems: list[dict] = []
+    order = {m["name"]: i for i, m in enumerate(hand)}
+    live = {m["name"]: m for m in hand}
+
+    def drop(name: str, kind: str, reason: str) -> None:
+        if live.pop(name, None) is not None:
+            problems.append({"name": name, "kind": kind, "reason": reason})
+
+    refs: set[str] = set()
+    for m in hand:
+        refs |= set((m.get("relations") or {}).get("requires") or [])
+    described = await kinship.describe_refs(refs)
+    report = kinship.study(hand, described, by_name)
+
+    # 1. bare libraries
+    for m in hand:
+        why = kinship.looks_like_library(
+            m["name"], (m.get("cf_categories") or []) + (m.get("mr_categories") or []),
+            m.get("summary") or "")
+        if why and not m.get("adopted_for"):
+            drop(m["name"], "library",
+                 f"{why} — it will still be installed if anything needs it")
+
+    # 2. add-ons whose parent is not here
+    adopted: list[dict] = []
+    for orphan in report["orphans"]:
+        if orphan["name"] not in live:
+            continue                      # already dropped as a library
+        parent_name = orphan.get("parent") or "?"
+        row = next((r for r in report["rows"] if r["name"] == orphan["name"]), {})
+        candidate = None
+        if adopt:
+            parent_ref = (row.get("parent") or {}).get("ref")
+            candidate = by_ref.get(parent_ref) if parent_ref else None
+            candidate = candidate or by_name.get(kinship.norm(parent_name))
+            if candidate is None and parent_ref:
+                candidate = await _fetch_parent(parent_ref)
+        if candidate is None:
+            drop(orphan["name"], "orphan-addon",
+                 f"it is an add-on for {parent_name}, which is not in this "
+                 "hand and could not be found for this version")
+            continue
+        if c["categories"].get(candidate.get("category")) == BANNED:
+            drop(orphan["name"], "orphan-addon",
+                 f"it is an add-on for {parent_name}, and you banned "
+                 f"{candidate['category']}")
+            continue
+        if candidate["name"] in live or any(a["name"] == candidate["name"]
+                                            for a in adopted):
+            continue
+        adopted.append(dict(candidate, adopted_for=orphan["name"]))
+
+    if adopted:
+        if job:
+            job.set_step(f"Bringing in {len(adopted)} mods their add-ons need", 91)
+        resolved, adopt_problems = await resolve_hand(adopted, c, job=None)
+        got = {m["name"] for m in resolved}
+        for m in resolved:
+            live[m["name"]] = m
+            order.setdefault(m["name"], len(order))
+        for a in adopted:
+            if a["name"] in got:
+                continue
+            # The parent exists but has no build for this version, so the
+            # add-on has nothing to attach to either.
+            reason = next((p["reason"] for p in adopt_problems
+                           if p["name"] == a["name"]), "has no build here")
+            drop(a["adopted_for"],
+                 "orphan-addon",
+                 f"it is an add-on for {a['name']}, which {reason}")
+
+    # 3. families and declared incompatibilities, recomputed on what is left
+    survivors = sorted(live.values(), key=lambda m: order.get(m["name"], 0))
+    for clash in kinship.find_conflicts(survivors):
+        for name in clash["drop"]:
+            drop(name, "conflict",
+                 f"{clash['title'].lower()}: {clash['why']} — kept "
+                 f"{clash['keep']}")
+
+    final = sorted(live.values(), key=lambda m: order.get(m["name"], 0))
+    # The report is re-read on the final hand so the UI never shows a family
+    # or a clash that has already been resolved away.
+    report = kinship.study(final, described, by_name)
+    if job and problems:
+        job.log_line(f"{len(problems)} mods did not belong in the hand: "
+                     + ", ".join(sorted({p['kind'] for p in problems})))
+    return final, problems, report
+
+
+async def _fetch_parent(parent_ref: str) -> dict | None:
+    """One catalogue lookup for a parent the pool never sampled."""
+    source, _, pid = parent_ref.partition(":")
+    try:
+        if source == "curseforge":
+            project = await curseforge.get_mod(int(pid))
+        else:
+            project = await modrinth.get_project(pid)
+    except Exception:
+        return None
+    if not project or not project.get("name"):
+        return None
+    return _record_from_project(project, source)
+
+
+async def fill_hand(pool_mods: list[dict], c: dict,
                     holds: list[str] | None = None, job: Job | None = None,
                     max_rounds: int = 4) -> dict:
     """Deal, verify, and keep dealing until the hand is the size it promised.
@@ -842,30 +1033,35 @@ async def fill_hand(seed: str, pool_mods: list[dict], c: dict,
     to, a third of a 120-mod roll can fail verification, and the user gets an
     80-mod pack having asked for 120 with nothing saying why.
 
-    So it deals in rounds: verify, count what survived, deal replacements for
-    exactly the shortfall out of the mods not already tried, and stop when the
-    hand is full or the pool has nothing left to offer. Still deterministic --
-    each round's draw is seeded, the round number just goes into the seed.
+    So it deals in rounds: verify, vet, count what survived, deal
+    replacements for exactly the shortfall out of the mods not already tried,
+    and stop when the hand is full or the pool has nothing left to offer.
+
+    Adopted parents are companions, not slots. A hand of 120 means 120 mods
+    somebody rolled; the Create that a Create add-on dragged in sits beside
+    them the way a dependency does, and is not one of the 120.
     """
     want = c["count"]
     kept: list[dict] = []
     all_problems: list[dict] = []
     tried: set[str] = set()
+    report: dict = kinship.study([], {}, {})
     rounds = 0
 
-    while len(kept) < want and rounds < max_rounds:
+    def rolled(mods: list[dict]) -> list[dict]:
+        return [m for m in mods if not m.get("adopted_for")]
+
+    while len(rolled(kept)) < want and rounds < max_rounds:
         rounds += 1
-        need = want - len(kept)
+        need = want - len(rolled(kept))
         # Over-deal on the first round only; later rounds are top-ups and a
         # big over-deal there would mostly re-check mods already rejected.
         ask = min(len(pool_mods), int(need * (1.35 if rounds == 1 else 1.15)) + 4)
         round_c = dict(c, count=ask)
-        round_seed = seed if rounds == 1 else f"{seed}#{rounds}"
         available = [m for m in pool_mods if m["name"] not in tried]
         if not available:
             break
-        dealt = [m for m in deal(round_seed, available, round_c,
-                                 holds if rounds == 1 else [])
+        dealt = [m for m in deal(available, round_c, holds if rounds == 1 else [])
                  if m["name"] not in tried
                  and m["name"] not in {k["name"] for k in kept}]
         if not dealt:
@@ -898,27 +1094,64 @@ async def fill_hand(seed: str, pool_mods: list[dict], c: dict,
             resolved = still
 
         kept.extend(resolved)
+        # Vet the whole hand rather than the round: a clash is a property of
+        # two mods that may have arrived in different rounds, and a parent
+        # adopted in round 1 satisfies an add-on dealt in round 3.
+        kept, vetted_out, report = await vet_hand(kept, c, pool_mods, job=job)
+        all_problems.extend(vetted_out)
+        tried |= {p["name"] for p in vetted_out}
         if job and rounds > 1:
             job.log_line(
                 f"Round {rounds}: {len(resolved)} more passed verification "
-                f"({len(kept)}/{want})")
+                f"({len(rolled(kept))}/{want})")
 
-    kept = kept[:want]
-    short = want - len(kept)
+    # Trim to size on the rolled mods only, then keep the companions whose
+    # add-on survived the trim. Truncating the flat list would cut a parent
+    # loose from the add-on that asked for it -- which is the exact bug this
+    # whole pass exists to prevent.
+    keeping = {m["name"] for m in rolled(kept)[:want]}
+    hand = [m for m in kept
+            if m["name"] in keeping
+            or (m.get("adopted_for") and m["adopted_for"] in keeping)]
+
+    # One last pass, on exactly the hand that is going out. Two reasons, and
+    # both were live bugs:
+    #
+    #   * The rounds over-deal, so the report from the last round in the loop
+    #     describes forty-nine mods when thirty-seven are being handed back.
+    #     The Lineage panel is drawn from that report, so it named families
+    #     whose members were not in the list underneath it.
+    #
+    #   * The trim can orphan an add-on. If a parent and its add-on were BOTH
+    #     dealt, and the parent falls outside the first `want`, cutting it
+    #     re-creates the exact bug this pass exists to prevent -- it comes
+    #     back as a companion here instead.
+    hand, trimmed_out, report = await vet_hand(hand, c, pool_mods, job=job)
+    all_problems.extend(trimmed_out)
+    adopted = [m for m in hand if m.get("adopted_for")]
+    short = want - len(rolled(hand))
+    dropped_for_fit = sum(1 for p in all_problems
+                          if p["kind"] in ("library", "conflict", "orphan-addon"))
     return {
-        "hand": kept,
+        "hand": hand,
         "dropped": all_problems,
         "rounds": rounds,
         "short": short,
+        "adopted": len(adopted),
+        "inspection": report,
         "note": (
-            f"Dealt {len(kept)} of the {want} asked for. {len(all_problems)} "
-            f"candidates had no verified {c['loader']} build for "
-            f"{c['minecraft']}, and the pool ran out of replacements. Pick a "
-            "Minecraft version the catalogues have caught up with, or lower "
-            "the quality floor to widen the pool."
+            f"Dealt {len(rolled(hand))} of the {want} asked for. "
+            f"{len(all_problems)} candidates were turned away, and the pool "
+            f"ran out of replacements. Pick a Minecraft version the "
+            "catalogues have caught up with, or lower the quality floor to "
+            "widen the pool."
         ) if short else (
-            f"{len(kept)} mods, every one verified to publish a "
-            f"{c['loader']} build for exactly {c['minecraft']}."
+            f"{len(rolled(hand))} mods, every one verified to publish a "
+            f"{c['loader']} build for exactly {c['minecraft']}"
+            + (f", plus {len(adopted)} brought in by their add-ons"
+               if adopted else "")
+            + (f". {dropped_for_fit} were turned away for not fitting the "
+               "rest of the hand." if dropped_for_fit else ".")
         ),
     }
 
@@ -1114,18 +1347,21 @@ def build_export(hand: list[dict], c: dict, name: str,
     )
     modlist = f"<ul>\n{rows}\n</ul>\n"
 
+    adopted = [m for m in hand if m.get("adopted_for")]
     readme = (
         f"{name}\n{'=' * len(name)}\n\n"
         f"Rolled by BlessForge Mod Roulette.\n\n"
-        f"  seed         {c.get('seed', '?')}\n"
+        f"  roll         {c.get('roll_id', '?')}\n"
         f"  minecraft    {c['minecraft']}\n"
         f"  loader       {c['loader']}\n"
         f"  mods         {len(hand)} ({len(cf)} from CurseForge"
         + (f", {len(other)} bundled" if other else "") + ")\n"
-        f"  intensity    {INTENSITY_LABELS[c['intensity'] - 1]}\n\n"
-        "Re-entering that seed with the same constraints deals this exact\n"
-        "hand again. Import this zip through BlessForge's Discover screen to\n"
-        "install it, or through the CurseForge app to play it.\n"
+        + (f"  brought in   {len(adopted)} parents of rolled add-ons\n"
+           if adopted else "")
+        + f"  intensity    {INTENSITY_LABELS[c['intensity'] - 1]}\n\n"
+        "There is no seed and this hand will not come round again. Import\n"
+        "this zip through BlessForge's Discover screen to install it, or\n"
+        "through the CurseForge app to play it.\n"
     )
 
     buf = io.BytesIO()
@@ -1151,7 +1387,7 @@ def export_path(roll_id: str) -> Path:
 async def install_roll(
     job: Job,
     *,
-    seed: str,
+    roll_id: str,
     constraints: dict,
     hand: list[dict],
     server_name: str,
@@ -1169,7 +1405,8 @@ async def install_roll(
     a BlessForge server knows how to diagnose this one.
     """
     c = merge_constraints(constraints)
-    c["seed"] = seed
+    roll_id = safe_roll_id(roll_id)
+    c["roll_id"] = roll_id
     job.set_step("Pinning every mod to a file", 6)
 
     resolved, problems = await _resolve_files(hand, c, job)
@@ -1201,7 +1438,7 @@ async def install_roll(
                     job.log_line(f"Could not fetch {m['name']}: {e}", "warn")
 
     job.set_step("Writing the CurseForge export", 44)
-    pack_name = server_name or f"Roulette {seed}"
+    pack_name = server_name or f"Roulette {roll_id}"
     # The manifest has to name a real loader build, not just the family, or
     # the CurseForge app refuses the import outright. BlessForge's own
     # importer is happy either way, which is how this went unnoticed.
@@ -1215,11 +1452,12 @@ async def install_roll(
             "import but the CurseForge app cannot.", "warn")
     archive = build_export(full, c, pack_name, bundled, loader_id)
 
-    roll_id = f"{seed}-{int(time.time())}"
     path = export_path(roll_id)
+    export_bytes = 0
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(archive)
+        export_bytes = len(archive)
         job.log_line(f"Export written: {path.name} ({len(archive) / 1048576:.1f} MB)")
     except OSError as e:
         job.log_line(f"Could not save the export: {e}", "warn")
@@ -1240,15 +1478,26 @@ async def install_roll(
         motd=motd,
         optimize=optimize,
     )
+    # Everything the server's own Overview needs to offer the export back
+    # later, written down here because by then the job is gone: the registry
+    # lives in memory and does not outlive a restart.
     roll_info = {
-        "seed": seed,
         "roll_id": roll_id,
         "export_available": bool(roll_id),
+        "export_bytes": export_bytes,
+        "export_name": f"{roll_id}.zip" if roll_id else "",
+        "rolled_at": time.time(),
+        "minecraft": c["minecraft"],
+        "loader": c["loader"],
+        "intensity": INTENSITY_LABELS[c["intensity"] - 1],
         "hand": len(hand),
+        "adopted": sum(1 for m in full if m.get("adopted_for")),
+        "curseforge_mods": sum(1 for m in full if m["source"] == "curseforge"),
+        "bundled_mods": sum(1 for m in full if m["source"] != "curseforge"),
         "installed": len(full),
         "dependencies": len(full) - len(resolved),
         "dropped": problems,
-        "constraints": {k: v for k, v in c.items() if k != "seed"},
+        "constraints": {k: v for k, v in c.items() if k != "roll_id"},
     }
     result.update({"roll": roll_info})
 
@@ -1265,7 +1514,7 @@ async def install_roll(
         except Exception as e:
             job.log_line(f"Could not record the roll on the instance: {e}", "warn")
     job.log_line(
-        f"Roulette {seed}: {len(hand)} rolled, {len(full)} jars installed"
+        f"Roulette {roll_id}: {len(hand)} rolled, {len(full)} jars installed"
         + (", export ready to download" if roll_id else "")
     )
     return result
