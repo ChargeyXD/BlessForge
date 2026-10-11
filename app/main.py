@@ -1,4 +1,4 @@
-"""HTTP API + static frontend for Crafty Modpack Studio."""
+"""HTTP API + static frontend for BlessForge."""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +24,7 @@ from app import (
     clientscan,
     config,
     configs,
-    crafty,
+    engine,
     curseforge,
     deps,
     diagnostics,
@@ -73,7 +73,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 def _err(e: Exception) -> HTTPException:
     if isinstance(e, uploads.UploadError):
         return HTTPException(status_code=400, detail=str(e))
-    if isinstance(e, crafty.CraftyError):
+    if isinstance(e, engine.EngineError):
         return HTTPException(status_code=e.status or 502, detail=str(e))
     if isinstance(e, curseforge.CurseForgeError):
         return HTTPException(status_code=502, detail=str(e))
@@ -86,8 +86,8 @@ def _err(e: Exception) -> HTTPException:
 
 # Activity lists every job the browser has seen, and "Dependency scan for
 # 12908773" tells nobody which of a dozen servers is being scanned. Resolving
-# the name costs one Crafty call, so it is cached briefly rather than made on
-# every job start.
+# the name costs one call to the node, so it is cached briefly rather than
+# made on every job start.
 _NAME_CACHE: dict[str, tuple[float, str]] = {}
 _NAME_TTL = 60.0
 
@@ -99,7 +99,7 @@ async def _instance_name(server_id: str | None) -> str | None:
     if cached and time.time() - cached[0] < _NAME_TTL:
         return cached[1]
     try:
-        server = await asyncio.wait_for(crafty.get_server(server_id), timeout=5.0)
+        server = await asyncio.wait_for(engine.get_server(server_id), timeout=5.0)
         name = server.get("server_name") or server_id[:8]
     except Exception:
         # A job that cannot name its instance is still a job worth starting.
@@ -141,19 +141,18 @@ _health_cache: tuple[float, dict] | None = None
 _health_lock = asyncio.Lock()
 
 
-async def _check_crafty(state: dict) -> dict:
-    if not state["crafty"]:
-        return {"ok": False, "error": "CRAFTY_URL / CRAFTY_TOKEN not set"}
+async def _check_engine(state: dict) -> dict:
     try:
         started = time.perf_counter()
-        servers = await asyncio.wait_for(crafty.list_servers(), timeout=5.0)
-        # Worth showing: the round trip is the difference between "the
-        # controller is on this box" and "the controller is across a link",
-        # which changes what every other number here means.
-        return {"ok": True, "servers": len(servers),
+        servers = await asyncio.wait_for(engine.list_servers(), timeout=5.0)
+        # Worth showing: the round trip is the difference between "the node
+        # is on this box" and "the node is across a link", which changes
+        # what every other number here means.
+        return {"ok": True, "driver": engine.kind(),
+                "nodes": len(engine.drivers()), "servers": len(servers),
                 "latency_ms": round((time.perf_counter() - started) * 1000)}
     except Exception as e:      # noqa: BLE001 -- reported, not raised
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "driver": state.get("engine"), "error": str(e)}
 
 
 async def _check_curseforge(state: dict) -> dict:
@@ -194,11 +193,11 @@ async def health(fresh: bool = False) -> dict:
             return _health_cache[1]
 
         state = config.configured()
-        crafty_check, cf_check, mr_check = await asyncio.gather(
-            _check_crafty(state), _check_curseforge(state), _check_modrinth(state),
+        engine_check, cf_check, mr_check = await asyncio.gather(
+            _check_engine(state), _check_curseforge(state), _check_modrinth(state),
         )
         checks: dict[str, Any] = {
-            "crafty": crafty_check,
+            "engine": engine_check,
             "curseforge": cf_check,
             "modrinth": mr_check,
             # A /data the app cannot write is invisible until the first install
@@ -209,7 +208,7 @@ async def health(fresh: bool = False) -> dict:
             "storage": _storage_check(),
         }
         result = {
-            "ready": bool(checks["crafty"] and checks["crafty"].get("ok")),
+            "ready": bool(checks["engine"] and checks["engine"].get("ok")),
             "config": state,
             "checks": checks,
             "cached_for": _HEALTH_TTL,
@@ -243,16 +242,16 @@ def _storage_check() -> dict:
             probe.write_text("ok")
             probe.unlink()
         except Exception as e:      # noqa: BLE001 -- reported, not raised
-            # A mount pointed at Crafty's own data directory is the one
+            # A mount pointed at some other panel's data directory is the one
             # mistake worth naming out loud, because BlessForge would
             # otherwise look merely broken.
-            looks_like_crafty = any(
+            looks_foreign = any(
                 (config.DATA_DIR / name).exists()
-                for name in ("crafty.sqlite", "servers", "data/servers")
+                for name in ("servers", "data/servers")
             )
-            if looks_like_crafty:
+            if looks_foreign:
                 hint = (
-                    f"{config.DATA_DIR} looks like Crafty's own data "
+                    f"{config.DATA_DIR} looks like another server panel's data "
                     "directory. BlessForge needs a folder of its own -- point "
                     "the mount at /DATA/AppData/blessforge/data."
                 )
@@ -404,7 +403,7 @@ async def minecraft_versions() -> dict:
 @app.get("/api/instances")
 async def instances(request: Request) -> dict:
     try:
-        servers = await crafty.list_servers()
+        servers = await engine.list_servers()
     except Exception as e:
         raise _err(e)
 
@@ -430,11 +429,11 @@ async def instances(request: Request) -> dict:
             "auto_start": s.get("auto_start"),
             "created": s.get("created"),
         }
-        # The manifest and the stats are two independent Crafty round trips,
-        # and this runs once per server on a poll. Sequentially that is two
-        # RTTs per server per refresh; concurrently it is one.
+        # The manifest and the stats are two independent round trips to the
+        # node, and this runs once per server on a poll. Sequentially that is
+        # two RTTs per server per refresh; concurrently it is one.
         manifest_r, stats_r = await asyncio.gather(
-            crafty.read_studio_manifest(sid), crafty.get_stats(sid),
+            engine.read_manifest(sid), engine.get_stats(sid),
             return_exceptions=True,
         )
         try:
@@ -453,7 +452,7 @@ async def instances(request: Request) -> dict:
             info["problems"] = len(manifest.get("problems") or [])
             # Off the manifest, not off a directory listing: the fleet is
             # re-read every twenty seconds and a list_dir per server per poll
-            # is a Crafty request per server for a number that only changes
+            # is a node request per server for a number that only changes
             # when someone installs something.
             info["mod_count"] = len(manifest.get("mods") or []) or None
         except Exception:
@@ -474,21 +473,19 @@ async def instances(request: Request) -> dict:
             info["players"] = stats.get("online")
             info["max_players"] = stats.get("max")
             info["cpu"] = stats.get("cpu")
-            # Crafty reports `mem` as a human string ("1.2GB") and the share
-            # of host RAM separately. The gauges want the number.
+            # The gauges want the share; `mem` is the resident set in bytes
+            # and `mem_percent` its share of the server's own memory limit.
             info["mem"] = stats.get("mem_percent")
-            # `mem` is the resident set in bytes, and mem_percent its share of
-            # host RAM. Crafty names them the other way round to how they read.
             info["mem_bytes"] = stats.get("mem")
             info["world_size"] = stats.get("world_size")
-            # Crafty tracks this itself; no need to go looking for crash
+            # The node tracks this itself; no need to go looking for crash
             # reports on every card of a fleet list to find out.
             info["crashed"] = bool(stats.get("crashed"))
             info["reachable"] = True
         except Exception:
-            # Crafty answers 500 for a server whose directory has gone
-            # missing, and keeps doing so until it is restarted. That is a
-            # state worth naming rather than an error to swallow.
+            # A server whose folder has gone, or whose node is not
+            # answering, is a state worth naming rather than an error to
+            # swallow.
             info["running"] = None
             info["reachable"] = False
         info["state"] = _instance_state(info)
@@ -504,10 +501,9 @@ def _instance_state(info: dict) -> str:
     fleet list, the palette, an activity chip -- agrees about what a server
     is doing, and so the rules live next to the facts they are drawn from.
 
-    `orphan` is the one that matters: Crafty keeps a record for a server
-    whose files have been removed and then fails every request about it
-    forever after its next restart. It looks like a broken app unless it is
-    named.
+    `orphan` is the one that matters: a record whose files are gone, or
+    whose node will not answer, fails every request about it. It looks like
+    a broken app unless it is named.
     """
     if not info.get("reachable"):
         return "orphan"
@@ -523,14 +519,14 @@ def _instance_state(info: dict) -> str:
 @app.get("/api/instances/{server_id}")
 async def instance_detail(server_id: str) -> dict:
     try:
-        server = await crafty.get_server(server_id)
-        manifest = await crafty.read_studio_manifest(server_id)
+        server = await engine.get_server(server_id)
+        manifest = await engine.read_manifest(server_id)
         try:
-            stats = await crafty.get_stats(server_id)
+            stats = await engine.get_stats(server_id)
         except Exception:
             stats = {}
         info = {
-            "reachable": True,          # Crafty answered, or we would not be here
+            "reachable": True,          # the node answered, or we would not be here
             "running": bool(stats.get("running")),
             "crashed": bool(stats.get("crashed")),
             "incomplete": bool(manifest) and not manifest.get("complete", True),
@@ -543,7 +539,7 @@ async def instance_detail(server_id: str) -> dict:
             # going on, decided in one place.
             "state": _instance_state(info),
             "java": _java_facts(server, manifest),
-            "uptime_s": crafty.uptime_seconds(stats),
+            "uptime_s": engine.uptime_seconds(stats),
         }
     except Exception as e:
         raise _err(e)
@@ -553,16 +549,16 @@ def _java_facts(server: dict, manifest: dict) -> dict:
     """Which Java runs this server, and whether it is the right one.
 
     Computed here rather than in the browser for the same reason `state` is:
-    Crafty stores no java_version, the answer has to be parsed back out of
-    execution_command, and one implementation of that parse is enough.
+    one rule, in one place. The record's runtime is the answer; a record
+    without one (an imported server) falls back to its launch command.
     """
-    facts = crafty.java_in_command(server.get("execution_command") or "")
+    facts = engine.java_of(server)
     mc = manifest.get("minecraft")
     if not mc:
         m = re.search(r"(\d+\.\d+(?:\.\d+)?)", server.get("executable") or "")
         mc = m.group(1) if m else ""
     facts["minecraft"] = mc or None
-    facts["required"] = crafty.required_java_major(mc) if mc else None
+    facts["required"] = engine.required_java_major(mc) if mc else None
     # None, not False, when the command names no version: "we cannot tell"
     # and "it is wrong" are different answers and must not share a colour.
     facts["ok"] = (
@@ -577,12 +573,12 @@ async def instance_stats(server_id: str) -> dict:
     """Just the live numbers, for surfaces that tick while you watch them.
 
     The Situation screen refreshes this every few seconds; going through
-    /api/instances/{id} for it would re-read the manifest off Crafty's disk
+    /api/instances/{id} for it would re-read the manifest off the node's disk
     each time to redraw a CPU bar.
     """
     try:
-        stats = await crafty.get_stats(server_id)
-        return {**stats, "uptime_s": crafty.uptime_seconds(stats)}
+        stats = await engine.get_stats(server_id)
+        return {**stats, "uptime_s": engine.uptime_seconds(stats)}
     except Exception as e:
         raise _err(e)
 
@@ -593,35 +589,32 @@ async def instance_action(server_id: str, action: str) -> dict:
     if action not in allowed:
         raise HTTPException(400, f"action must be one of {sorted(allowed)}")
 
-    # Crafty silently ignores a start for a server it already believes is
-    # running, and its `running` flag both lags a stop by a poll cycle and
-    # stays set for a process that died without it noticing. Either way a
-    # plain start is dropped on the floor while the UI says "Starting X".
-    #
-    # A restart is right in both cases -- it stops whatever is there, if
-    # anything, and starts it -- so that is what a start becomes.
+    # A start for a server that is already running is either a no-op or an
+    # error, depending on who answers -- and a `running` flag can lag a stop
+    # by a poll. A restart is right in both cases: it stops whatever is
+    # there, if anything, and starts it -- so that is what a start becomes.
     upgraded = False
     if action == "start_server":
         try:
-            if (await crafty.get_stats(server_id)).get("running"):
+            if (await engine.get_stats(server_id)).get("running"):
                 action, upgraded = "restart_server", True
         except Exception:
             pass          # if stats are unreadable, let the start try anyway
 
     prepared: dict = {}
     if action in ("start_server", "restart_server"):
-        # Crafty regenerates the launch command whenever its loader installer
-        # finishes, which can quietly drop a Java version we pinned earlier.
-        # Re-assert it here so a start is always correct, and make sure the
-        # EULA is in the byte-exact form Crafty's start check demands.
+        # Re-assert the runtime the Minecraft version needs, so a server
+        # whose record lost it (an import, a hand edit) still starts on the
+        # right Java, and make sure the EULA is accepted in a form every
+        # server reads.
         prepared = await _prepare_for_start(server_id)
     try:
-        await crafty.server_action(server_id, action)
+        await engine.power(server_id, action)
         return {"ok": True, "action": action, "prepared": prepared,
                 "upgraded": upgraded,
-                "why": ("Crafty still had this marked as running, so it was "
-                        "restarted rather than started -- a plain start would "
-                        "have been ignored.") if upgraded else None}
+                "why": ("This server was already marked as running, so it "
+                        "was restarted rather than started -- a plain start "
+                        "would have been ignored.") if upgraded else None}
     except Exception as e:
         raise _err(e)
 
@@ -629,25 +622,25 @@ async def instance_action(server_id: str, action: str) -> dict:
 async def _prepare_for_start(server_id: str) -> dict:
     out: dict = {}
     try:
-        manifest = await crafty.read_studio_manifest(server_id)
-        server = await crafty.get_server(server_id)
+        manifest = await engine.read_manifest(server_id)
+        server = await engine.get_server(server_id)
         mc = manifest.get("minecraft")
         if not mc:
             m = re.search(r"(\d+\.\d+(?:\.\d+)?)", server.get("executable") or "")
             mc = m.group(1) if m else ""
         if mc:
-            result = await crafty.set_java_version(server_id, mc)
+            result = await engine.set_runtime(server_id, mc)
             if result.get("changed"):
                 out["java"] = result.get("java_path")
     except Exception as e:
         out["java_error"] = str(e)
 
     try:
-        eula = await crafty.read_file(server_id, "eula.txt")
+        eula = await engine.read_file(server_id, "eula.txt")
         if eula.split("\n", 1)[0].lower() not in (
             "eula=true", "eula = true", "eula= true", "eula =true"
         ) and re.search(r"eula\s*=\s*true", eula, re.I):
-            await crafty.write_file(server_id, "eula.txt", crafty.EULA_ACCEPTED)
+            await engine.write_file(server_id, "eula.txt", engine.EULA_ACCEPTED)
             out["eula"] = "normalised"
     except Exception:
         pass
@@ -657,7 +650,7 @@ async def _prepare_for_start(server_id: str) -> dict:
 @app.delete("/api/instances/{server_id}")
 async def instance_delete(server_id: str, files: bool = True) -> dict:
     try:
-        await crafty.delete_server(server_id, delete_files=files)
+        await engine.delete_server(server_id, delete_files=files)
         return {"ok": True}
     except Exception as e:
         raise _err(e)
@@ -1034,7 +1027,7 @@ async def instance_roll(server_id: str) -> dict:
     route instead of being read out of the manifest the client already has.
     """
     try:
-        manifest = await crafty.read_studio_manifest(server_id)
+        manifest = await engine.read_manifest(server_id)
     except Exception:
         manifest = {}
     roll = manifest.get("roll") or {}
@@ -1052,7 +1045,7 @@ async def instance_roll(server_id: str) -> dict:
 async def download_roll_export(server_id: str):
     """The CurseForge pack this rolled server was installed from."""
     try:
-        manifest = await crafty.read_studio_manifest(server_id)
+        manifest = await engine.read_manifest(server_id)
     except Exception:
         manifest = {}
     roll_id = ((manifest.get("roll") or {}).get("roll_id")) or ""
@@ -1107,7 +1100,7 @@ async def dependency_sources(
 @app.post("/api/instances/{server_id}/fix/accept-eula")
 async def fix_eula(server_id: str) -> dict:
     try:
-        await crafty.write_file(server_id, "eula.txt", crafty.EULA_ACCEPTED)
+        await engine.write_file(server_id, "eula.txt", engine.EULA_ACCEPTED)
         return {"ok": True}
     except Exception as e:
         raise _err(e)
@@ -1118,11 +1111,11 @@ async def fix_ram(server_id: str, body: dict = Body(...)) -> dict:
     gb = int(body.get("max_gb", 8))
     min_gb = int(body.get("min_gb", max(1, gb // 2)))
     args = (
-        "# Managed by Crafty Modpack Studio\n"
+        "# Managed by BlessForge\n"
         f"-Xms{min_gb}G\n-Xmx{gb}G\n"
     )
     try:
-        await crafty.write_file(server_id, "user_jvm_args.txt", args)
+        await engine.write_file(server_id, "user_jvm_args.txt", args)
         return {"ok": True, "min_gb": min_gb, "max_gb": gb}
     except Exception as e:
         raise _err(e)
@@ -1133,17 +1126,17 @@ async def fix_java(server_id: str, body: dict = Body(default={})) -> dict:
     """Pin the instance to a Java version its loader supports."""
     mc = body.get("minecraft")
     if not mc:
-        manifest = await crafty.read_studio_manifest(server_id)
+        manifest = await engine.read_manifest(server_id)
         mc = manifest.get("minecraft")
     if not mc:
         # Fall back to the version embedded in the loader path.
-        server = await crafty.get_server(server_id)
+        server = await engine.get_server(server_id)
         m = re.search(r"(\d+\.\d+(?:\.\d+)?)", server.get("executable") or "")
         mc = m.group(1) if m else ""
     if not mc:
         raise HTTPException(400, "could not determine the Minecraft version")
     try:
-        return await crafty.set_java_version(server_id, mc)
+        return await engine.set_runtime(server_id, mc)
     except Exception as e:
         raise _err(e)
 
@@ -1164,14 +1157,13 @@ async def instance_logs(server_id: str, lines: int = 300) -> dict:
 
 # --- terminal ----------------------------------------------------------
 #
-# Crafty keeps a live console buffer per server and also writes
-# logs/latest.log. Neither on its own is enough: the buffer is empty for a
-# server Crafty did not start itself (or that was running before Crafty
-# restarted), and the file lags behind by a flush. So "auto" reads the buffer
-# and falls back to the file, which is what someone opening a terminal
-# actually wants to see.
+# The node keeps a live console buffer per server, and the server also
+# writes logs/latest.log. Neither on its own is enough: the buffer is empty
+# for a server the node has not started since it came up, and the file lags
+# behind by a flush. So "auto" reads the buffer and falls back to the file,
+# which is what someone opening a terminal actually wants to see.
 
-# Crafty answers a missing log file with a line of prose rather than an
+# A driver may answer a missing log file with a line of prose rather than an
 # empty list, which would otherwise be rendered as the server's own output.
 _NO_LOG_FILE = "Unable to find file to tail"
 
@@ -1182,14 +1174,14 @@ async def _console_snapshot(server_id: str, source: str = "auto",
     used = source
     if source in ("auto", "buffer"):
         try:
-            lines = await crafty.console_lines(server_id)
+            lines = await engine.console_lines(server_id)
             used = "buffer"
-        except crafty.CraftyError:
+        except engine.EngineError:
             lines = []
     if not lines and source in ("auto", "file"):
         try:
-            file_lines = await crafty.console_lines(server_id, from_file=True)
-        except crafty.CraftyError:
+            file_lines = await engine.console_lines(server_id, from_file=True)
+        except engine.EngineError:
             file_lines = []
         if len(file_lines) == 1 and _NO_LOG_FILE in file_lines[0]:
             file_lines = []
@@ -1199,7 +1191,7 @@ async def _console_snapshot(server_id: str, source: str = "auto",
     running = None
     if with_stats:
         try:
-            stats = await crafty.get_stats(server_id)
+            stats = await engine.get_stats(server_id)
             running = bool(stats.get("running"))
         except Exception:
             running = False
@@ -1222,10 +1214,10 @@ async def console(server_id: str, source: str = "auto") -> dict:
 async def console_stream(server_id: str, source: str = "auto") -> StreamingResponse:
     """Follow the console live.
 
-    Crafty exposes no push channel, so this polls it and forwards only what
-    is new. The diff is done here rather than in the browser so a reconnect
-    does not repaint the whole buffer, and so the wire carries one line
-    rather than the last five hundred every second.
+    The fallback for a driver with no console socket of its own: this polls
+    and forwards only what is new. The diff is done here rather than in the
+    browser so a reconnect does not repaint the whole buffer, and so the
+    wire carries one line rather than the last five hundred every second.
     """
     async def stream():
         seen: list[str] = []
@@ -1236,8 +1228,8 @@ async def console_stream(server_id: str, source: str = "auto") -> StreamingRespo
         # nothing is sent at all, so the console caught up in jumps rather
         # than following. This runs fast while output is flowing and backs
         # off when it stops, which puts the cost exactly where the value
-        # is -- and on the normal deployment, with Crafty on the same
-        # machine, one poll is about 19ms and under a kilobyte.
+        # is -- and with the node on the same network, one poll is a few
+        # milliseconds and under a kilobyte.
         delay = config.CONSOLE_POLL_FAST
         stats_at = 0.0
         try:
@@ -1311,7 +1303,7 @@ async def console_stream(server_id: str, source: str = "auto") -> StreamingRespo
 async def send_command(server_id: str, body: dict = Body(...)) -> dict:
     """Send one line to the server console."""
     try:
-        return await crafty.send_command(server_id, body.get("command", ""))
+        return await engine.send_command(server_id, body.get("command", ""))
     except Exception as e:
         raise _err(e)
 
@@ -1671,7 +1663,7 @@ async def get_port(server_id: str) -> dict:
 
 @app.post("/api/instances/{server_id}/port")
 async def set_port(server_id: str, body: dict = Body(...)) -> dict:
-    """Change the port in Crafty's record and server.properties together."""
+    """Change the port in the server record and server.properties together."""
     try:
         return await properties.set_port(
             server_id,
@@ -1710,15 +1702,15 @@ async def ai_status() -> dict:
 # --- the fleet: racks, and who ran when ---------------------------------
 
 async def _known_ids() -> set[str] | None:
-    """Every server id Crafty currently reports, or None if it cannot say.
+    """Every server id the engine currently reports, or None if it cannot say.
 
     None rather than an empty set on failure, and the difference matters:
     an empty set means "there are no servers", which would strip every
     assignment out of the answer and make the racks look wiped. None means
-    "do not filter", so an unreachable Crafty leaves the layout alone.
+    "do not filter", so an unreachable node leaves the layout alone.
     """
     try:
-        return {s.get("server_id") for s in await crafty.list_servers()}
+        return {s.get("server_id") for s in await engine.list_servers()}
     except Exception:
         return None
 
@@ -2126,10 +2118,10 @@ async def _apply_actions(server_id: str, actions: list[dict], job=None
         name, args = action["action"], action["args"]
         try:
             if name == "accept_eula":
-                await crafty.write_file(server_id, "eula.txt", crafty.EULA_ACCEPTED)
-                detail = "eula.txt rewritten in the exact form Crafty accepts"
+                await engine.write_file(server_id, "eula.txt", engine.EULA_ACCEPTED)
+                detail = "eula.txt rewritten as eula=true"
             elif name == "set_java":
-                result = await crafty.set_java_version(server_id, args["minecraft"])
+                result = await engine.set_runtime(server_id, args["minecraft"])
                 detail = f"Java {result.get('java_major', '?')} selected"
             elif name == "set_ram":
                 await optimizer.apply(server_id, {"heap_gb": args["max_gb"],
@@ -2370,19 +2362,11 @@ async def switch_pack_version(server_id: str, body: dict = Body(...)) -> dict:
 async def loader_catalogue() -> dict:
     """What can be created, and which Minecraft versions each one has.
 
-    Crafty's own jar index is asked first because a version it knows about is
-    one it can install with no fallback needed; the loaders' upstream
-    projects fill in whatever the index is missing, which on a fresh
-    Minecraft release is most of it.
+    Straight from each loader's own project: a version is offered exactly
+    when its project publishes a build for it.
     """
-    catalog = {}
     try:
-        catalog = await crafty.jar_catalog()
-    except Exception:
-        pass
-    try:
-        return {"items": await loaders.catalogue(catalog),
-                "crafty_index": bool(catalog)}
+        return {"items": await loaders.catalogue()}
     except Exception as e:
         raise _err(e)
 
@@ -2510,9 +2494,9 @@ async def files_rename(server_id: str, body: dict = Body(...)) -> dict:
 async def files_delete(server_id: str, body: dict = Body(...)) -> dict:
     paths = body.get("paths") or ([body["path"]] if body.get("path") else [])
     try:
-        # A delete is the one file operation with no undo in Crafty, so the
-        # instance's mod state is snapshotted first whenever more than one
-        # thing is going.
+        # A delete is the one file operation with no undo, so the server's
+        # mod state is snapshotted first whenever more than one thing is
+        # going.
         if len(paths) > 1:
             try:
                 await backups.snapshot(server_id,
@@ -2530,7 +2514,7 @@ async def files_delete(server_id: str, body: dict = Body(...)) -> dict:
 @app.post("/api/instances/{server_id}/files/upload")
 async def files_upload(server_id: str, folder: str = Query("."),
                        file: UploadFile = File(...)) -> dict:
-    """Spooled to disk, then handed to Crafty in chunks.
+    """Spooled to disk, then streamed to the node.
 
     Reading the upload into memory would cost its full size at once, and this
     container is capped at 1 GB -- a 400 MB world zip would not fail, it
@@ -2750,7 +2734,7 @@ async def plugins_resolve(server_id: str, body: dict = Body(...)) -> dict:
         installed = {m["file"].lower() for m in listing.get("mods", [])}
     except Exception:
         installed = set()
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     try:
         return await plugins.resolve(
             str(body["project_id"]),
@@ -2770,7 +2754,7 @@ async def plugins_resolve(server_id: str, body: dict = Body(...)) -> dict:
 async def plugins_add(server_id: str, body: dict = Body(...)) -> dict:
     if not body.get("project_id"):
         raise HTTPException(400, "project_id is required")
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     job = await _job_for("plugin", f"Install {body.get('name') or 'plugin'}",
                          server_id)
     registry.start(job, lambda j: plugins.install(

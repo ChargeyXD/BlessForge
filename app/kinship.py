@@ -28,7 +28,7 @@ still only catalogue metadata -- so the same questions are answered from what
 the publishers declare, which is weaker but free, and available *before* the
 pack is built rather than after.
 
-Nothing here talks to Crafty and nothing here is random. `describe_refs` is
+Nothing here talks to a server and nothing here is random. `describe_refs` is
 the only function that touches the network.
 """
 from __future__ import annotations

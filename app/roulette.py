@@ -30,7 +30,7 @@ person who asked for it. It is otherwise a genuine draw: there is no seed, no
 saved roll and no way to ask for the same hand twice, which is the point.
 
 Everything here is read-only against the catalogues until the user accepts a
-hand; `install_roll` is the only function that touches Crafty.
+hand; `install_roll` is the only function that touches a server.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ from typing import Any
 
 import httpx
 
-from app import (config, crafty, curseforge, deps, installer, kinship,
+from app import (config, engine, curseforge, deps, installer, kinship,
                  modrinth, packs)
 from app.jobs import Job
 
@@ -1543,9 +1543,9 @@ async def install_roll(
     sid = result.get("server_id")
     if sid:
         try:
-            manifest = await crafty.read_studio_manifest(sid)
+            manifest = await engine.read_manifest(sid)
             manifest["roll"] = roll_info
-            await crafty.write_studio_manifest(sid, manifest)
+            await engine.write_manifest(sid, manifest)
         except Exception as e:
             job.log_line(f"Could not record the roll on the instance: {e}", "warn")
     job.log_line(

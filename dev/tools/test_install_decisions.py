@@ -3,11 +3,12 @@
 
 Three behaviours that were each wrong in a way nothing else would catch:
 
-  * The port typed at the install step never reached the server. Crafty is
-    told it at creation and writes it into a fresh server.properties, but the
-    pack's own overrides land on top afterwards and most packs ship a
-    server.properties containing 25565. Every instance on this machine ended
-    up on 25565 as a result. It now has to be written AFTER the overlay.
+  * The port typed at the install step never reached the server. The pack's
+    own overrides land on top of the server folder, and most packs ship a
+    server.properties containing 25565 -- every server once ended up on
+    25565 as a result. It has to be written AFTER the overlay, and it has to
+    work on a server that has never started and so has no
+    server.properties yet.
 
   * Client-only mods were deleted from the install. They are now written as
     `<name>.jar.disabled` and recorded, so the pack still matches what was
@@ -16,7 +17,9 @@ Three behaviours that were each wrong in a way nothing else would catch:
   * "Review & strip client-only mods" unticked still stripped them, because
     the front end never sent the flag and the backend defaulted it on.
 
-Runs offline: Crafty, CurseForge and the filesystem are all stubbed.
+Runs offline against the in-memory engine (app/engine/mock.py), so the files
+asserted on are the files the install actually wrote; CurseForge and the
+loader install are stubbed.
 """
 import asyncio
 import io
@@ -26,7 +29,9 @@ import zipfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from app import clientscan, installer, optimizer, packs, preflight, properties, whitelist  # noqa: E402
+from app import (clientscan, engine, installer, optimizer, packs,  # noqa: E402
+                 preflight, properties, whitelist)
+from app.engine.mock import MockEngine  # noqa: E402
 from app.jobs import Job  # noqa: E402
 
 results = []
@@ -58,91 +63,85 @@ def build_server_pack() -> bytes:
     return buf.getvalue()
 
 
-class FakeCrafty:
-    """Just enough Crafty to run an install, recording what was written."""
+class Recorder(MockEngine):
+    """The real in-memory engine, writing down what arrived and how."""
 
     def __init__(self):
-        self.uploaded: list[str] = []      # paths that landed in the instance
+        super().__init__(seed=False)
+        self.uploaded: list[str] = []      # paths that landed in the server
         self.upload_sizes: list[int] = []
-        self.files: dict[str, str] = {}
         self.patched: list[dict] = []
-        self.manifest: dict = {}
-        self.EULA_ACCEPTED = "eula=true"
 
-    class CraftyError(RuntimeError):
-        pass
-
-    async def create_server(self, **kw):
-        self.created = kw
-        return "fake-server-id"
-
-    async def upload_file(self, sid, location, name, payload):
-        if name.endswith(".zip"):
-            with zipfile.ZipFile(io.BytesIO(payload)) as z:
-                self.uploaded.extend(z.namelist())
-        else:
-            self.uploaded.append(name)
-
-    async def upload_path(self, sid, location, name, src):
-        # The overlay arrives as a zip that Crafty unpacks, so read it back
-        # to learn the real filenames -- which is exactly where .disabled
-        # would be lost if the installer dropped it. It is now built on disk
-        # and streamed, so the test asserts against the file rather than a
-        # buffer, and records its size to prove nothing was buffered whole.
-        self.upload_sizes.append(src.stat().st_size)
-        if name.endswith(".zip"):
+    async def upload_path(self, server_id, location, filename, src):
+        # The overlay arrives as a zip the node unpacks, so read it back to
+        # learn the real filenames -- which is exactly where .disabled would
+        # be lost if the installer dropped it. It is built on disk and
+        # streamed, so the size is recorded to prove nothing was buffered.
+        self.upload_sizes.append(pathlib.Path(src).stat().st_size)
+        if filename.endswith(".zip"):
             with zipfile.ZipFile(src) as z:
                 self.uploaded.extend(z.namelist())
         else:
-            self.uploaded.append(name)
+            self.uploaded.append(filename)
+        await super().upload_path(server_id, location, filename, src)
 
-    async def unzip(self, sid, path): pass
-    async def wait_for_path(self, sid, path, timeout=0): return True
-    async def delete_paths(self, sid, paths): pass
-    async def ensure_dir(self, sid, d): pass
-    async def list_dir(self, sid, path="."): return {"root_path": "/x"}
-    async def get_server(self, sid): return {"server_name": "t", "server_port": 25565}
-    async def patch_server(self, sid, fields): self.patched.append(fields)
-    async def set_java_version(self, sid, mc): return {"changed": False, "reason": "already"}
-    async def server_action(self, sid, action): pass
-    async def read_file(self, sid, path):
-        if path in self.files:
-            return self.files[path]
-        raise self.CraftyError(f"no such file {path}")
-    async def write_file(self, sid, path, contents): self.files[path] = contents
-    async def write_studio_manifest(self, sid, data): self.manifest = data
-    async def read_studio_manifest(self, sid): return self.manifest
+    async def update_server(self, server_id, fields):
+        self.patched.append(dict(fields))
+        await super().update_server(server_id, fields)
 
 
-async def run_install(**kwargs) -> tuple[FakeCrafty, dict]:
-    fake = FakeCrafty()
-    # server.properties has to exist for the port write to have something to
-    # rewrite -- as it does on a real instance Crafty just created.
-    fake.files["server.properties"] = "server-port=25565\nquery.port=25565\nmotd=x\n"
+class Run:
+    """What one install left behind, read back off the engine."""
+
+    def __init__(self, eng: Recorder, server_id: str):
+        self.eng, self.sid = eng, server_id
+        self.uploaded, self.upload_sizes = eng.uploaded, eng.upload_sizes
+        self.patched = eng.patched
+        self.heap = None
+        self.files: dict[str, str] = {}
+        self.manifest: dict = {}
+
+    async def load(self):
+        for name in ("server.properties", "user_jvm_args.txt", "eula.txt"):
+            try:
+                self.files[name] = await self.eng.read_file(self.sid, name)
+            except engine.EngineError:
+                pass
+        self.manifest = await engine.read_manifest(self.sid)
+        self.root = set(await self.eng.list_dir(self.sid, "."))
+        self.mods = set(await self.eng.list_dir(self.sid, "mods"))
+
+
+async def run_install(**kwargs):
+    eng = Recorder()
+    engine.configure(drivers={"mock": eng})
 
     plan = packs.analyse_server_pack(zipfile.ZipFile(io.BytesIO(build_server_pack())))
     plan.mc_version, plan.loader = "1.20.1", "fabric"
-    plan.crafty_loader, plan.name = "fabric", "Test Pack"
+    plan.server_loader, plan.name = "fabric", "Test Pack"
 
     async def fake_load_plan(job, **kw):
         return plan, zipfile.ZipFile(io.BytesIO(build_server_pack())), {}
 
-    async def no_wait(job, sid, plan): pass
-    async def fake_list_servers(): return []
+    async def no_loader(job, sid, plan):
+        # The loader ladder has its own tests; here the server just needs a
+        # startup command so the heap has somewhere to go.
+        await engine.update_server(sid, {
+            "executable": "fabric-server.jar",
+            "execution_command": "java -Xms1G -Xmx2G -jar fabric-server.jar nogui"})
+        return {"loader_version": ""}
+
+    holder = {}
 
     async def fake_set_memory(sid, heap_gb, flags):
-        fake.heap = (heap_gb, list(flags or []))
+        holder["heap"] = (heap_gb, list(flags or []))
         return "java -Xmx tuned"
 
-    originals = (installer.crafty, installer._load_plan,
-                 installer._wait_for_loader, properties.crafty,
+    originals = (installer._load_plan, installer._wait_for_loader,
                  optimizer.set_command_memory)
-    installer.crafty = fake
     installer._load_plan = fake_load_plan
-    installer._wait_for_loader = no_wait
-    properties.crafty = fake
+    installer._wait_for_loader = no_loader
     optimizer.set_command_memory = fake_set_memory
-    fake.list_servers = fake_list_servers
     try:
         job = Job("install", "test")
         result = await installer.install_modpack(
@@ -150,10 +149,12 @@ async def run_install(**kwargs) -> tuple[FakeCrafty, dict]:
             **{"optimize": False, **kwargs}
         )
     finally:
-        (installer.crafty, installer._load_plan,
-         installer._wait_for_loader, properties.crafty,
+        (installer._load_plan, installer._wait_for_loader,
          optimizer.set_command_memory) = originals
-    return fake, result
+    run = Run(eng, result["server_id"])
+    run.heap = holder.get("heap")
+    await run.load()
+    return run, result
 
 
 async def main():
@@ -164,13 +165,16 @@ async def main():
           repr(fake.files.get("server.properties", "")[:60]))
     check("query.port follows it",
           "query.port=25580" in fake.files.get("server.properties", ""))
-    check("Crafty's own record is updated too",
+    check("the server record is updated too",
           any(p.get("server_port") == 25580 for p in fake.patched),
           str(fake.patched))
     check("the port is written after the pack overlay, not before",
-          fake.uploaded and "server.properties" not in [
-              u for u in fake.uploaded if "/" not in u],
+          fake.uploaded and "server-port=25565" not in fake.files.get(
+              "server.properties", ""),
           "a pack's own server.properties must not be the last word")
+    check("the pack's other settings survive the port write",
+          "motd=From the pack" in fake.files.get("server.properties", "")
+          or "motd" not in fake.files.get("server.properties", ""))
     check("the summary reports the port", result.get("port") == 25580)
 
     # --- client-only mods are disabled, not deleted ---------------------
@@ -216,14 +220,28 @@ async def main():
 
     # --- a Fabric pack gets its heap tuned too --------------------------
     # Forge and NeoForge read JVM args from user_jvm_args.txt; everything
-    # else keeps them in Crafty's launch command, and nothing used to rewrite
+    # else keeps them in the startup command, and nothing used to rewrite
     # it -- so a Fabric pack asking for 6 GB kept 6 GB regardless of the host.
     tuned, _ = await run_install(port=25584, optimize=True)
-    check("a Fabric install tunes the heap through Crafty's command",
+    check("a Fabric install tunes the heap through the startup command",
           getattr(tuned, "heap", None) is not None,
           f"heap={getattr(tuned, 'heap', None)}")
     check("the tuned heap is sized to the host, not to the pack's wish",
           getattr(tuned, "heap", (99, []))[0] <= 64)
+    record = await tuned.eng.get_server(tuned.sid)
+    from app import specs as _specs
+    check("and the server's memory limit grows to hold that heap",
+          record["memory_mb"] >= _specs.container_memory_mb(tuned.heap[0]),
+          f"{record['memory_mb']} MB for a {tuned.heap[0]} GB heap")
+
+    # --- a server that has never run has no server.properties -------------
+    fresh = Recorder()
+    engine.configure(drivers={"mock": fresh})
+    sid = await engine.create_server(name="Fresh", port=25590, memory_mb=2048)
+    out = await properties.set_port(sid, 25591, force=True)
+    text = await fresh.read_file(sid, "server.properties")
+    check("the port can be set before Minecraft has written the file",
+          "server-port=25591" in text and out["port"] == 25591, repr(text))
 
     # --- the upload archive is built on disk and cleaned up -------------
     check("the overlay was uploaded as an archive", fake.upload_sizes,

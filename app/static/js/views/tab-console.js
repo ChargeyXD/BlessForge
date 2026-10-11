@@ -1,8 +1,8 @@
 /* ============================================================
-   Console — Crafty's output, live, with a command box.
+   Console — the server's output, live, with a command box.
 
-   Crafty has no push channel, so the backend polls it and streams
-   only the lines that are new. Two behaviours matter here and
+   The backend follows the node's console and streams only the
+   lines that are new. Two behaviours matter here and
    both are about being able to read scrollback on a chatty
    server: following pauses the moment you scroll up and resumes
    when you scroll back to the bottom, and the filter never
@@ -149,7 +149,7 @@ export async function render(ctx) {
       let frame;
       try { frame = JSON.parse(event.data); } catch { return; }
       if (frame.event === 'reset') {
-        // Crafty's buffer is a ring; when it wraps, the tail no longer starts
+        // The node's buffer is a ring; when it wraps, the tail no longer starts
         // where we left off and the honest answer is to repaint.
         lines = [];
         clear(term);
@@ -162,11 +162,11 @@ export async function render(ctx) {
       }
       if (frame.source) {
         sourcePill.textContent = frame.source === 'buffer'
-          ? "Crafty's live buffer" : 'logs/latest.log';
+          ? 'live console' : 'logs/latest.log';
         sourcePill.title = frame.source === 'buffer'
-          ? 'Crafty started this server and is holding its output'
-          : 'Read from the log file — Crafty did not start this process, or '
-            + 'was restarted since';
+          ? 'The node started this server and is holding its output'
+          : 'Read from the log file — the node has not started this server '
+            + 'since it came up';
       }
       if (typeof frame.running === 'boolean') {
         statusPill.className = `pill ${frame.running ? 'ok' : 'dead'}`;
@@ -234,7 +234,7 @@ export async function render(ctx) {
     lines = snap.lines || [];
     repaint();
     sourcePill.textContent = snap.source === 'buffer'
-      ? "Crafty's live buffer" : 'logs/latest.log';
+      ? 'live console' : 'logs/latest.log';
     statusPill.className = `pill ${snap.running ? 'ok' : 'dead'}`;
     statusPill.textContent = snap.running ? 'running' : 'stopped';
     if (!lines.length) {

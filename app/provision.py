@@ -1,54 +1,42 @@
-"""Creating an instance, and getting a loader onto it whatever goes wrong.
+"""Creating a server, and getting a loader onto it whatever goes wrong.
 
 Two things live here:
 
-  1. **`ensure_loader`** -- the retry ladder that stands between "Crafty said
-     201" and "this instance can actually start". Crafty fetches loader jars
-     from a single mirror on a daemon thread; when that fails it logs one
-     line and stops, the API still reports success, and the instance is left
-     with nothing but eula.txt. The ladder is:
+  1. **`install_loader`** -- everything between "the server exists" and "this
+     server can start". The jar is resolved from the loader's own project
+     (`app/loaders.py`), and then fetched by whoever can reach it:
 
-        Crafty's own download  ->  Crafty's jar index, fetched by us
-                               ->  the loader's upstream project
-                               ->  say plainly what is broken
+        the node downloads it          (engine.install, `fetch`)
+          ->  BlessForge downloads it, checks it, and uploads it
+                                       (the node's own network may be the
+                                        broken part: a home line with DNS
+                                        trouble, a mirror that drops one IP)
+          ->  say plainly what is broken
 
-     Only the last rung is a failure, and it names the mirror rather than
-     blaming the user.
+     For Forge and NeoForge the installer then runs once on the node, and
+     the startup command is written from what it left behind -- a `run.sh`
+     naming the args file on 1.17+, a runnable `forge-*.jar` before that.
+     Getting that command wrong means every start re-runs the installer, so
+     it is read back from the files rather than guessed.
 
   2. **`create_empty`** -- a server with no modpack: a loader, a version, and
-     an empty `mods/` or `plugins/` folder. Most servers do not start life as
-     a downloaded pack, and until now there was no way to make one here at
-     all.
+     an empty `mods/` or `plugins/` folder.
 
-The loader ladder is shared with the modpack installer rather than
-duplicated, so a fix to either helps both.
+The modpack installer calls the same ladder rather than carrying a copy of
+it, so a fix to either helps both.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import re
 import time
 
-from app import config, crafty, loaders, optimizer, properties, specs
+from app import config, engine, loaders, optimizer, properties, specs
 from app.jobs import Job
 
-# Crafty points `execution_command` at the loader INSTALLER
-# (`-jar forge-installer-1.20.1.jar --installServer`) and only rewrites it
-# once its own installer thread finishes. The presence of a command means
-# nothing; the absence of this marker is what says the loader is installed.
+# A Forge/NeoForge command that still runs the installer. Its presence means
+# the loader is not installed yet, whatever else is in the folder.
 INSTALLER_MARKER = "--installServer"
-
-# Crafty sleeps 3s before starting its download, then allows three retries on
-# a 2/4/8s backoff -- about 17s to fail. Past this the jar is not coming.
-DOWNLOAD_GRACE = 75
-
-# Crafty streams the jar straight to its final path, so a download in flight
-# is a file whose mtime keeps advancing. Nothing moving for this long means
-# whatever was happening has stopped -- including a connection that died
-# mid-stream and left a truncated jar, which "is there a .jar" cannot see.
-# Three minutes because Crafty reports mtimes at minute resolution.
-STALL_SECONDS = 180
 
 
 def _is_installer_family(family: str) -> bool:
@@ -57,6 +45,7 @@ def _is_installer_family(family: str) -> bool:
 
 def loader_installed(family: str, command: str, names: set[str],
                      executable: str) -> bool:
+    """Is there a launcher in this folder that the command actually starts?"""
     if _is_installer_family(family):
         return bool(command) and INSTALLER_MARKER not in command
     return bool(executable) and (
@@ -66,301 +55,183 @@ def loader_installed(family: str, command: str, names: set[str],
     )
 
 
-async def ensure_loader(job: Job, server_id: str, *, family: str,
-                        mc_version: str, crafty_loader: str = "") -> dict:
-    """Block until the instance has a working launcher, repairing if needed.
+def _verify(payload: bytes, src: dict) -> None:
+    """Check a jar against whatever checksum its project publishes."""
+    for algo in ("sha256", "sha1"):
+        want = (src.get(algo) or "").lower()
+        if want:
+            got = hashlib.new(algo, payload).hexdigest()
+            if got != want:
+                raise RuntimeError(
+                    f"The {src.get('filename')} downloaded from "
+                    f"{src.get('source') or 'upstream'} is corrupt -- its "
+                    f"{algo} is {got[:12]}..., the project publishes "
+                    f"{want[:12]}...")
 
-    Returns a short record of what it had to do, so the install log can say
-    "Crafty handled it" or "Crafty's mirror was down, we fetched it from
-    NeoForged" rather than being silent about a repair.
+
+async def _fetch_loader(job: Job, server_id: str, family: str, mc_version: str,
+                        src: dict) -> list[str]:
+    """Get the loader jar into the server folder. Returns the rungs used."""
+    fetch = {k: src.get(k) for k in ("url", "filename", "sha1", "sha256")
+             if src.get(k)}
+    rungs = ["node"]
+    try:
+        await engine.install(server_id, {
+            "family": family, "mc_version": mc_version,
+            "loader_version": src.get("loader_version"),
+            "java_major": engine.required_java_major(mc_version),
+            "fetch": fetch,
+        })
+        job.log_line(f"The node fetched {src['filename']} from "
+                     f"{src.get('source') or 'upstream'}")
+        return rungs
+    except engine.EngineError as e:
+        job.log_line(
+            f"The node could not download {src['filename']} ({e}). "
+            "Fetching it here and handing it over instead.", "warn")
+
+    rungs.append("relay")
+    job.set_step(f"Fetching {family} through BlessForge", 61)
+    try:
+        payload = await loaders.fetch(src["url"])
+    except Exception as e:      # noqa: BLE001 -- reported as the last rung
+        raise RuntimeError(_exhausted_message(family, mc_version, src, str(e)))
+    _verify(payload, src)
+    await engine.upload_file(server_id, ".", src["filename"], payload)
+    job.log_line(f"Uploaded {src['filename']} ({len(payload) / 1048576:.1f} MB) "
+                 f"from {src.get('source') or 'upstream'}")
+    return rungs
+
+
+def _exhausted_message(family: str, mc: str, src: dict, why: str) -> str:
+    return (
+        f"The {family} loader for Minecraft {mc} could not be fetched. The "
+        f"node could not download it from {src.get('source') or 'its project'}, "
+        f"and neither could BlessForge ({why}). That is almost always the "
+        "project's download server being down, and it is usually back within "
+        "the hour. The server has been left in place: use Finish setup to "
+        "retry the loader rather than reinstalling.")
+
+
+async def install_loader(job: Job, server_id: str, *, family: str,
+                         mc_version: str, loader_version: str = "") -> dict:
+    """Put a working launcher in the server folder and point the server at it.
+
+    Returns a short record of what it did, so the install log can say "the
+    node fetched it" or "the node could not, BlessForge relayed it" rather
+    than being silent about a repair.
     """
     family = loaders.family_of(family)
-    crafty_loader = crafty_loader or loaders.crafty_key(family)
-    job.set_step("Waiting for Crafty to install the loader", 60)
-
-    deadline = time.time() + config.SERVER_READY_TIMEOUT
-    grace_until = time.time() + DOWNLOAD_GRACE
-    last_sig: dict[str, str] = {}
-    last_change = time.time()
-    attempts: list[str] = []
-    announced = False
-
-    while time.time() < deadline:
-        try:
-            entries = await crafty.list_dir(server_id, ".")
-            names = {k for k in entries if k != "root_path"}
-            server = await crafty.get_server(server_id)
-            executable = server.get("executable") or ""
-            command = server.get("execution_command") or ""
-
-            if loader_installed(family, command, names, executable):
-                job.log_line(f"Loader ready ({len(names)} entries in the "
-                             "server directory)")
-                return {"ok": True, "repairs": attempts,
-                        "source": attempts[-1] if attempts else "crafty"}
-
-            jar_here = any(n.endswith(".jar") for n in names)
-            if jar_here and not announced:
-                announced = True
-                job.set_step("Crafty is installing the loader", 62)
-
-            # Names plus mtimes: a jar still being written moves; an
-            # abandoned one does not.
-            sig = {n: str((entries.get(n) or {}).get("modified", ""))
-                   for n in names}
-            if sig != last_sig:
-                last_sig, last_change = sig, time.time()
-
-            stalled = time.time() - last_change > STALL_SECONDS
-            if (not jar_here and time.time() > grace_until) or stalled:
-                nxt = _next_rung(attempts)
-                if nxt is None:
-                    raise RuntimeError(_exhausted_message(family, mc_version,
-                                                          attempts))
-                attempts.append(nxt)
-                await _repair(job, server_id, family, mc_version,
-                              crafty_loader, executable, via=nxt)
-                grace_until = time.time() + DOWNLOAD_GRACE
-                last_change = time.time()
-                last_sig = {}
-                continue
-        except crafty.CraftyError:
-            pass
-        await asyncio.sleep(5)
-
-    raise RuntimeError(
-        f"Crafty never finished installing {family} for Minecraft "
-        f"{mc_version} (waited {config.SERVER_READY_TIMEOUT}s). The instance "
-        "exists but has no launcher — you can retry the loader from the "
-        "instance's Overview, or delete it and start again."
-    )
-
-
-def _next_rung(attempts: list[str]) -> str | None:
-    for rung in ("crafty-index", "upstream"):
-        if rung not in attempts:
-            return rung
-    return None
-
-
-def _exhausted_message(family: str, mc: str, attempts: list[str]) -> str:
-    return (
-        f"The {family} loader for Minecraft {mc} could not be installed. "
-        f"Crafty's own download failed, its jar index "
-        f"({'tried' if 'crafty-index' in attempts else 'not tried'}) did not "
-        f"help, and the upstream project did not serve a build either. "
-        "Crafty's mirror (jars.arcadiatech.org) is the usual culprit and is "
-        "usually back within the hour. The instance has been left in place so "
-        "you can retry the loader rather than reinstalling the pack."
-    )
-
-
-async def _repair(job: Job, server_id: str, family: str, mc_version: str,
-                  crafty_loader: str, executable: str, *, via: str) -> None:
-    """Put the loader jar there ourselves, then finish the install."""
-    if via == "crafty-index":
-        job.log_line(
-            "Crafty's loader download did not complete. Fetching the same jar "
-            "from Crafty's own index instead.", "warn")
-        job.set_step("Fetching the loader jar Crafty could not", 61)
-        src = await _from_crafty_index(crafty_loader, mc_version)
-    else:
-        job.log_line(
-            f"Crafty's index did not help either. Falling back to the "
-            f"{family} project's own downloads.", "warn")
-        job.set_step(f"Fetching {family} from upstream", 61)
+    job.set_step(f"Resolving {family} for Minecraft {mc_version}", 58)
+    src = await loaders.resolve(family, mc_version, build=loader_version or None)
+    if not src and loader_version:
+        job.log_line(f"{family} {loader_version} is not published for "
+                     f"{mc_version}; using the newest build instead.", "warn")
         src = await loaders.resolve(family, mc_version)
-
     if not src:
         raise RuntimeError(
-            f"No {family} build for Minecraft {mc_version} was found "
-            f"{'in Crafty' + chr(39) + 's jar index' if via == 'crafty-index' else 'upstream'}."
-        )
+            f"No {family} build for Minecraft {mc_version} was found. The "
+            f"{family} project does not publish one, or did not answer.")
 
-    payload = await loaders.fetch(src["url"])
-    if src.get("sha256"):
-        digest = hashlib.sha256(payload).hexdigest()
-        if digest != src["sha256"]:
-            raise RuntimeError(
-                "The loader jar downloaded from Crafty's mirror is corrupt "
-                f"(sha256 {digest[:12]}… expected {src['sha256'][:12]}…)."
-            )
-    if src.get("sha1"):
-        digest = hashlib.sha1(payload).hexdigest()
-        if digest != src["sha1"]:
-            raise RuntimeError(
-                f"The {family} jar downloaded from {src.get('source')} is "
-                "corrupt — its checksum does not match what the project "
-                "publishes."
-            )
+    job.set_step(f"Installing {family} {src.get('loader_version') or ''}".strip(), 60)
+    rungs = await _fetch_loader(job, server_id, family, mc_version, src)
 
-    # Keep Crafty's own filename when we have it: Crafty's record already
-    # points `executable` at that name, and a jar under a different name
-    # means a launch command that names a file which does not exist.
-    name = (executable or src.get("filename")
-            or f"{crafty_loader}-{mc_version}.jar").split("/")[-1]
-    await crafty.upload_file(server_id, ".", name, payload)
-    job.log_line(
-        f"Uploaded {name} ({len(payload) / 1048576:.1f} MB) from "
-        f"{src.get('source') or 'Crafty’s index'}"
-    )
-
-    if not executable or executable.split("/")[-1] != name:
+    if src.get("kind") == "installer":
+        job.set_step("Running the loader installer", 63)
         try:
-            await crafty.patch_server(server_id, {"executable": name})
-        except Exception:
-            pass
+            result = await engine.install(server_id, {
+                "family": family, "mc_version": mc_version,
+                "loader_version": src.get("loader_version"),
+                "java_major": engine.required_java_major(mc_version),
+                "run": ["java", "-jar", src["filename"], "--installServer"],
+                "remove_after": [src["filename"], src["filename"] + ".log"],
+                "timeout": config.SERVER_READY_TIMEOUT,
+            })
+        except engine.EngineError as e:
+            tail = ((e.body or {}).get("output") or [])[-8:] if isinstance(
+                e.body, dict) else []
+            for line in tail:
+                job.log_line(f"  {line}", "warn")
+            raise RuntimeError(
+                f"The {family} installer did not finish: {e}. The server has "
+                "been left in place; Finish setup retries the loader.")
+        for line in (result.get("output") or [])[-3:]:
+            job.log_line(line)
 
-    if _is_installer_family(family):
-        await run_installer(job, server_id, family)
-    elif src.get("kind") == "server":
-        # Fabric/Paper/vanilla run the jar directly. Crafty writes the command
-        # at create time and it survives, but an upstream jar can have a
-        # different filename, so make sure the command names the file on disk.
-        await _ensure_direct_command(job, server_id, name)
-
-
-async def _from_crafty_index(crafty_loader: str, mc_version: str) -> dict:
-    try:
-        catalog = await crafty.jar_catalog()
-    except Exception:
-        return {}
-    src = crafty.jar_source(catalog, "mc_java_servers", crafty_loader,
-                            mc_version)
-    return {**src, "source": "Crafty’s jar index",
-            "kind": "installer" if "installer" in crafty_loader else "server",
-            "filename": ""} if src else {}
-
-
-async def _ensure_direct_command(job: Job, server_id: str, jar: str) -> None:
-    server = await crafty.get_server(server_id)
-    command = server.get("execution_command") or ""
-    if jar in command:
-        return
-    replaced = re.sub(r"-jar\s+\S+\.jar", f"-jar {jar}", command)
-    if replaced == command:
-        replaced = f"java -Xms1G -Xmx4G -jar {jar} nogui"
-    await crafty.patch_server(server_id, {"executable": jar,
-                                          "execution_command": replaced})
-    job.log_line(f"Launch command now points at {jar}")
+    command, executable = await startup_command(
+        server_id, family, mc_version, src)
+    await engine.update_server(server_id, {"executable": executable,
+                                           "execution_command": command})
+    job.log_line(f"Startup command: {command}")
+    runtime = await engine.set_runtime(server_id, mc_version)
+    job.log_line(f"Runs on Java {runtime.get('java_major')}")
+    return {"ok": True, "source": rungs[-1], "repairs": rungs[1:],
+            "loader_version": src.get("loader_version"),
+            "from": src.get("source")}
 
 
-async def run_installer(job: Job, server_id: str, family: str) -> None:
-    """Run a Forge/NeoForge installer the way Crafty would, then fix the command.
-
-    Crafty's create call already left the instance pointing at
-    `-jar <installer>.jar --installServer`, so starting the server *is*
-    running the installer. What Crafty normally does afterwards -- rewrite
-    `executable` and `execution_command` to the real launch line -- lives on
-    the thread that died with the download, so it has to be done here.
-    """
-    job.set_step("Running the loader installer", 63)
-    await crafty.server_action(server_id, "start_server")
-
-    deadline = time.time() + min(900, config.SERVER_READY_TIMEOUT)
-    ok = False
-    while time.time() < deadline:
-        await asyncio.sleep(5)
-        try:
-            entries = await crafty.list_dir(server_id, ".")
-            names = {k for k in entries if k != "root_path"}
-        except crafty.CraftyError:
-            continue
-        if "libraries" in names and ("run.sh" in names or "run.bat" in names):
-            await asyncio.sleep(5)      # let it flush its last writes
-            ok = True
-            break
-    if not ok:
-        raise RuntimeError(
-            "The loader installer did not finish. Its output is in this "
-            "instance's console — open the Console tab to see what it "
-            "reported."
-        )
-    await rewrite_modded_command(job, server_id, family)
-
-
-# Mirrors Crafty's own post-install rewrite (app/classes/installers/modded.py):
-# read the run script the installer generated and turn it into a launch
-# command. Getting this wrong means the next start re-runs the installer
-# instead of the server.
+# The args line a modern Forge/NeoForge installer writes into run.sh:
+#   java @user_jvm_args.txt @libraries/net/neoforged/neoforge/21.1.209/unix_args.txt "$@"
 _RUN_SCRIPT = re.compile(
     r"java @([a-zA-Z0-9_.]+) @([a-z./\-]+)([0-9.\-]+(?:-[a-zA-Z0-9]+)?)"
     r"/([a-z_0-9]+\.txt)"
 )
 
+# Placeholder heap: the optimizer sizes it for real straight afterwards.
+_DEFAULT_HEAP = "-Xms1G -Xmx2G"
 
-async def rewrite_modded_command(job: Job, server_id: str, family: str) -> None:
+
+async def startup_command(server_id: str, family: str, mc_version: str,
+                          src: dict) -> tuple[str, str]:
+    """(command, executable) for a freshly installed loader.
+
+    Read from the folder, not assumed: what a Forge installer leaves differs
+    by era, and a command naming a file that is not there is a server that
+    never starts.
+    """
+    family = loaders.family_of(family)
+    if src.get("kind") != "installer":
+        jar = src["filename"]
+        return f"java {_DEFAULT_HEAP} -jar {jar} nogui", jar
+
     script = ""
     for candidate in ("run.sh", "run.bat"):
         try:
-            script = await crafty.read_file(server_id, candidate)
+            script = await engine.read_file(server_id, candidate)
             if script:
                 break
-        except crafty.CraftyError:
+        except engine.EngineError:
             continue
-
     match = _RUN_SCRIPT.search(script or "")
-    if not match:
-        job.log_line(
-            "The loader installed, but its run script could not be parsed — "
-            "this instance may need its launch command set by hand in Crafty.",
-            "warn")
-        return
+    if match:
+        args_file, lib_path, version, txt = match.groups()
+        exec_path = f"{lib_path}{version}/"
+        loader = "neoforge" if family == "neoforge" else "forge"
+        return (f"java @{args_file} @{exec_path}{txt} nogui",
+                f"{exec_path}{loader}-{version}-server.jar")
 
-    args_file, lib_path, version, txt = match.groups()
-    exec_path = f"{lib_path}{version}/"
-    loader = "neoforge" if "neoforge" in loaders.family_of(family) else "forge"
-    await crafty.patch_server(server_id, {
-        "executable": f"{exec_path}{loader}-{version}-server.jar",
-        "execution_command": f"java @{args_file} @{exec_path}{txt} nogui",
-    })
-    job.log_line(f"Launch command set for {loader} {version}")
+    # Before 1.17 the installer leaves a runnable jar instead of a script.
+    names = [n for n in await engine.list_dir(server_id, ".")
+             if n.endswith(".jar") and n.startswith("forge-")
+             and "installer" not in n]
+    if names:
+        jar = sorted(names, key=len)[0]
+        return f"java {_DEFAULT_HEAP} -jar {jar} nogui", jar
+    raise RuntimeError(
+        f"The {family} installer ran, but left neither a run script nor a "
+        "server jar. Its output is on the Console tab.")
+
+
+# The modpack installer's old name for the ladder. Kept so its call reads the
+# same; there is nothing to wait FOR any more, only work to do.
+async def ensure_loader(job: Job, server_id: str, *, family: str,
+                        mc_version: str, loader_version: str = "") -> dict:
+    return await install_loader(job, server_id, family=family,
+                                mc_version=mc_version,
+                                loader_version=loader_version)
 
 
 # --- creating a server from nothing ------------------------------------
-
-
-async def _create_record(job: Job, *, name: str, family: str, mc_version: str,
-                         mem_min: int, mem_max: int, port: int
-                         ) -> tuple[str, bool]:
-    """Ask Crafty for an instance. Returns (server_id, used_substitute).
-
-    Crafty can only create from its own jar index, so a version it has never
-    heard of -- a fresh Minecraft release, or a loader build its mirror never
-    cached -- cannot be created directly. Rather than refuse, we create the
-    nearest thing Crafty *does* have and then replace the jar upstream, which
-    is the same repair the loader ladder already performs.
-    """
-    crafty_loader = loaders.crafty_key(family)
-    catalog: dict = {}
-    try:
-        catalog = await crafty.jar_catalog()
-    except Exception:
-        job.log_line("Crafty's jar index is unreachable; creating against the "
-                     "requested version directly.", "warn")
-
-    available = list(((catalog.get("mc_java_servers") or {}).get("types") or {})
-                     .get(crafty_loader, {}).get("versions", {}).keys())
-    target = mc_version
-    substitute = False
-    if available and mc_version not in available:
-        # Prefer the newest build in the same minor line, so a 1.21.4 request
-        # lands on 1.21.x rather than on 1.16.
-        line = mc_version.rsplit(".", 1)[0]
-        same_line = [v for v in available if v.startswith(line)]
-        pool = same_line or available
-        target = sorted(pool, key=loaders._version_key)[-1]
-        substitute = True
-        job.log_line(
-            f"Crafty's index has no {family} build for {mc_version}. Creating "
-            f"against {target} and replacing the jar with the real "
-            f"{mc_version} build afterwards.", "warn")
-
-    server_id = await crafty.create_server(
-        name=name, loader_type=crafty_loader, mc_version=target,
-        mem_min=mem_min, mem_max=mem_max, port=port,
-    )
-    return server_id, substitute
 
 
 async def create_empty(
@@ -380,7 +251,7 @@ async def create_empty(
     online_mode: bool = True,
     seed_mods: list[dict] | None = None,
 ) -> dict:
-    """Create a bare instance: a loader, a version, and an empty mod folder."""
+    """Create a bare server: a loader, a version, and an empty mod folder."""
     family = loaders.family_of(loader)
     if family not in {e["key"] for e in loaders.CATALOGUE}:
         raise ValueError(
@@ -397,20 +268,20 @@ async def create_empty(
         ram_min = ram_max
 
     job.set_step(f"Creating {family} {mc_version}", 10)
-    server_id, substitute = await _create_record(
-        job, name=name, family=family, mc_version=mc_version,
-        mem_min=ram_min, mem_max=ram_max, port=port,
+    server_id = await engine.create_server(
+        name=name, port=port, memory_mb=specs.container_memory_mb(ram_max),
+        mc_version=mc_version, loader=family,
     )
     job.set_instance(server_id, name)
     job.emit("server_created", server_id, server_id=server_id)
-    job.log_line(f"Created instance {server_id}")
+    job.log_line(f"Created server {server_id}")
 
     # Stamp it immediately, marked unfinished: if the loader never arrives the
     # fleet list should say "half-finished" rather than showing a healthy
     # server with nothing in it.
     mod_dir = loaders.mod_directory(family)
     try:
-        await crafty.write_studio_manifest(server_id, {
+        await engine.write_manifest(server_id, {
             "schema": 1, "complete": False, "started_at": time.time(),
             "pack": {"name": name, "source": "empty"},
             "minecraft": mc_version, "loader": family,
@@ -419,40 +290,21 @@ async def create_empty(
     except Exception:
         pass
 
-    if substitute:
-        # The record exists against the wrong version. Force the ladder to run
-        # now so the right jar lands before anything else happens.
-        job.set_step("Replacing the loader with the requested build", 30)
-        try:
-            server = await crafty.get_server(server_id)
-            await _repair(job, server_id, family, mc_version,
-                          loaders.crafty_key(family),
-                          server.get("executable") or "", via="upstream")
-        except Exception as e:
-            job.log_line(
-                f"Could not install {family} {mc_version} directly: {e}. The "
-                f"instance is running the closest build Crafty had.", "warn")
-
-    result = await ensure_loader(job, server_id, family=family,
-                                 mc_version=mc_version)
+    result = await install_loader(job, server_id, family=family,
+                                  mc_version=mc_version)
 
     job.set_step("Preparing the server directory", 78)
-    # The mod or plugin folder is the entire point of an empty instance, and
-    # a loader that has never started has not created one.
+    # The mod or plugin folder is the entire point of an empty server, and a
+    # loader that has never started has not created one.
     for folder in (mod_dir, "config", "logs", "crash-reports"):
         try:
-            await crafty.ensure_dir(server_id, folder)
+            await engine.ensure_dir(server_id, folder)
         except Exception:
             job.log_line(f"Could not create {folder}/", "warn")
-    if family in loaders.PLUGIN_FAMILIES:
-        # Paper reads plugin configs out of plugins/<Name>/, so plugins/ is
-        # the only one that has to exist. `config/` is harmless and stops the
-        # Configs tab from being empty on a fresh Paper server.
-        pass
 
     job.set_step("Applying server settings", 86)
     try:
-        await crafty.write_file(server_id, "eula.txt", crafty.EULA_ACCEPTED)
+        await engine.write_file(server_id, "eula.txt", engine.EULA_ACCEPTED)
         job.log_line("EULA accepted")
     except Exception:
         job.log_line("Could not write eula.txt", "warn")
@@ -488,20 +340,13 @@ async def create_empty(
                 heap_gb=ram_max, host=host, mc_version=mc_version,
                 loader=family) if f["enabled"]]
             if family in ("forge", "neoforge"):
-                await crafty.write_file(server_id, "user_jvm_args.txt",
+                await engine.write_file(server_id, "user_jvm_args.txt",
                                         specs.render_jvm_args(flags, ram_max))
             else:
                 await optimizer.set_command_memory(server_id, ram_max, flags)
             job.log_line(f"Tuned JVM: {ram_max:g} GB heap, {len(flags)} flags")
         except Exception as e:
             job.log_line(f"Could not apply performance tuning: {e}", "warn")
-
-    try:
-        java = await crafty.set_java_version(server_id, mc_version)
-        if java.get("changed"):
-            job.log_line(f"Set Java {java.get('java_major')} for this instance")
-    except Exception as e:
-        job.log_line(f"Could not set the Java version: {e}", "warn")
 
     installed: list[dict] = []
     if seed_mods:
@@ -527,9 +372,9 @@ async def create_empty(
                     f"Could not install {entry.get('name') or entry.get('project_id')}"
                     f": {e}", "warn")
 
-    job.set_step("Recording the instance manifest", 98)
+    job.set_step("Recording the server manifest", 98)
     try:
-        await crafty.write_studio_manifest(server_id, {
+        await engine.write_manifest(server_id, {
             "schema": 1,
             "complete": True,
             "installed_at": time.time(),
@@ -538,8 +383,7 @@ async def create_empty(
                      "version": f"{family} {mc_version}"},
             "minecraft": mc_version,
             "loader": family,
-            "loader_version": "",
-            "crafty_loader": loaders.crafty_key(family),
+            "loader_version": result.get("loader_version") or "",
             "mod_directory": mod_dir,
             "mods": [
                 {"file": f"{mod_dir}/{r.get('installed')}", "name": r.get("name"),
@@ -552,7 +396,7 @@ async def create_empty(
             "loader_repairs": result.get("repairs") or [],
         })
     except Exception as e:
-        job.log_line(f"Could not write the instance manifest: {e}", "warn")
+        job.log_line(f"Could not write the server manifest: {e}", "warn")
 
     job.log_line(
         f"'{name}' is ready — {family} {mc_version}, empty {mod_dir}/ folder, "
@@ -574,14 +418,14 @@ async def create_empty(
 
 
 async def reinstall_loader(job: Job, server_id: str) -> dict:
-    """Retry the loader for an instance that was left without one.
+    """Retry the loader for a server that was left without one.
 
     The one recovery path an interrupted create used to have was "delete it
     and start again", which throws away the port, the name and anything
     already uploaded.
     """
-    manifest = await crafty.read_studio_manifest(server_id)
-    server = await crafty.get_server(server_id)
+    manifest = await engine.read_manifest(server_id)
+    server = await engine.get_server(server_id)
     family = loaders.family_of(manifest.get("loader") or "")
     mc = manifest.get("minecraft") or ""
     if not mc:
@@ -589,18 +433,16 @@ async def reinstall_loader(job: Job, server_id: str) -> dict:
         mc = m.group(1) if m else ""
     if not family or not mc:
         raise ValueError(
-            "This instance does not record which loader or Minecraft version "
+            "This server does not record which loader or Minecraft version "
             "it was built for, so the loader cannot be reinstalled "
             "automatically."
         )
     job.log_line(f"Reinstalling {family} for Minecraft {mc}")
-    # Skip Crafty's own attempt: it already had its chance.
-    await _repair(job, server_id, family, mc, loaders.crafty_key(family),
-                  server.get("executable") or "", via="crafty-index")
-    result = await ensure_loader(job, server_id, family=family, mc_version=mc)
+    result = await install_loader(job, server_id, family=family, mc_version=mc,
+                                  loader_version=manifest.get("loader_version") or "")
     try:
         manifest["complete"] = True
-        await crafty.write_studio_manifest(server_id, manifest)
+        await engine.write_manifest(server_id, manifest)
     except Exception:
         pass
     return {"server_id": server_id, "loader": family, "minecraft": mc, **result}

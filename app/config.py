@@ -29,13 +29,28 @@ def _float(name: str, default: float) -> float:
         return default
 
 
-# --- Crafty Controller -------------------------------------------------
-# CRAFTY_URL must include scheme + port, e.g. https://192.168.1.10:8443
-CRAFTY_URL = (os.environ.get("CRAFTY_URL", "") or "").rstrip("/")
-CRAFTY_TOKEN = os.environ.get("CRAFTY_TOKEN", "") or ""
-# Crafty ships a self-signed cert by default, so verification is OFF unless
-# the operator explicitly turns it on.
-CRAFTY_VERIFY_SSL = _bool("CRAFTY_VERIFY_SSL", False)
+# --- The engine ---------------------------------------------------------
+# What actually runs the servers. `agent` is every node registered with
+# BlessForge, each reached through its BlessForge agent; `mock` keeps
+# everything in memory, for tests and for clicking through the UI with no
+# node at all. See app/engine/__init__.py.
+ENGINE = (os.environ.get("ENGINE", "") or "mock").strip().lower()
+# The mock starts with two example servers unless told not to.
+ENGINE_MOCK_SEED = _bool("ENGINE_MOCK_SEED", True)
+
+# The game ports a node's edge forwards, as "low-high". A port outside it
+# binds on the node and is unreachable from outside, which the Port control
+# warns about.
+def _port_range(raw: str) -> tuple[int, int]:
+    try:
+        low, _, high = raw.partition("-")
+        lo, hi = int(low), int(high)
+        return (lo, hi) if 0 < lo <= hi < 65536 else (25500, 25600)
+    except ValueError:
+        return (25500, 25600)
+
+
+GAME_PORT_RANGE = _port_range(os.environ.get("GAME_PORT_RANGE", "") or "25500-25600")
 
 # --- CurseForge --------------------------------------------------------
 CURSEFORGE_API_KEY = (os.environ.get("CURSEFORGE_API_KEY", "") or "").strip()
@@ -96,30 +111,30 @@ MODRINTH_ENABLED = _bool("MODRINTH_ENABLED", True)
 # Parallel mod downloads during a manifest install. CurseForge tolerates
 # this comfortably; lower it on slow links.
 DOWNLOAD_CONCURRENCY = _int("DOWNLOAD_CONCURRENCY", 8)
-# Chunk size for uploads pushed into Crafty (bytes).
+# Chunk size for uploads pushed to a node (bytes).
 UPLOAD_CHUNK_SIZE = _int("UPLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
-# Seconds to wait for Crafty to finish its loader install before overlaying.
+# Seconds to allow a loader install (a Forge installer can take minutes).
 SERVER_READY_TIMEOUT = _int("SERVER_READY_TIMEOUT", 900)
 
 # How fast the console follows a server.
 #
-# Crafty exposes no push channel, so the console is a poll-and-diff. The
-# interval used to be a flat 1.5s, which is why output arrived in visible
+# For a driver with no console socket of its own, the console is a
+# poll-and-diff. The interval used to be a flat 1.5s, which is why output
+# arrived in visible
 # clumps rather than line by line -- a booting server writes hundreds of
 # lines into a window where nothing is sent at all.
 #
 # It is now adaptive: fast while output is flowing, backing off to the idle
 # interval when it stops, and snapping back to fast the moment a line
-# appears. A poll costs about 19ms and under a kilobyte against a Crafty on
-# the same machine, which is the normal deployment, so the fast interval is
-# affordable exactly when it matters and is not paid for when it does not.
+# appears. A poll costs a few milliseconds and under a kilobyte against a
+# node on the same network, so the fast interval is affordable exactly when
+# it matters and is not paid for when it does not.
 CONSOLE_POLL_FAST = _float("CONSOLE_POLL_FAST", 0.2)
-# 0.6s, not 1.5s. The backoff is there to be polite to a Crafty across a
-# network; the normal deployment has it on the same machine, where a
-# poll measured 19ms and under a kilobyte. At 0.6s that is under 2
-# requests a second and about 1 KB/s for an idle console, and it halves
-# the worst case for the FIRST line of a burst -- which is the one that
-# decides whether the console feels live. Raise it if Crafty is remote.
+# 0.6s, not 1.5s. The backoff is there to be polite to a node across a
+# slow link. At 0.6s that is under 2 requests a second and about 1 KB/s for
+# an idle console, and it halves the worst case for the FIRST line of a
+# burst -- which is the one that decides whether the console feels live.
+# Raise it if the node is far away.
 CONSOLE_POLL_IDLE = _float("CONSOLE_POLL_IDLE", 0.6)
 # Whether the server is up changes on the scale of minutes, so it is asked
 # for on a clock rather than every Nth poll -- at the fast interval, every
@@ -140,7 +155,7 @@ CACHE_DIR = Path(os.environ.get("CACHE_DIR", str(DATA_DIR / "cache")))
 # into DATA_DIR cannot be created at all -- and every one of these writes is
 # wrapped in a try/except, so the failure was silent. The entrypoint chowns
 # the subdirectories this app owns and deliberately never chowns DATA_DIR
-# itself (pointing the mount at Crafty's folder and then taking ownership of
+# itself (pointing the mount at another app's folder and taking ownership of
 # it would turn a misconfiguration into someone else's outage), so anything
 # that must survive a restart belongs under here.
 STATE_DIR = Path(os.environ.get("STATE_DIR", str(DATA_DIR / "state")))
@@ -267,11 +282,9 @@ def curseforge_key_warning() -> str | None:
 def configured() -> dict:
     """Report which integrations are usable, for the UI setup banner."""
     return {
-        "crafty": bool(CRAFTY_URL and CRAFTY_TOKEN),
+        "engine": ENGINE,
         "curseforge": bool(CURSEFORGE_API_KEY),
         "modrinth": MODRINTH_ENABLED,
-        "crafty_url": CRAFTY_URL,
-        "verify_ssl": CRAFTY_VERIFY_SSL,
         "curseforge_key_warning": curseforge_key_warning(),
     }
 

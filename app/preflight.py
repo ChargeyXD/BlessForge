@@ -1,4 +1,4 @@
-"""Pre-install analysis: decide what a pack contains before touching Crafty.
+"""Pre-install analysis: decide what a pack contains before touching a server.
 
 Stripping client-only mods automatically is right most of the time and wrong
 occasionally -- some "client" mods are also libraries that server-side mods

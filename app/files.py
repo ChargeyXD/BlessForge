@@ -1,18 +1,18 @@
 """A file manager for a server instance.
 
-Crafty already exposes every operation this needs -- list, read, write,
-create, rename, delete, upload, download, unzip -- but it exposes them as
-raw calls with sharp edges: sizes arrive as human strings, a directory
-listing is a dict keyed by name with a stray `root_path` in it, and every
-path is trusted. This module is the layer that makes those safe and
-uniform enough to hang a UI off.
+The engine exposes every operation this needs -- list, read, write,
+create, rename, delete, upload, download, extract -- as raw calls. This
+module is the layer that makes them safe and uniform enough to hang a UI
+off: it names what each entry is, says which ones the editor can open, and
+refuses the requests a person should not be one click away from.
 
 Three rules the whole module is built around:
 
-  * **Paths are checked here, not downstream.** Crafty does reject a
-    traversal, but it does it with a 500 and a traceback -- "the component
-    downstream happens to refuse" is not a guard. Every path that reaches
-    Crafty from this module has been through `guard_path`.
+  * **Paths are checked here, not only downstream.** The node refuses a
+    traversal too, and resolves every path inside the server folder with
+    symlinks refused -- but "the component downstream happens to refuse" is
+    not a guard on its own. Every path that leaves this module has been
+    through `guard_path` first.
   * **The world is not a toy.** `world/`, `backups/` and friends are
     listable (people legitimately want to see how big a world is) but
     writing into them, and deleting them, needs an explicit override so a
@@ -30,7 +30,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from app import crafty
+from app import engine
 
 # Extensions the built-in editor will open. Everything else is
 # download-only, which is the honest answer for a jar or a region file.
@@ -73,7 +73,7 @@ def guard_path(path: str | None, *, allow_root: bool = True) -> str:
 
     Returns "." for the server root. Anything absolute, anything with a
     `..` segment, anything with a NUL or a drive letter is refused before
-    it can reach Crafty.
+    it can reach a node.
     """
     raw = (path or ".").replace("\\", "/").strip()
     if not raw or raw in (".", "./"):
@@ -147,7 +147,7 @@ def is_editable(name: str, size_bytes: int = 0) -> bool:
 
 
 def size_to_bytes(size: Any) -> int:
-    """Crafty reports human sizes like '4.7MB'. Turn that back into bytes."""
+    """Bytes from whatever a listing carries: an int, or a human '4.7MB'."""
     if size is None:
         return 0
     if isinstance(size, (int, float)):
@@ -201,8 +201,8 @@ async def browse(server_id: str, path: str = ".") -> dict:
     """One directory, sorted folders-first, with breadcrumbs."""
     path = guard_path(path)
     try:
-        raw = await crafty.list_dir(server_id, path)
-    except crafty.CraftyError as e:
+        raw = await engine.list_dir(server_id, path)
+    except engine.EngineError as e:
         raise FileError(f"could not open {path}: {e}")
 
     entries = [
@@ -240,8 +240,8 @@ async def read_text(server_id: str, path: str) -> dict:
     if classify(name, False) not in ("text", "binary"):
         raise FileError(f"{name} is not a text file — download it instead")
     try:
-        content = await crafty.read_file(server_id, path)
-    except crafty.CraftyError as e:
+        content = await engine.read_file(server_id, path)
+    except engine.EngineError as e:
         raise FileError(f"could not read {path}: {e}")
     if len(content.encode("utf-8", "replace")) > MAX_EDIT_BYTES:
         raise FileError("that file is too large to open in the editor")
@@ -282,16 +282,16 @@ async def write_text(server_id: str, path: str, content: str,
     if len(content.encode("utf-8")) > MAX_EDIT_BYTES:
         raise FileError("that file is too large to save through the editor")
     try:
-        await crafty.write_file(server_id, path, content)
-    except crafty.CraftyError as e:
-        # Crafty answers a write to a file that does not exist with an error
-        # rather than creating it, so create-then-write is the honest retry.
+        await engine.write_file(server_id, path, content)
+    except engine.EngineError as e:
+        # A driver may refuse a write to a file that does not exist yet
+        # rather than create it, so create-then-write is the honest retry.
         parent = posixpath.dirname(path) or "."
         name = posixpath.basename(path)
         try:
-            await crafty.create_entry(server_id, parent, name, directory=False)
-            await crafty.write_file(server_id, path, content)
-        except crafty.CraftyError:
+            await engine.create_entry(server_id, parent, name, directory=False)
+            await engine.write_file(server_id, path, content)
+        except engine.EngineError:
             raise FileError(f"could not save {path}: {e}")
     return {"path": path, "saved": True, "bytes": len(content.encode("utf-8"))}
 
@@ -301,8 +301,8 @@ async def create(server_id: str, parent: str, name: str, directory: bool
     parent = guard_path(parent)
     name = guard_name(name)
     try:
-        await crafty.create_entry(server_id, parent, name, directory=directory)
-    except crafty.CraftyError as e:
+        await engine.create_entry(server_id, parent, name, directory=directory)
+    except engine.EngineError as e:
         raise FileError(f"could not create {name}: {e}")
     rel = name if parent == "." else f"{parent}/{name}"
     return {"path": rel, "dir": directory, "created": True}
@@ -314,8 +314,8 @@ async def rename(server_id: str, path: str, new_name: str) -> dict:
     if is_protected(path) and top_segment(path) == path:
         raise FileError(f"{path} is a world directory and is not renameable here")
     try:
-        await crafty.rename_path(server_id, path, new_name)
-    except crafty.CraftyError as e:
+        await engine.rename_path(server_id, path, new_name)
+    except engine.EngineError as e:
         raise FileError(f"could not rename {path}: {e}")
     parent = posixpath.dirname(path) or "."
     return {"path": new_name if parent == "." else f"{parent}/{new_name}",
@@ -337,8 +337,8 @@ async def delete(server_id: str, paths: list[str], *, allow_world: bool = False
     critical = [p for p in cleaned
                 if posixpath.basename(p) in CRITICAL_FILES and "/" not in p]
     try:
-        await crafty.delete_paths(server_id, cleaned)
-    except crafty.CraftyError as e:
+        await engine.delete_paths(server_id, cleaned)
+    except engine.EngineError as e:
         raise FileError(f"delete failed: {e}")
     return {"deleted": cleaned, "count": len(cleaned),
             "warning": (
@@ -363,8 +363,8 @@ async def upload(server_id: str, folder: str, filename: str, data: bytes
             "not allowed from here"
         )
     try:
-        await crafty.upload_file(server_id, folder, filename, data)
-    except crafty.CraftyError as e:
+        await engine.upload_file(server_id, folder, filename, data)
+    except engine.EngineError as e:
         raise FileError(f"upload failed: {e}")
     rel = filename if folder == "." else f"{folder}/{filename}"
     return {"path": rel, "bytes": len(data), "uploaded": True,
@@ -375,19 +375,19 @@ def download(server_id: str, path: str) -> tuple[Any, str]:
     """`(byte iterator, filename)` -- streamed, never buffered.
 
     A world folder or a server jar is bigger than this container's whole
-    memory limit, so the bytes go straight from Crafty to the browser.
+    memory limit, so the bytes go straight from the node to the browser.
     """
     path = guard_path(path, allow_root=False)
-    return crafty.stream_file(server_id, path), posixpath.basename(path)
+    return engine.stream_file(server_id, path), posixpath.basename(path)
 
 
 async def upload_stream(server_id: str, folder: str, filename: str,
                         chunks) -> dict:
-    """Take an upload to disk first, then hand Crafty the file.
+    """Take an upload to disk first, then stream the file to the node.
 
     Reading a browser upload into memory costs its full size at once, and the
-    limit here is half a gigabyte. Spooling to a temp file and using Crafty's
-    chunked protocol keeps the cost to one chunk regardless.
+    limit here is half a gigabyte. Spooling to a temp file and streaming it
+    on keeps the cost to one chunk regardless.
     """
     folder = guard_path(folder)
     filename = guard_name(filename)
@@ -416,8 +416,8 @@ async def upload_stream(server_id: str, folder: str, filename: str,
         if not size:
             raise FileError("that file is empty")
         try:
-            await crafty.upload_path(server_id, folder, filename, dest)
-        except crafty.CraftyError as e:
+            await engine.upload_path(server_id, folder, filename, dest)
+        except engine.EngineError as e:
             raise FileError(f"upload failed: {e}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -428,33 +428,29 @@ async def upload_stream(server_id: str, folder: str, filename: str,
 
 
 async def extract(server_id: str, path: str) -> dict:
-    """Ask Crafty to unzip an archive already sitting in the instance."""
+    """Unpack a zip already sitting in the server folder, next to itself."""
     path = guard_path(path, allow_root=False)
     if _ext(path) != ".zip":
         raise FileError("only .zip archives can be extracted here")
     try:
-        await crafty.unzip(server_id, path)
-    except crafty.CraftyError as e:
+        await engine.extract(server_id, path)
+    except engine.EngineError as e:
         raise FileError(f"could not extract {path}: {e}")
-    return {
-        "path": path,
-        "started": True,
-        # Crafty extracts on a daemon thread and answers 200 the moment it
-        # starts, so promising "done" here would be a lie.
-        "note": "Extraction runs in the background — refresh in a moment to "
-                "see the files.",
-    }
+    # The node extracts before it answers, and refuses an archive with a
+    # member outside its folder before writing anything -- so this is done,
+    # not merely started.
+    return {"path": path, "done": True, "note": "Extracted."}
 
 
 async def search(server_id: str, query: str, root: str = ".",
                  limit: int = 300) -> dict:
-    """Find files by name under a subtree. Bounded, because Crafty walks."""
+    """Find files by name under a subtree. Bounded, because it walks."""
     q = (query or "").strip().lower()
     if len(q) < 2:
         raise FileError("type at least two characters to search")
     root = guard_path(root)
     try:
-        entries = await crafty.walk(server_id, root, max_entries=8000)
+        entries = await engine.walk(server_id, root, max_entries=8000)
     except Exception as e:
         raise FileError(f"could not search {root}: {e}")
     hits = []
@@ -466,7 +462,7 @@ async def search(server_id: str, query: str, root: str = ".",
             "path": entry["path"],
             "dir": bool(entry.get("dir")),
             "kind": classify(entry["name"], bool(entry.get("dir"))),
-            "size": entry.get("size"),
+            "size": human_size(size_to_bytes(entry.get("size"))),
             "bytes": size_to_bytes(entry.get("size")),
             "modified": entry.get("modified"),
             "editable": (not entry.get("dir"))
@@ -491,8 +487,8 @@ async def usage(server_id: str) -> dict:
                 "libraries", "crash-reports", "datapacks")
     out: list[dict] = []
     try:
-        root = await crafty.list_dir(server_id, ".")
-    except crafty.CraftyError as e:
+        root = await engine.list_dir(server_id, ".")
+    except engine.EngineError as e:
         raise FileError(str(e))
     present = {n for n, m in (root or {}).items()
                if n != "root_path" and isinstance(m, dict) and m.get("dir")}
@@ -500,7 +496,7 @@ async def usage(server_id: str) -> dict:
         if name not in present:
             continue
         try:
-            entries = await crafty.walk(server_id, name, max_entries=4000)
+            entries = await engine.walk(server_id, name, max_entries=4000)
         except Exception:
             out.append({"name": name, "bytes": 0, "files": 0,
                         "size": "unmeasured"})

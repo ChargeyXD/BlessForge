@@ -1,7 +1,7 @@
 import os, pathlib, sys
 sys.path.insert(0, os.environ.get("BF_REPO", str(pathlib.Path(__file__).resolve().parents[2])))
 from app.provision import loader_installed as _loader_installed, _RUN_SCRIPT
-from app.crafty import java_in_command, required_java_major, uptime_seconds
+from app.engine import java_in_command, java_of, required_java_major, uptime_seconds
 
 ok = []
 def check(name, cond, extra=""):
@@ -20,7 +20,7 @@ check("modded: rewritten command IS 'installed'",
                         {"libraries", "run.sh"}, "libraries/.../forge-server.jar"))
 check("modded: empty dir with installer command is NOT installed (the stuck case)",
       not _loader_installed("forge-installer", inst_cmd,
-                            {"crafty_managed.txt", "eula.txt", "server.properties"},
+                            {"eula.txt", "server.properties"},
                             "forge-installer-1.20.1.jar"))
 check("neoforge behaves the same",
       not _loader_installed("neoforge-installer", inst_cmd.replace("forge", "neoforge"),
@@ -32,7 +32,7 @@ check("fabric: no jar means not installed",
       not _loader_installed("fabric", "java -jar fabric.jar nogui",
                             {"server.properties", "eula.txt"}, "fabric.jar"))
 
-# --- the run-script parse, against the real files Crafty's installer wrote ---
+# --- the run-script parse, against the real files the installers wrote ---
 forge_sh = 'java @user_jvm_args.txt @libraries/net/minecraftforge/forge/1.20.1-47.4.23/unix_args.txt "$@"'
 neo_sh = 'exec java @user_jvm_args.txt @libraries/net/neoforged/neoforge/21.11.45/unix_args.txt "$@"'
 
@@ -41,7 +41,7 @@ check("forge run.sh parses", m)
 if m:
     args, path, ver, txt = m.groups()
     cmd = f"java @{args} @{path}{ver}/{txt} nogui"
-    check("forge command matches what Crafty writes",
+    check("forge command is the args-file launch line",
           cmd == done_cmd, cmd)
     check("forge executable path",
           f"{path}{ver}/forge-{ver}-server.jar"
@@ -57,11 +57,9 @@ if m:
           f"{path}{ver}/neoforge-{ver}-server.jar")
 
 # --- which Java a launch command actually invokes ---------------------------
-# Crafty stores no java_version: the runtime is baked into execution_command,
-# and Crafty rewrites that command whenever a loader install finishes. Every
-# path here is one java_candidates() can actually produce, because a shape the
-# parser misses is reported to the user as "unknown" rather than as the wrong
-# version it really is.
+# The fallback for a record that names no runtime (an imported server): the
+# Java is parsed back out of its launch command. A shape the parser misses is
+# reported to the user as "unknown" rather than as the wrong version it is.
 for cmd, major, pinned, why in [
     ("/usr/lib/jvm/java-21-openjdk-amd64/bin/java -Xms2G -jar s.jar nogui",
      21, True, "the standard Debian path"),
@@ -77,7 +75,7 @@ for cmd, major, pinned, why in [
      None, False, "the container default -- unknown, and must not be guessed"),
     ("/usr/bin/java -jar s.jar",
      None, False, "a path with no version in it"),
-    ("", None, False, "a server Crafty has not built a command for yet"),
+    ("", None, False, "a server with no command built yet"),
 ]:
     got = java_in_command(cmd)
     check(f"java in command: {why}",
@@ -89,21 +87,42 @@ check("a pack on 1.21.1 needs Java 21", required_java_major("1.21.1") == 21)
 check("a pack on 1.20.1 needs Java 17", required_java_major("1.20.1") == 17)
 check("1.20.5 is where the line moves", required_java_major("1.20.5") == 21
       and required_java_major("1.20.4") == 17)
+# Mojang's own version JSON says javaVersion.majorVersion 25 for every 26.x
+# release (checked 2026-10-11 against 26.1 to 26.3). The old table fell
+# through to 21 for anything that was not 1.x, which would have started
+# every year-based server on a Java it refuses.
+check("the year-based releases need Java 25",
+      required_java_major("26.1") == 25 and required_java_major("26.3") == 25,
+      required_java_major("26.1"))
+check("before 1.17 is Java 8", required_java_major("1.16.5") == 8
+      and required_java_major("1.12.2") == 8)
+check("a record's runtime wins over its command",
+      java_of({"java_major": 21, "execution_command": "java -jar s.jar"})["major"] == 21)
+check("a record without one falls back to the command",
+      java_of({"execution_command":
+               "/usr/lib/jvm/java-17-openjdk-amd64/bin/java -jar s.jar"})["major"] == 17)
 
 # --- uptime, across a timezone boundary -------------------------------------
-# The Crafty container runs UTC and this host runs IST. Crafty writes `started`
-# in UTC but with no offset in the string, so anything that parses it against
-# the local clock reports a server that started an hour ago as starting four
-# and a half hours from now.
+# An imported record can carry `started` as an offset-less UTC string. This
+# host runs IST, so anything that parses that against the local clock reports
+# a server that started an hour ago as starting four and a half hours from now.
 import datetime as _dt  # noqa: E402
 
 _utc_ago = lambda s: (_dt.datetime.now(_dt.timezone.utc)
                       - _dt.timedelta(seconds=s)).strftime("%Y-%m-%d %H:%M:%S")
 
+import time as _time  # noqa: E402
+up = uptime_seconds({"started": _time.time() - 600})
+check("uptime reads an epoch `started` (what a node sends)",
+      up is not None and abs(up - 600) <= 2, up)
+check("an epoch in the future is unknown, not negative",
+      uptime_seconds({"started": _time.time() + 3600}) is None)
+check("a stopped server's None is no uptime", uptime_seconds({"started": None}) is None)
+
 up = uptime_seconds({"started": _utc_ago(15120)})
 check("uptime reads a UTC `started` as UTC", up is not None and abs(up - 15120) <= 2, up)
 check("a stopped server has no uptime", uptime_seconds({"started": False}) is None)
-check("a server Crafty has never run has no uptime", uptime_seconds({}) is None)
+check("a server that has never run has no uptime", uptime_seconds({}) is None)
 check("an unparseable timestamp is unknown, not zero",
       uptime_seconds({"started": "yesterday"}) is None)
 check("a `started` in the future reads as unknown, not negative",

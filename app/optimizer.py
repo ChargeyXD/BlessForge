@@ -17,7 +17,7 @@ import json
 import re
 import time
 
-from app import ai, config, crafty, specs
+from app import ai, config, engine, specs
 
 # server.properties keys we are willing to write. Anything outside this list
 # is left alone -- tuning should never quietly change gameplay settings.
@@ -28,25 +28,25 @@ async def build_plan(server_id: str) -> dict:
     """Everything the Optimize tab needs: host, current state, proposal.
 
     THIS FUNCTION NEVER TALKS TO THE MODEL. It reads advice out of a cache
-    and nothing more, so the Tune screen renders at Crafty's speed whether
+    and nothing more, so the Tune screen renders at the node's speed whether
     the assistant is fast, slow, or on fire. The model is reached only from
     `advise()`, which the front end calls *after* its first paint.
     """
     host = specs.effective_host()
-    manifest = await crafty.read_studio_manifest(server_id)
-    server = await crafty.get_server(server_id)
+    manifest = await engine.read_manifest(server_id)
+    server = await engine.get_server(server_id)
 
     mod_count = 0
     mod_names: list[str] = []
     try:
-        entries = await crafty.list_dir(server_id, "mods")
+        entries = await engine.list_dir(server_id, "mods")
         for name, meta in entries.items():
             if name == "root_path" or not isinstance(meta, dict) or meta.get("dir"):
                 continue
             if name.lower().endswith(".jar"):
                 mod_count += 1
                 mod_names.append(name)
-    except crafty.CraftyError:
+    except engine.EngineError:
         pass
     mod_names.sort()
 
@@ -72,11 +72,11 @@ async def build_plan(server_id: str) -> dict:
 
     props_plan = specs.build_property_plan(host, mod_count)
     try:
-        raw_props = await crafty.read_file(server_id, "server.properties")
+        raw_props = await engine.read_file(server_id, "server.properties")
         existing = dict(
             re.findall(r"^([\w.-]+)=(.*)$", raw_props, re.M)
         )
-    except crafty.CraftyError:
+    except engine.EngineError:
         existing = {}
     for entry in props_plan:
         entry["current"] = existing.get(entry["key"])
@@ -105,7 +105,7 @@ async def build_plan(server_id: str) -> dict:
         "jvm_file_supported": supports_jvm_file,
         "note": None if supports_jvm_file else (
             "Fabric and vanilla instances take their memory settings from "
-            "Crafty's launch command rather than user_jvm_args.txt, so heap "
+            "the startup command rather than user_jvm_args.txt, so heap "
             "changes here are written to the command instead."
         ),
         "execution_command": server.get("execution_command"),
@@ -670,7 +670,7 @@ async def apply(server_id: str, selection: dict) -> dict:
     }
     """
     result: dict = {"applied": [], "skipped": []}
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     loader = manifest.get("loader") or ""
 
     heap = float(selection.get("heap_gb") or 0)
@@ -688,12 +688,12 @@ async def apply(server_id: str, selection: dict) -> dict:
                 flags, heap,
                 xms_equals_xmx=bool(selection.get("xms_equals_xmx", True)),
             )
-            await crafty.write_file(server_id, "user_jvm_args.txt", body)
+            await engine.write_file(server_id, "user_jvm_args.txt", body)
             result["applied"].append(
                 f"user_jvm_args.txt: {heap:g} GB heap, {len(flags)} flags"
             )
         else:
-            # Fabric/vanilla: memory lives in Crafty's launch command.
+            # Fabric/vanilla: memory lives in the startup command.
             updated = await set_command_memory(server_id, heap, flags)
             result["applied"].append(
                 f"launch command: {heap:g} GB heap, {len(flags)} flags"
@@ -729,8 +729,8 @@ def _safe_flag(flag: str) -> bool:
 
 async def _patch_properties(server_id: str, updates: dict) -> None:
     try:
-        raw = await crafty.read_file(server_id, "server.properties")
-    except crafty.CraftyError:
+        raw = await engine.read_file(server_id, "server.properties")
+    except engine.EngineError:
         raw = ""
     lines = raw.splitlines()
     seen = set()
@@ -746,23 +746,23 @@ async def _patch_properties(server_id: str, updates: dict) -> None:
     for key, value in updates.items():
         if key not in seen:
             out.append(f"{key}={value}")
-    await crafty.write_file(server_id, "server.properties", "\n".join(out) + "\n")
+    await engine.write_file(server_id, "server.properties", "\n".join(out) + "\n")
 
 
 async def set_command_memory(
     server_id: str, heap_gb: float, flags: list[str]
 ) -> str:
-    """Swap -Xms/-Xmx (and our flags) inside Crafty's launch command.
+    """Swap -Xms/-Xmx (and our flags) inside the server's startup command.
 
     Used for Fabric and vanilla, which have no user_jvm_args.txt. The java
     path and everything after the flags is preserved exactly.
 
     Public because the installer needs it too: a fresh Fabric instance keeps
-    whatever heap Crafty derived from the pack's requested RAM until someone
+    whatever heap the install derived from the pack's requested RAM until someone
     rewrites this command, and "someone" used to mean the user visiting the
     Optimize tab and pressing a button.
     """
-    server = await crafty.get_server(server_id)
+    server = await engine.get_server(server_id)
     command = server.get("execution_command") or ""
     if not command:
         raise RuntimeError("this instance has no execution command yet")
@@ -788,5 +788,5 @@ async def set_command_memory(
     new_command = " ".join(
         [java, f"-Xms{heap_mb}M", f"-Xmx{heap_mb}M", *flags, *rest]
     ) + " "
-    await crafty.patch_server(server_id, {"execution_command": new_command})
+    await engine.update_server(server_id, {"execution_command": new_command})
     return new_command

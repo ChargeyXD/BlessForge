@@ -19,7 +19,7 @@ import os
 import re
 import shutil
 
-from app import config, crafty
+from app import config, engine
 
 # Aikar's flags -- the long-standing community baseline for Minecraft servers.
 # G1GC tuned for large short-lived allocation rates rather than raw throughput,
@@ -108,14 +108,14 @@ def host_specs() -> dict:
     host's memory -- deliberately NOT from this container's own cgroup limit.
 
     That distinction was got wrong once and it matters: BlessForge reads its
-    *own* cgroup, but the servers it sizes heaps for run under Crafty, which
-    is a different container. Capping BlessForge at 1 GB (which the compose
+    *own* cgroup, but the servers it sizes heaps for run in containers of
+    their own on a node. Capping BlessForge at 1 GB (which the compose
     file now does, because streaming installs no longer need more) made it
     believe the machine had 1 GB and offer every pack a 1 GB heap.
 
     The app's own cap is still reported, as `app_limit_gb`, because it is
     worth seeing in the setup banner -- it just has no bearing on how much
-    memory a Minecraft server can be given. When Crafty runs on a *different*
+    memory a Minecraft server can be given. When the node is a *different*
     machine, neither number is right and `HOST_RAM_GB` is the answer.
     """
     total_bytes = 0
@@ -189,9 +189,9 @@ def host_specs() -> dict:
         "disk_free_gb": round(disk_free / 1024**3, 1),
         "source": source,
         "note": (
-            "Measured inside this container. If BlessForge and Crafty run on "
-            "different machines, these are BlessForge's numbers -- set "
-            "HOST_RAM_GB to describe the Crafty host instead."
+            "Measured inside this container. If BlessForge and the node run "
+            "on different machines, these are BlessForge's numbers -- set "
+            "HOST_RAM_GB to describe the node instead."
         ) if source != "cgroup" else None,
         "app_limit_gb": round(app_limit_bytes / (1024 ** 3), 1)
         if app_limit_bytes else None,
@@ -199,7 +199,7 @@ def host_specs() -> dict:
 
 
 def effective_host() -> dict:
-    """Host specs, with env overrides for when Crafty runs elsewhere."""
+    """Host specs, with env overrides for when the node is another machine."""
     specs = host_specs()
     override_ram = os.environ.get("HOST_RAM_GB")
     override_cpu = os.environ.get("HOST_CPU_COUNT")
@@ -229,14 +229,43 @@ def effective_host() -> dict:
     return specs
 
 
+# A JVM uses more than its heap: metaspace, thread stacks, the JIT's code
+# cache and direct buffers sit outside -Xmx. A server whose container limit
+# equals its heap is OOM-killed by the kernel the first time it gets busy,
+# with nothing in its own log. So the container gets the heap plus a margin:
+# at least 768 MB (a vanilla server's non-heap floor) or a fifth of the heap
+# (a large modpack's metaspace grows with its mod count).
+CONTAINER_OVERHEAD_MIN_MB = 768
+CONTAINER_OVERHEAD_SHARE = 0.20
+
+
+def container_memory_mb(heap_gb: float) -> int:
+    """The memory limit a server's container needs to hold this heap."""
+    heap_mb = int(float(heap_gb) * 1024)
+    return heap_mb + max(CONTAINER_OVERHEAD_MIN_MB,
+                         int(heap_mb * CONTAINER_OVERHEAD_SHARE))
+
+
+def heap_for_container_mb(memory_mb: int) -> int:
+    """The largest heap, in MB, that fits inside a container limit.
+
+    The inverse of `container_memory_mb`, rounded down to 256 MB so the
+    number on the Tune screen is one a person would type.
+    """
+    memory_mb = int(memory_mb)
+    heap = min(memory_mb - CONTAINER_OVERHEAD_MIN_MB,
+               int(memory_mb / (1 + CONTAINER_OVERHEAD_SHARE)))
+    return max(512, heap // 256 * 256)
+
+
 def recommend_memory(
     *, pack_recommended_mb: int, mod_count: int, host: dict
 ) -> dict:
     """Decide a heap size from what the pack wants and what the host has.
 
     The pack's number is a request, not a promise. Reserve room for the OS,
-    Crafty itself and anything else already running, then cap the request at
-    what is genuinely left.
+    the node's own services and anything else already running, then cap the
+    request at what is genuinely left.
     """
     total = host.get("total_ram_gb") or 0
     available = host.get("available_ram_gb") or total
@@ -263,7 +292,7 @@ def recommend_memory(
                 "BlessForge could not measure how much memory this machine "
                 f"has, so it is proposing the default {heap:g} GB rather than "
                 "guessing. Set HOST_RAM_GB (and HOST_CPU_COUNT) to describe "
-                "the machine Crafty runs on, and this becomes a real "
+                "the node the servers run on, and this becomes a real "
                 "calculation."
             ],
         }
@@ -447,8 +476,8 @@ def render_jvm_args(flags: list[str], heap_gb: float, *, xms_equals_xmx: bool = 
 async def read_current_jvm_args(server_id: str) -> dict:
     """Parse the instance's existing user_jvm_args.txt back into structure."""
     try:
-        raw = await crafty.read_file(server_id, "user_jvm_args.txt")
-    except crafty.CraftyError:
+        raw = await engine.read_file(server_id, "user_jvm_args.txt")
+    except engine.EngineError:
         return {"exists": False, "flags": [], "xmx_mb": 0, "xms_mb": 0, "raw": ""}
 
     flags = []

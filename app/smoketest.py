@@ -18,7 +18,7 @@ import asyncio
 import re
 import time
 
-from app import crafty, diagnostics
+from app import engine, diagnostics
 from app.jobs import Job
 
 # "Done (12.345s)! For help, type "help"" is vanilla's line for a finished
@@ -50,9 +50,11 @@ _FAILED = re.compile(
 async def run(job: Job, server_id: str, *, timeout: int = 300,
               stop_when_done: bool = True) -> dict:
     """Boot once and report. Never leaves the server running by accident."""
+    # From the stats, which carry `running`; the server record does not, so
+    # reading it there meant this guard never fired.
     was = {}
     try:
-        was = await crafty.get_server(server_id)
+        was = await engine.get_stats(server_id)
     except Exception:
         pass
     if was.get("running"):
@@ -61,15 +63,15 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             "console directly instead of booting it again")
 
     job.set_step("Starting the server", 5)
-    # Where this run's output begins. Crafty's console buffer spans restarts,
+    # Where this run's output begins. The node's console buffer spans restarts,
     # so a previous boot's failure sits in it and would be read as this one's;
     # everything from here on is ours.
     try:
-        base = len(await crafty.console_lines(server_id, from_file=True))
+        base = len(await engine.console_lines(server_id, from_file=True))
     except Exception:
         base = 0
     started_at = time.time()
-    await crafty.server_action(server_id, "start_server")
+    await engine.power(server_id, "start")
 
     outcome = "timeout"
     ready_after = None
@@ -80,12 +82,12 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
         while time.time() - started_at < timeout:
             await asyncio.sleep(5)
             try:
-                # From the log file, not the live console. Crafty's console
-                # buffer holds about seventy lines: on a 253-mod pack it had
+                # From the log file, not the live console. A console ring
+                # buffer is finite: on a 253-mod pack one had
                 # already scrolled past "Done (13.138s)" by the next poll, so
                 # a server that was up got watched for the full five minutes
                 # and reported as a timeout. The file read returns the boot.
-                lines = await crafty.console_lines(server_id, from_file=True)
+                lines = await engine.console_lines(server_id, from_file=True)
             except Exception:
                 continue
             # Everything this run has said, not a sliding tail of it. The tail
@@ -119,7 +121,7 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
         if stop_when_done:
             job.set_step("Stopping the server", 85)
             try:
-                await crafty.server_action(server_id, "stop_server")
+                await engine.power(server_id, "stop")
                 job.log_line("Server stopped again")
             except Exception as e:
                 job.log_line(

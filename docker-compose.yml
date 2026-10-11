@@ -49,8 +49,8 @@ services:
     # private network of its own.
     network_mode: bridge
 
-    # Reach services on the host: Ollama for the AI assistant, and Crafty
-    # itself when it runs on this same machine.
+    # Reach services on the host: an Ollama for the AI assistant, and a node
+    # agent when it runs on this same machine.
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -60,27 +60,11 @@ services:
         protocol: tcp
 
     environment:
-      # ---- Crafty: SET THESE FOR THIS MACHINE ---------------------------
-      # The only two values that must change per install; both are editable in
-      # the CasaOS install dialog.
-      #
-      # Use the LAN IP, not 127.0.0.1 -- inside the container loopback is the
-      # container itself and can never reach Crafty.
-      #
-      # The port is whatever YOUR Crafty is published on, and the two CasaOS
-      # Crafty apps do not agree: the "Crafty Controller" app publishes 8111,
-      # big-bear-crafty publishes 8443. Check the port on the Crafty tile in
-      # CasaOS. Keep the https:// -- Crafty speaks TLS on both.
-      CRAFTY_URL: "https://CHANGE-ME:8443"
-      # Crafty -> your user -> API keys. Needs Server Creation, Files, Commands
-      # and Config permissions. A token is issued by, and only valid for, the
-      # Crafty instance that created it, so each install needs its own. Left
-      # blank, BlessForge still starts and shows a setup screen naming exactly
-      # what is missing.
-      CRAFTY_TOKEN: ""
-      # Crafty ships a self-signed certificate, so verification stays off
-      # unless you installed a real one.
-      CRAFTY_VERIFY_SSL: "false"
+      # ---- The engine ----------------------------------------------------
+      # What runs the servers. "agent" is every node registered with this
+      # BlessForge, each running the BlessForge node agent; "mock" keeps
+      # everything in memory, for trying the interface with no node at all.
+      ENGINE: "mock"
 
       # ---- Mod sources --------------------------------------------------
       # Your own CurseForge key, base64-encoded: echo -n '<key>' | base64 -w0
@@ -174,18 +158,9 @@ services:
             Leave the /data folder pointing at /DATA/AppData/blessforge/data --
             it is BlessForge's own cache, not Crafty's directory.
       envs:
-        - container: CRAFTY_URL
-          description:
-            en_us: "Crafty base URL with its published port -- https://<LAN-IP>:8111 for the CasaOS Crafty app, https://<LAN-IP>:8443 for big-bear-crafty. Not localhost."
-        - container: CRAFTY_TOKEN
-          description:
-            en_us: "Crafty API token from your Crafty user profile"
         - container: CURSEFORGE_API_KEY_B64
           description:
             en_us: "CurseForge API key, base64 encoded: echo -n '<key>' | base64 -w0"
-        - container: CRAFTY_VERIFY_SSL
-          description:
-            en_us: "Verify Crafty's TLS certificate (false for self-signed)"
         - container: OLLAMA_URL
           description:
             en_us: "Ollama endpoint for the AI assistant (blank to disable)"

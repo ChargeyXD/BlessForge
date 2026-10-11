@@ -10,8 +10,8 @@ to any one server, so neither can live in a `.blessforge.json` manifest:
   assignment, which `document()` does on the way out rather than by
   hunting for orphans on delete.
 
-  **activity** -- the answer to "when did this last run", which Crafty
-  does not keep. The fleet poll hands over what it can see every few
+  **activity** -- the answer to "when did this last run", which no node
+  keeps. The fleet poll hands over what it can see every few
   seconds and this timestamps it with the server's own clock. That makes
   `last_running_at` honest whether or not BlessForge was the thing that
   started the server, and it is the key the rail sorts on.
@@ -142,11 +142,11 @@ def document(known: set[str] | None = None) -> dict[str, Any]:
     """The whole rack layout, as the front end wants it.
 
     `known` is the set of server ids that currently exist. Assignments to
-    anything outside it are dropped from the answer -- a server deleted in
-    Crafty, or by someone else while this page was open, simply stops
+    anything outside it are dropped from the answer -- a server deleted
+    elsewhere, or by someone else while this page was open, simply stops
     being on a rack. They are dropped from the ANSWER rather than from
-    storage, so a Crafty that is briefly unreachable (and therefore
-    reports no servers at all) does not silently wipe the layout.
+    storage, so a node that is briefly unreachable (and therefore reports
+    no servers at all) does not silently wipe the layout.
     """
     state = _load()
     assign = state["assign"]

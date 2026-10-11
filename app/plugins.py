@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app import config, crafty, loaders, modrinth
+from app import config, engine, loaders, modrinth
 from app import mods as modmgr
 from app.jobs import Job
 
@@ -347,7 +347,7 @@ async def install(job: Job, server_id: str, *, project_id: str,
         return {**plan, "installed": [],
                 "note": "Everything this plugin needs is already installed."}
 
-    await crafty.ensure_dir(server_id, "plugins")
+    await engine.ensure_dir(server_id, "plugins")
     done, failed = [], []
     for i, entry in enumerate(todo):
         job.set_step(f"Installing {entry['name']} ({i + 1}/{len(todo)})",
@@ -429,7 +429,7 @@ async def audit(server_id: str) -> dict:
     """
     from app import jarmeta
 
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     family = loaders.family_of(manifest.get("loader") or "paper")
     mc = manifest.get("minecraft") or ""
 
@@ -444,7 +444,7 @@ async def audit(server_id: str) -> dict:
         # A mod jar carries loader metadata a plugin never does. That is the
         # cheap, certain test for "this is in the wrong folder".
         try:
-            blob = await crafty.download_file(server_id, f"plugins/{name}")
+            blob = await engine.download_file(server_id, f"plugins/{name}")
         except Exception:
             continue
         markers = jarmeta.loader_markers(blob)

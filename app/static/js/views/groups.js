@@ -24,7 +24,7 @@
        `assign[server_id]` against whatever `state.instances`
        currently says, and app.js repaints this screen on every
        poll. A deleted server stops appearing, a renamed one
-       paints its new name (assignment is keyed on Crafty's
+       paints its new name (assignment is keyed on the
        server_id, which a rename does not change), and a new one
        appears in the open yard.
      * A second tab editing the same racks. Every write returns
@@ -108,7 +108,7 @@ export async function render() {
     const assign = state.groups.assign || {};
     const hung = all.filter((s) => assign[s.server_id]).length;
 
-    // Anything picked that has since been deleted in Crafty must not keep a
+    // Anything picked that has since been deleted must not keep a
     // ghost in the tray and must not be sent to the API on the next action.
     for (const id of [...picked]) {
       if (!state.instanceById.has(id)) picked.delete(id);
@@ -135,15 +135,15 @@ export async function render() {
       !all.length
         ? (state.health?.ready
           ? empty('fox-mascot.png', 'Nothing to organise yet',
-            'Racks group servers, and Crafty has none. Make one, or install '
+            'Racks group servers, and there are none yet. Make one, or install '
             + 'a modpack, and it will turn up in the open yard.',
             h('a.btn.primary', { href: '#/create' }, hl(),
               h('span', 'Create a server')),
             h('a.btn', { href: '#/discover' }, hl(),
               h('span', 'Browse modpacks')))
-          : empty('chargey-peek.png', 'Not connected to Crafty yet',
-            'Set CRAFTY_URL and CRAFTY_TOKEN, then reload. Settings lists '
-            + 'exactly what is missing.',
+          : empty('chargey-peek.png', 'No node is answering yet',
+            'BlessForge cannot reach the node that runs the servers. '
+            + 'Settings lists exactly what is missing.',
             h('a.btn.primary', { href: '#/settings' }, hl(),
               h('span', 'Settings'))))
         : !groups.length
@@ -264,7 +264,7 @@ function rack(group, members, ctx) {
               message: members.length
                 ? `The rack goes; its ${members.length} server`
                   + `${members.length === 1 ? '' : 's'} go back to the open `
-                  + 'yard. Nothing is deleted in Crafty.'
+                  + 'yard. No server is deleted.'
                 : 'The rack is empty, so this only removes the rack itself.',
               confirmLabel: 'Take it down',
               danger: true,
@@ -330,7 +330,7 @@ const PLQ_STATE = {
    states that ARE the fault say so in the band already and are not repeated
    here. */
 function needsEye(s) {
-  if (s.reachable === false) return 'Crafty cannot reach it';
+  if (s.reachable === false) return 'its node cannot reach it';
   const n = s.problems || 0;
   if (n > 0) return `${n} problem${n > 1 ? 's' : ''}`;
   return null;

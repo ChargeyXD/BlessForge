@@ -7,9 +7,9 @@
    failure a self-hoster meets. Where the proposal had to
    overrule the pack, it says so.
 
-   The port is written to server.properties *and* Crafty's own
+   The port is written to server.properties *and* the server
    record together. Setting only one leaves a server that runs
-   perfectly and is permanently displayed as offline.
+   perfectly and cannot be reached, or shows as offline.
 
    ------------------------------------------------------------
    TWO THINGS WORTH KNOWING BEFORE EDITING THIS FILE
@@ -24,7 +24,7 @@
    2. The assistant may have moved some of these numbers. The
       GET returns the deterministic plan plus whatever advice
       was already cached, so this screen always paints at
-      Crafty's speed; the model is only ever reached by the POST
+      the node's speed; the model is only ever reached by the POST
       to /optimize/advice, fired AFTER the first paint and
       folded in when it lands. Every number the assistant moved
       is named on the ofuda and marked on its own row — silent
@@ -201,7 +201,7 @@ export async function render(ctx) {
                   + 'is unreadable from here. Pick a number you know the '
                   + 'machine has.'
                 : `The ceiling is ${mem.ceiling_gb} GB — total minus the `
-                  + `${mem.reserve_gb} GB reserved for the OS, Crafty and `
+                  + `${mem.reserve_gb} GB reserved for the OS, the node and `
                   + 'whatever else is on this box.'),
               h('div', { style: { marginTop: '14px' } }, ofudaHost),
               !plan.jvm_file_supported
@@ -270,17 +270,17 @@ export async function render(ctx) {
             h('div.pad',
               port.mismatch
                 ? h('div.note.bad', { style: { marginBottom: '12px' } },
-                  h('b', 'Crafty and server.properties disagree'),
+                  h('b', 'The server record and server.properties disagree'),
                   port.note)
                 : null,
               h('div.field',
                 h('label', 'Server port'),
                 h('input.inp', {
                   id: 'portinput', type: 'number', min: 1024, max: 65535,
-                  value: port.crafty_port ?? 25565, inputMode: 'numeric',
+                  value: port.record_port ?? 25565, inputMode: 'numeric',
                 }),
                 h('div.help',
-                  `Crafty's record: ${port.crafty_port ?? '—'} · `
+                  `Server record: ${port.record_port ?? '—'} · `
                   + `server.properties: ${port.properties_port ?? '—'}`)),
               port.in_use_by_others?.length
                 ? h('p.muted', { style: { fontSize: '12px' } },
@@ -291,10 +291,9 @@ export async function render(ctx) {
               h('button.btn.sm.block', { onclick: savePort },
                 hl(), icon('save', 13), h('span', 'Set the port in both places')),
               h('p.muted', { style: { fontSize: '11.5px', marginTop: '10px' } },
-                `Crafty's container publishes ports `
+                `This node's edge forwards game ports `
                 + `${(port.published_range || []).join('–')}. A port outside `
-                + 'that works inside Docker and is unreachable from your '
-                + 'network.'),
+                + 'that binds on the node and is unreachable from outside.'),
             )),
 
           h('div.panel',

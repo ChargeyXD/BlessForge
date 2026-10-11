@@ -46,7 +46,7 @@ import re
 import zipfile
 from typing import Any, Iterable
 
-from app import config, crafty, curseforge, jarmeta, modrinth, whitelist
+from app import config, engine, curseforge, jarmeta, modrinth, whitelist
 from app.jobs import Job
 
 # Score at or above this is acted on; between the two it is surfaced for a
@@ -610,7 +610,7 @@ async def scan_instance(job: Job, server_id: str, directory: str = "mods"
                 "summary": summarise([]),
                 "note": f"There are no jars in {directory}/."}
 
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     known = {posixpath.basename(r.get("file", "")): r
              for r in (manifest.get("mods") or [])}
 
@@ -629,7 +629,7 @@ async def scan_instance(job: Job, server_id: str, directory: str = "mods"
         blob = None
         async with sem:
             try:
-                blob = await crafty.download_file(
+                blob = await engine.download_file(
                     server_id, f"{directory}/{base}")
             except Exception:
                 blob = None
@@ -757,7 +757,7 @@ async def _persist_sides(server_id: str, items: list[dict], directory: str
     if not known:
         return 0
 
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     records = manifest.get("mods") or []
     by_file = {posixpath.basename(r.get("file", "")): r for r in records}
 
@@ -785,5 +785,5 @@ async def _persist_sides(server_id: str, items: list[dict], directory: str
 
     if changed:
         manifest["mods"] = records
-        await crafty.write_studio_manifest(server_id, manifest)
+        await engine.write_manifest(server_id, manifest)
     return changed

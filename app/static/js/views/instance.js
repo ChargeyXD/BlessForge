@@ -8,7 +8,7 @@
 
    Live numbers come from /stats on a short poll while the tab is
    visible; everything else is read once per tab and refreshed on
-   demand, so an idle browser is not a load on Crafty.
+   demand, so an idle browser is not a load on the node.
 
    The three live readings — CPU, memory, players — are not a
    corner of the header any more. They are a band of their own
@@ -104,7 +104,7 @@ const motionOn = () =>
   document.documentElement.classList.contains('js-motion') && !REDUCED.matches;
 
 /* The one that matters. `Number(null)` is 0 and `Number('')` is 0, so the
-   obvious cast turns "Crafty did not say" into "zero" — the exact lie this
+   obvious cast turns "the node did not say" into "zero" — the exact lie this
    rail exists to stop telling. Absent stays absent. */
 function reading(x) {
   if (x === null || x === undefined || x === '') return null;
@@ -305,10 +305,10 @@ function vitalsRail() {
       c === null ? (up ? 'no reading' : down)
         : c >= 85 ? 'straining' : c >= 60 ? 'busy' : 'steady',
       c === null
-        ? `CPU — ${up ? 'Crafty reported no CPU figure' : down}`
-        : `CPU ${c.toFixed(1)}%, as Crafty reports it. The tide is level `
+        ? `CPU — ${up ? 'the node reported no CPU figure' : down}`
+        : `CPU ${c.toFixed(1)}%, as the node reports it. The tide is level `
           + 'with the reading; the dashed mark on the pillars is 85%.');
-    /* `is-blank` is the hatch that means "running, but Crafty sent no
+    /* `is-blank` is the hatch that means "running, but the node sent no
        figure" — NOT the same thing as a stopped server, which keeps its
        art and is paled by data-tone="off" instead. Two different silences
        that must not look alike. */
@@ -321,7 +321,7 @@ function vitalsRail() {
     const pct = up ? reading(s.mem_percent) : null;
     const raw = up ? reading(s.mem) : null;
     /* Bytes are the concrete figure and the percentage is the pressure, so
-       bytes take the big numeral whenever Crafty sent them and the share
+       bytes take the big numeral whenever the node sent them and the share
        goes underneath. With only a percentage the percentage is promoted,
        rather than a byte count being invented for the sake of symmetry. */
     const useBytes = raw !== null && raw > 0;
@@ -335,7 +335,7 @@ function vitalsRail() {
             : useBytes ? `${Math.round(pct)}% of host`
               : 'of the host',
       !up ? `Memory — ${down}`
-        : !known ? 'Memory — Crafty reported no memory figure'
+        : !known ? 'Memory — the node reported no memory figure'
           : `${useBytes ? bytes(raw) : '?'} resident`
             + `${pct === null ? '' : `, ${pct.toFixed(1)}% of the machine`}`
             + '. The lantern fills with that share.');
@@ -383,7 +383,7 @@ function vitalsRail() {
             : spare === 0 ? 'full'
               : online === 0 ? 'nobody online'
                 : `${spare} seat${spare === 1 ? '' : 's'} free`,
-      online === null ? 'Players — Crafty reported no player count'
+      online === null ? 'Players — the node reported no player count'
         : `${!up ? `Nobody can join while the server is ${down}. ` : ''}${
           seatMode
             ? `One blossom for each of the ${max} slots; an open blossom is `
@@ -436,9 +436,10 @@ export async function render({ params }) {
   try {
     detail = await api.get(`/api/instances/${id}`);
   } catch (e) {
-    mount(node, empty('chargey-failed.png', 'Crafty will not talk about this server',
-      e.message + ' — if the server directory was removed, Crafty keeps its '
-      + 'record and fails every request about it until that record is deleted.',
+    mount(node, empty('chargey-failed.png', 'This server is not answering',
+      e.message + ' — if its folder was removed, or its node is down, the '
+      + 'record stays and every request about it fails until the node is back '
+      + 'or the record is deleted.',
       h('a.btn.primary', { href: '#/' }, hl(), h('span', 'Back to the fleet')),
       h('button.btn.danger', { onclick: () => deleteInstance(id, 'this server') },
         hl(), icon('trash', 14), h('span', 'Delete the record'))));
@@ -670,7 +671,7 @@ export async function deleteInstance(id, name) {
   const keepFiles = { value: false };
   const ok = await confirmDialog({
     title: `Delete ${name}?`,
-    message: 'This removes the server from Crafty and deletes its directory — '
+    message: 'This removes the server from its node and deletes its folder — '
       + 'the world, the mods, the configs, all of it. There is no undo for '
       + 'this one.',
     detail: 'If you only want to stop using it, stop the server instead. A '

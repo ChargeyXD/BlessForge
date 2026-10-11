@@ -262,7 +262,7 @@ export async function render(ctx) {
      and handing that back is a file copy. Any other server can
      only be described from its install manifest, which means
      rebuilding a manifest and pulling every non-CurseForge jar
-     back out of Crafty. The panel offers whichever it has, and
+     back off the node. The panel offers whichever it has, and
      says which one it is giving you. */
   let packLoaded = false;
   async function loadPack(force) {

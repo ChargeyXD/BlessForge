@@ -50,8 +50,8 @@ export async function render(ctx) {
         h('b', 'This is not a world backup'),
         'A snapshot records which mods were installed and whether each was '
         + 'enabled, plus the previous contents of any config file edited here. '
-        + 'It cannot bring back a deleted world. Use Crafty\'s own backups for '
-        + 'that.'),
+        + 'It cannot bring back a deleted world: download the world folder '
+        + 'from Files to keep a copy of that.'),
 
       !items.length
         ? empty('shulker-guard.gif', 'Nothing to undo yet',

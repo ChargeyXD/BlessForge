@@ -63,14 +63,9 @@ def main(argv: list[str]) -> int:
         "OLLAMA_URL": "", "MODRINTH_ENABLED": "false",
     }
     log = open(data / "server.log", "wb")
-    # The fleet routes need something to list. dev/mock/crafty.py is the
-    # stand-in for Crafty, with two servers in it.
-    mock_port = free_port()
-    mock = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "dev.mock.crafty:app",
-         "--host", "127.0.0.1", "--port", str(mock_port), "--log-level", "warning"],
-        cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
-    env.update(CRAFTY_URL=f"http://127.0.0.1:{mock_port}", CRAFTY_TOKEN="mock")
+    # The fleet routes need something to list: the in-memory engine, seeded
+    # with the two servers (aaaa1111, bbbb2222) the suites name.
+    env.update(ENGINE="mock", ENGINE_MOCK_SEED="true")
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app",
          "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
@@ -88,12 +83,11 @@ def main(argv: list[str]) -> int:
                 cwd=ROOT, env={**env, "BF_URL": url})
             failed += r.returncode != 0
     finally:
-        for proc in (server, mock):
-            proc.terminate()
-            try:
-                proc.wait(10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        server.terminate()
+        try:
+            server.wait(10)
+        except subprocess.TimeoutExpired:
+            server.kill()
         log.close()
     return 1 if failed else 0
 

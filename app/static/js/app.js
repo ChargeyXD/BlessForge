@@ -39,7 +39,7 @@ export const state = {
   // see `refreshGroups` for why.
   groups: { groups: [], assign: {}, motifs: [], updated_at: 0, persisted: true },
   // What the fleet poll has witnessed: when each server was last seen up.
-  // Crafty cannot answer that for a server that is currently down, so it is
+  // The node cannot answer that for a server that is currently down, so it is
   // remembered here instead. Keyed by server_id, values are epoch seconds.
   activity: {},
 };
@@ -215,7 +215,7 @@ async function route() {
        nowhere to live in a per-instance file. Delete the last
        member and the rack itself would vanish; rename one and
        you would be writing N files to change one word.
-     * Reading groups out of manifests is one Crafty round trip
+     * Reading groups out of manifests is one round trip to the node
        per server just to lay out a screen. The fleet poll
        already costs two per server and a layout choice does not
        get to add a third.
@@ -224,10 +224,10 @@ async function route() {
        needs organising.
 
    What that costs is staleness, and it is paid for on the read
-   side: assignments are keyed on Crafty's server_id (so a
+   side: assignments are keyed on the server_id (so a
    rename is free), and the server prunes assignments for ids
    the fleet no longer contains -- but only when the fleet read
-   actually succeeded, so an unreachable Crafty never erases
+   actually succeeded, so an unreachable node never erases
    anybody's racks.
    ============================================================ */
 
@@ -294,9 +294,9 @@ export async function refreshGroups({ quiet = true } = {}) {
 
 /* One sentence about when a server last actually ran.
    ------------------------------------------------------------
-   Crafty reports `started` for a RUNNING server and nothing at
+   The node reports `started` for a RUNNING server and nothing at
    all for a stopped one, so "when did this last run" is not a
-   question Crafty can answer -- and it is the question the rail
+   question the node can answer -- and it is the question the rail
    has to sort on. It is answered from the activity record the
    fleet poll writes (see `recordSeen`): `last_running_at` is
    the last poll at which the server was observed up, which is
@@ -331,7 +331,7 @@ export function lastRan(s) {
    `last_started`, because the last poll at which a server was
    up is known for every server this app has ever watched, while
    a start time is only known when the transition happened to be
-   witnessed. Tier 2 falls back to Crafty's own `created`, and
+   witnessed. Tier 2 falls back to the record's own `created`, and
    then to the first time BlessForge saw the server at all.
 
    Ties break on name so the list cannot shuffle under the
@@ -399,7 +399,7 @@ export async function refreshInstances({ quiet } = {}) {
 
 /* Hand this poll's observation to the server, which timestamps it with its
    own clock and hands back the whole record. One local round trip; no extra
-   traffic to Crafty. If it fails the rail simply orders by what it can see
+   traffic to the node. If it fails the rail simply orders by what it can see
    right now -- running first, then the fleet's own order. */
 async function recordSeen() {
   if (!state.instances.length) return;
@@ -425,7 +425,7 @@ async function recordSeen() {
 
 function startFleetPolling() {
   const tick = () => {
-    // Polling a Crafty that is not there just fills the log with failures,
+    // Polling a node that is not there just fills the log with failures,
     // and a hidden tab has nobody to show the result to.
     if (document.hidden || !state.health?.ready) return;
     refreshInstances({ quiet: true }).catch(() => {});
@@ -588,7 +588,7 @@ function paintTopbar() {
   if (!crumbs) return;
   const { name, params } = state.route;
   const labels = {
-    fleet: ['Fleet', 'every server Crafty knows about'],
+    fleet: ['Fleet', 'every server on every node'],
     groups: ['Racks', 'every server on its hook'],
     create: ['New server', 'a loader, a version, an empty mods folder'],
     discover: ['Discover', 'modpacks, mods and plugins'],
@@ -643,8 +643,18 @@ function paintHealthPill() {
   el.append(h('span.dot.live', { 'aria-hidden': 'true' }),
     ok ? 'connected' : 'setup needed');
   el.title = ok
-    ? `Crafty answered in ${hs.checks?.crafty?.latency_ms ?? '?'} ms`
-    : (hs?.checks?.crafty?.error || 'BlessForge cannot reach Crafty');
+    ? `${engineLabel(hs.checks?.engine?.driver)} answered in `
+      + `${hs.checks?.engine?.latency_ms ?? '?'} ms`
+    : (hs?.checks?.engine?.error || 'BlessForge cannot reach a node');
+}
+
+/* What is actually running the servers, in words. `mock` is the in-memory
+   stand-in -- worth saying plainly, because a fleet full of example servers
+   should never be mistaken for real ones. */
+export function engineLabel(driver) {
+  if (driver === 'mock') return 'The in-memory test engine';
+  if (driver === 'agent') return 'The node agents';
+  return 'The engine';
 }
 
 function setupBanner() {
@@ -800,7 +810,7 @@ async function boot() {
       startFleetPolling();
     }
   });
-  // The racks are a local file read and do not depend on Crafty answering,
+  // The racks are a local file read and do not depend on a node answering,
   // so they are asked for straight away rather than behind the health check.
   refreshGroups();
   adoptRunning();

@@ -9,8 +9,8 @@ Two shapes of archive show up on CurseForge:
      that have to be fetched individually. This is the fallback whenever a
      pack has no server pack, which is common.
 
-Both end up as "a set of files to lay over a freshly created Crafty
-instance", which is what this module produces.
+Both end up as "a set of files to lay over a freshly created server",
+which is what this module produces.
 
 The same two shapes arrive from `POST /api/uploads/modpack` when a user
 imports a *private* export -- the zip the CurseForge app writes for a
@@ -28,10 +28,12 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 
-# Loader id in a CurseForge manifest -> Crafty jar-catalog key.
-LOADER_TO_CRAFTY = {
-    "forge": "forge-installer",
-    "neoforge": "neoforge-installer",
+# Loader ids a pack can name that BlessForge installs unattended. Quilt is
+# absent on purpose: there is no unattended installer for it here, and a
+# server that can never start is worse than a refusal up front.
+INSTALLABLE_LOADERS = {
+    "forge": "forge",
+    "neoforge": "neoforge",
     "fabric": "fabric",
 }
 
@@ -77,8 +79,9 @@ CLIENT_ONLY_MODS = {
     "skinlayers3d", "capes", "cosmetic-armor-reworked",
 }
 
-# Files inside a *server pack* we must not copy: Crafty installs the loader
-# itself, so a bundled installer or a stale start script only causes trouble.
+# Files inside a *server pack* we must not copy: BlessForge installs the
+# loader itself, so a bundled installer or a stale start script only causes
+# trouble.
 SERVER_PACK_SKIP_PATTERNS = [
     re.compile(r"^(forge|neoforge|fabric|quilt)[-_].*installer.*\.jar$", re.I),
     re.compile(r"^(minecraft_server|server)[-_.]?\d.*\.jar$", re.I),
@@ -96,13 +99,13 @@ SERVER_PACK_SKIP_PATTERNS = [
 
 @dataclass
 class PackPlan:
-    """Everything we learn about a pack before touching Crafty."""
+    """Everything we learn about a pack before touching a server."""
     name: str = ""
     version: str = ""
     mc_version: str = ""
     loader: str = ""            # forge | neoforge | fabric | quilt
     loader_version: str = ""    # exact version the pack asks for
-    crafty_loader: str = ""     # catalog key we will actually install
+    server_loader: str = ""     # the loader family we will actually install
     source: str = ""            # "server_pack" | "manifest"
     recommended_ram: int = 0    # MB, when the pack declares it
     java_version: int = 0       # Java major the pack was authored against
@@ -114,7 +117,7 @@ class PackPlan:
 
 # Archive members whose path escapes the directory they are extracted into.
 # CurseForge's own zips are well behaved, but an imported archive comes from
-# whoever built it, and every member here is eventually handed to Crafty to
+# whoever built it, and every member here is eventually handed to a node to
 # extract inside a server directory -- so the path is checked, not trusted.
 def is_safe_target(rel: str) -> bool:
     if not rel or rel.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", rel):
@@ -209,7 +212,7 @@ def analyse_client_pack(zf: zipfile.ZipFile) -> PackPlan:
         mc_version=mc.get("version", ""),
         loader=family,
         loader_version=lver,
-        crafty_loader=LOADER_TO_CRAFTY.get(family, ""),
+        server_loader=INSTALLABLE_LOADERS.get(family, ""),
         source="manifest",
         recommended_ram=int(mc.get("recommendedRam") or 0),
         # Only exports written by newer CurseForge app builds carry this; it
@@ -251,10 +254,10 @@ def analyse_client_pack(zf: zipfile.ZipFile) -> PackPlan:
             "This export lists no mods and carries no override files -- it "
             "may have been exported with everything deselected."
         )
-    if not plan.crafty_loader:
+    if not plan.server_loader:
         plan.warnings.append(
-            f"Loader '{family or 'unknown'}' is not in Crafty's jar catalog; "
-            "Quilt and unknown loaders must be installed manually."
+            f"Loader '{family or 'unknown'}' cannot be installed automatically; "
+            "Quilt and unknown loaders must be installed by hand."
         )
     return plan
 
@@ -388,7 +391,7 @@ def analyse_server_pack(zf: zipfile.ZipFile) -> PackPlan:
                 if plan.loader == "neoforge":
                     plan.mc_version = plan.mc_version or mc_from_neoforge(ver)
 
-    plan.crafty_loader = LOADER_TO_CRAFTY.get(plan.loader, "")
+    plan.server_loader = INSTALLABLE_LOADERS.get(plan.loader, "")
 
     unsafe = 0
     for n in names:
@@ -401,7 +404,7 @@ def analyse_server_pack(zf: zipfile.ZipFile) -> PackPlan:
         top = rel.split("/")[0].lower()
         if top in CLIENT_ONLY_DIRS:
             continue
-        # Never overwrite the loader install Crafty just produced.
+        # Never overwrite the loader install that was just produced.
         if top in ("libraries", "versions"):
             continue
         base = posixpath.basename(rel)
@@ -491,7 +494,7 @@ def is_client_only_jar(filename: str) -> bool:
 
 def mem_from_ram_hint(recommended_mb: int, default_min: int, default_max: int
                       ) -> tuple[int, int]:
-    """Turn a pack's recommendedRam (MB) into Crafty's min/max GB values."""
+    """Turn a pack's recommendedRam (MB) into min/max heap GB values."""
     if not recommended_mb:
         return default_min, default_max
     gb = max(2, round(recommended_mb / 1024))

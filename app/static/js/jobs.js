@@ -66,7 +66,7 @@ let userOpened = false;
 let pendingSay = '';
 
 /* A job that has said nothing for this long is reported as quiet. An
-   install that spends four minutes inside one Crafty upload is
+   install that spends four minutes inside one upload to the node is
    indistinguishable from one that has hung, and "is this still going" is
    the only question the drawer exists to answer. */
 const STALE_MS = 22000;

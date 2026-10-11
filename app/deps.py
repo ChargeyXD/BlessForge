@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import re
 
-from app import crafty, curseforge, modrinth
+from app import engine, curseforge, modrinth
 
 CF_REQUIRED = 3
 CF_INCOMPATIBLE = 5
@@ -44,7 +44,7 @@ def _stem(filename: str) -> str:
 
 async def installed_index(server_id: str) -> dict:
     """What this instance already has, keyed every way we might match on."""
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     by_project: dict[str, dict] = {}
     files: set[str] = set()
     for record in manifest.get("mods", []):
@@ -55,12 +55,12 @@ async def installed_index(server_id: str) -> dict:
         if name:
             files.add(name)
     try:
-        entries = await crafty.list_dir(server_id, "mods")
+        entries = await engine.list_dir(server_id, "mods")
         for name, meta in entries.items():
             if name != "root_path" and isinstance(meta, dict) and not meta.get("dir"):
                 files.add(name)
                 files.add(name.replace(".disabled", ""))
-    except crafty.CraftyError:
+    except engine.EngineError:
         pass
     stems = {_stem(f): f for f in files if f}
     return {"by_project": by_project, "files": files, "stems": stems}
@@ -318,11 +318,11 @@ async def resolve_for_instance(
     file_id: str | int | None = None,
 ) -> dict:
     """Convenience wrapper that reads the instance's loader/MC version."""
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     mc = manifest.get("minecraft") or ""
     loader = manifest.get("loader") or ""
     if not loader:
-        server = await crafty.get_server(server_id)
+        server = await engine.get_server(server_id)
         exe = (server.get("executable") or "").lower()
         for fam in ("neoforge", "forge", "fabric"):
             if fam in exe:

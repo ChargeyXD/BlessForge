@@ -102,7 +102,7 @@ class Job:
                      ) -> None:
         """Name the instance this job works on, once it is known.
 
-        An install does not have a server id until Crafty creates one, so
+        An install does not have a server id until the node creates one, so
         this is called mid-flight as well as at creation.
         """
         if server_id:

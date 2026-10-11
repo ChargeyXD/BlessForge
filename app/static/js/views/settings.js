@@ -15,7 +15,7 @@ import {
   segmented, toggle, field, copyText, readTheme, applyTheme,
 } from '../core.js';
 import { run } from '../jobs.js';
-import { state, refreshHealth, topActions } from '../app.js';
+import { state, refreshHealth, topActions, engineLabel } from '../app.js';
 import { session, isAdmin } from '../auth.js';
 
 export async function render() {
@@ -93,11 +93,13 @@ export async function render() {
         h('div.panel',
           h('header', icon('link', 15), h('h3', 'Connections')),
           h('div.pad', { style: { display: 'grid', gap: '12px' } },
-            checkRow('Crafty Controller', health.checks?.crafty,
-              health.config?.crafty_url,
-              health.checks?.crafty?.ok
-                ? `${health.checks.crafty.servers} servers · `
-                  + `${health.checks.crafty.latency_ms} ms`
+            checkRow('Servers', health.checks?.engine,
+              engineLabel(health.checks?.engine?.driver || health.config?.engine),
+              health.checks?.engine?.ok
+                ? `${health.checks.engine.servers} servers on `
+                  + `${health.checks.engine.nodes} node`
+                  + `${health.checks.engine.nodes === 1 ? '' : 's'} · `
+                  + `${health.checks.engine.latency_ms} ms`
                 : null),
             checkRow('CurseForge', health.checks?.curseforge,
               'api.curseforge.com'),

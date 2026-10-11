@@ -1,12 +1,15 @@
 # BlessForge
 
-A CurseForge-style front end for [Crafty Controller](https://craftycontrol.com/).
-Search modpacks, install one into Crafty as a real server instance, then manage
-the mods, configs, performance and startup problems of every instance from one
-place.
+A Minecraft server panel with a CurseForge-style front end. Search modpacks,
+install one as a real server, then manage the mods, configs, performance and
+startup problems of every server from one place.
 
-Talks to Crafty over its HTTP API, so it can run on a different machine — no
-shared volumes required.
+> **2.2 is in transition.** BlessForge no longer drives Crafty Controller: it
+> owns its hosting layer (`app/engine/`), and each node runs the BlessForge
+> node agent. The last Crafty-backed release is tagged `v2.1-crafty` and keeps
+> serving the servers it already runs. Sections below that still describe
+> Crafty are being rewritten; `HANDOVER.md` and `NEXT-SESSION.md` describe the
+> current state.
 
 ![port 8710](https://img.shields.io/badge/port-8710-orange)
 
@@ -593,12 +596,11 @@ Anything still missing is listed in a banner at the top of the app.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CRAFTY_URL` | — | Crafty base URL with scheme and port, e.g. `https://192.168.1.10:8443` |
-| `CRAFTY_TOKEN` | — | Crafty API token |
+| `ENGINE` | `mock` | What runs the servers: `agent` (BlessForge node agents) or `mock` (in memory) |
+| `GAME_PORT_RANGE` | `25500-25600` | Game ports a node's edge forwards; the Port control warns outside it |
 | `CURSEFORGE_API_KEY` | — | Your CurseForge Core API key. Never commit it |
 | `CURSEFORGE_API_KEY_FILE` | — | Path to a file holding the key (a Docker secret); wins over the variable |
 | `CURSEFORGE_API_KEY_B64` | — | The key base64-encoded, for dialogs that mangle `$` |
-| `CRAFTY_VERIFY_SSL` | `false` | Verify Crafty's certificate. Crafty is self-signed by default |
 | `OLLAMA_URL` | *(empty — assistant off)* | An Ollama endpoint you run. Blank turns the assistant off; nothing else needs it |
 | `OLLAMA_API_KEY` | *(empty)* | Bearer token, if that endpoint requires one |
 | `AI_MODEL` | `qwen3:4b-instruct` | Model to use |

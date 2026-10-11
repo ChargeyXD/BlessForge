@@ -130,7 +130,8 @@ export async function render(ctx) {
       onclick: () => open(f),
     },
       icon(f.editable ? 'fileText' : 'file', 15),
-      h('span.nm', f.name, h('span.own', `${f.owner} · ${f.size || ''}`)));
+      h('span.nm', f.name, h('span.own',
+        `${f.owner} · ${f.bytes ? bytes(f.bytes) : (f.size || '')}`)));
   }
 
   async function open(f) {

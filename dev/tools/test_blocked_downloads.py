@@ -35,8 +35,9 @@ sys.path.insert(0, str(ROOT))
 
 import httpx  # noqa: E402
 
-from app import (blocked, config, curseforge, installer, modrinth,  # noqa: E402
-                 mods, preflight, roulette)
+from app import (blocked, config, curseforge, engine, installer,  # noqa: E402
+                 modrinth, mods, preflight, roulette)
+from app.engine.mock import MockEngine  # noqa: E402
 from app.jobs import Job  # noqa: E402
 from app.packs import PackPlan  # noqa: E402
 
@@ -273,31 +274,22 @@ async def main():
          modrinth.list_versions, modrinth.download) = saved_mr
 
     # --- the Mods tab -----------------------------------------------------
-    class FakeEngine:
-        class CraftyError(RuntimeError):
-            pass
-
-        def __init__(self, files):
-            self.files = files
-            self.manifest = {"mods": [], "blocked_by_author": [
-                {"name": "Nowhere", "file_name": "nowhere-1.0.jar",
-                 "file_id": 6004, "url": "https://www.curseforge.com/projects/64"},
-                {"name": "Gone", "file_name": "gone-1.0.jar", "file_id": 6005,
-                 "url": "https://www.curseforge.com/projects/65"},
-            ]}
-
-        async def list_dir(self, sid, path):
-            return {n: {"size": 1} for n in self.files}
-
-        async def read_studio_manifest(self, sid):
-            return self.manifest
-
-    saved = mods.crafty
-    mods.crafty = FakeEngine(["open-mod-1.0.jar", "gone-1.0.jar.disabled"])
-    try:
-        listing = await mods.list_mods("sid", "mods")
-    finally:
-        mods.crafty = saved
+    eng = MockEngine(seed=False)
+    engine.configure(drivers={"mock": eng})
+    sid = await engine.create_server(name="T", port=25570, memory_mb=2048,
+                                     mc_version="1.20.1", loader="fabric")
+    await engine.ensure_dir(sid, "mods")
+    await engine.upload_file(sid, "mods", "open-mod-1.0.jar", b"jar")
+    await engine.upload_file(sid, "mods", "gone-1.0.jar.disabled", b"jar")
+    await engine.write_manifest(sid, {
+        "minecraft": "1.20.1", "loader": "fabric", "mods": [],
+        "blocked_by_author": [
+            {"name": "Nowhere", "file_name": "nowhere-1.0.jar", "file_id": 6004,
+             "url": "https://www.curseforge.com/projects/64"},
+            {"name": "Gone", "file_name": "gone-1.0.jar", "file_id": 6005,
+             "url": "https://www.curseforge.com/projects/65"},
+        ]})
+    listing = await mods.list_mods(sid, "mods")
     check("the Mods tab lists a blocked jar until it is uploaded",
           [b["file_name"] for b in listing["blocked_by_author"]] == ["nowhere-1.0.jar"])
     check("an uploaded one clears itself, even uploaded disabled",
@@ -305,19 +297,8 @@ async def main():
                   for b in listing["blocked_by_author"]))
 
     # --- adding a single blocked mod ---------------------------------------
-    uploads: list = []
-
-    class AddEngine(FakeEngine):
-        async def read_studio_manifest(self, sid):
-            return {"minecraft": "1.20.1", "loader": "fabric"}
-
-        async def upload_file(self, *a):
-            uploads.append(a)
-
-        async def ensure_dir(self, *a):
-            pass
-
-    saved = (mods.crafty, curseforge.get_file, curseforge.get_mod,
+    before = set(await engine.list_dir(sid, "mods"))
+    saved = (curseforge.get_file, curseforge.get_mod,
              modrinth.versions_from_hashes)
 
     async def get_file(pid, fid):
@@ -329,7 +310,6 @@ async def main():
     async def no_hits(hashes):
         return {}
 
-    mods.crafty = AddEngine([])
     curseforge.get_file, curseforge.get_mod = get_file, get_mod
     modrinth.versions_from_hashes = no_hits
     saved_gp = modrinth.get_project
@@ -339,17 +319,18 @@ async def main():
 
     modrinth.get_project = no_project
     try:
-        await mods.add_mod("sid", source="curseforge", project_id=64, file_id=6004)
+        await mods.add_mod(sid, source="curseforge", project_id=64, file_id=6004)
         refused = None
     except curseforge.DistributionBlocked as e:
         refused = e
     finally:
-        (mods.crafty, curseforge.get_file, curseforge.get_mod,
+        (curseforge.get_file, curseforge.get_mod,
          modrinth.versions_from_hashes) = saved
         modrinth.get_project = saved_gp
+    uploads = set(await engine.list_dir(sid, "mods")) - before
     check("adding a blocked mod by hand is refused with a link",
           refused is not None and "curseforge.com/minecraft/mc-mods/nowhere" in str(refused))
-    check("and nothing was uploaded", uploads == [])
+    check("and nothing was uploaded", not uploads, sorted(uploads))
 
     # --- Mod Roulette --------------------------------------------------------
     async def search(**kw):

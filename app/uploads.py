@@ -226,7 +226,7 @@ def summarise(path: Path) -> dict:
             "minecraft": plan.mc_version,
             "loader": plan.loader,
             "loader_version": plan.loader_version,
-            "crafty_loader": plan.crafty_loader,
+            "server_loader": plan.server_loader,
             "java_version": plan.java_version,
             "recommended_ram_mb": plan.recommended_ram,
             "manifest_mods": len(plan.manifest_files),
@@ -237,7 +237,7 @@ def summarise(path: Path) -> dict:
             # A client export lists mods as ids only, so assembling it needs
             # the CurseForge API; a server pack ships the jars and does not.
             "needs_curseforge": plan.source == "manifest",
-            "installable": bool(plan.crafty_loader and plan.mc_version),
+            "installable": bool(plan.server_loader and plan.mc_version),
         }
 
 

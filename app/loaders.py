@@ -1,13 +1,10 @@
-"""Where a loader jar comes from when Crafty cannot fetch it.
+"""Where every loader jar comes from: each loader's own project.
 
-Crafty downloads loader jars from one mirror (`jars.arcadiatech.org`) on a
-daemon thread. When that mirror is down -- and it goes down -- Crafty logs a
-single line, gives up, and still answers the create call with 201. The
-instance then exists with no launcher and nothing in the API ever says so.
-
-The installer already retries through Crafty's own jar index. This module is
-the layer below that: the *upstream* projects, which are independent of both
-Crafty and its mirror, so a mirror outage stops being fatal.
+There is no intermediate jar index. A loader is resolved here to one
+download -- URL, file name, checksum where the project publishes one, and
+whether it is the server itself or an installer that has to run once -- and
+`app/provision.py` decides who fetches it (the node first, BlessForge as a
+relay if the node cannot).
 
   vanilla    Mojang's version manifest
   fabric     meta.fabricmc.net -- serves a ready-made server launcher jar
@@ -43,10 +40,10 @@ FORGE_MAVEN = "https://maven.minecraftforge.net/net/minecraftforge/forge"
 PAPER_API = "https://fill.papermc.io/v3/projects"
 PURPUR_API = "https://api.purpurmc.org/v2/purpur"
 
-# Which family each Crafty jar-catalogue key belongs to. Crafty's keys are
-# what the rest of the app speaks, so the translation lives here rather than
-# leaking into every caller.
-CRAFTY_KEY_TO_FAMILY = {
+# Older names for the same families. Manifests written before 2.2 recorded
+# the installer-style ids ("forge-installer"), and a manifest is the server's
+# own history -- it has to keep reading.
+_FAMILY_ALIASES = {
     "vanilla": "vanilla",
     "fabric": "fabric",
     "forge-installer": "forge",
@@ -55,7 +52,6 @@ CRAFTY_KEY_TO_FAMILY = {
     "purpur": "purpur",
     "folia": "folia",
 }
-FAMILY_TO_CRAFTY_KEY = {v: k for k, v in CRAFTY_KEY_TO_FAMILY.items()}
 
 # Families whose jar is an *installer* that has to be run once before the
 # server exists. Everything else is the server itself.
@@ -93,15 +89,11 @@ async def _json(url: str, timeout: float = 30.0) -> Any:
 def family_of(loader: str) -> str:
     """Normalise anything the app might call a loader into a family name."""
     key = (loader or "").strip().lower()
-    if key in CRAFTY_KEY_TO_FAMILY:
-        return CRAFTY_KEY_TO_FAMILY[key]
+    if key in _FAMILY_ALIASES:
+        return _FAMILY_ALIASES[key]
     key = key.replace("-installer", "").replace("_", "")
     return {"neoforged": "neoforge", "papermc": "paper",
             "spigot": "paper", "bukkit": "paper"}.get(key, key)
-
-
-def crafty_key(loader: str) -> str:
-    return FAMILY_TO_CRAFTY_KEY.get(family_of(loader), family_of(loader))
 
 
 def mod_directory(loader: str) -> str:
@@ -250,23 +242,28 @@ def _neoforge_mc(loader_version: str) -> str:
 # --- resolving one downloadable jar ------------------------------------
 
 
-async def resolve(family: str, mc_version: str) -> dict:
+async def resolve(family: str, mc_version: str, build: str | None = None) -> dict:
     """`{url, filename, kind, loader_version}` for this loader + version.
 
     `kind` is "server" (run it directly) or "installer" (run once, then the
     real launcher exists). `{}` means no upstream build was found, which is
     a real answer for e.g. Paper on a snapshot.
+
+    `build` asks for one exact loader build -- the one a modpack was made
+    against -- for Forge, NeoForge and Fabric. `{}` when that build is not
+    published for this Minecraft version; the caller decides whether the
+    newest one will do instead.
     """
     family = family_of(family)
     try:
         if family == "vanilla":
             return await _vanilla(mc_version)
         if family == "fabric":
-            return await _fabric(mc_version)
+            return await _fabric(mc_version, build)
         if family == "neoforge":
-            return await _neoforge(mc_version)
+            return await _neoforge(mc_version, build)
         if family == "forge":
-            return await _forge(mc_version)
+            return await _forge(mc_version, build)
         if family in ("paper", "folia", "velocity"):
             return await _paper_family(family, mc_version)
         if family == "purpur":
@@ -292,11 +289,15 @@ async def _vanilla(mc: str) -> dict:
     }
 
 
-async def _fabric(mc: str) -> dict:
+async def _fabric(mc: str, build: str | None = None) -> dict:
     loaders = await _json(f"{FABRIC_META}/versions/loader/{mc}")
     if not loaders:
         return {}
     loader_v = loaders[0]["loader"]["version"]
+    if build:
+        if not any(entry["loader"]["version"] == build for entry in loaders):
+            return {}
+        loader_v = build
     installers = await _json(f"{FABRIC_META}/versions/installer")
     stable = next((i for i in installers if i.get("stable")), None)
     installer_v = (stable or installers[0])["version"]
@@ -309,15 +310,20 @@ async def _fabric(mc: str) -> dict:
     }
 
 
-async def _neoforge(mc: str) -> dict:
+async def _neoforge(mc: str, build: str | None = None) -> dict:
     versions = await _neoforge_versions()
-    matching = [v for v in versions
-                if mc in _neoforge_candidates(v) and "beta" not in v.lower()]
-    if not matching:
-        matching = [v for v in versions if mc in _neoforge_candidates(v)]
-    if not matching:
-        return {}
-    best = sorted(matching, key=_version_key)[-1]
+    if build:
+        if build not in versions or mc not in _neoforge_candidates(build):
+            return {}
+        best = build
+    else:
+        matching = [v for v in versions
+                    if mc in _neoforge_candidates(v) and "beta" not in v.lower()]
+        if not matching:
+            matching = [v for v in versions if mc in _neoforge_candidates(v)]
+        if not matching:
+            return {}
+        best = sorted(matching, key=_version_key)[-1]
     return {
         "url": f"{NEOFORGE_MAVEN}/{best}/neoforge-{best}-installer.jar",
         "filename": f"neoforge-{best}-installer.jar",
@@ -325,17 +331,41 @@ async def _neoforge(mc: str) -> dict:
     }
 
 
-async def _forge(mc: str) -> dict:
-    promos = (await _json(FORGE_META)).get("promos") or {}
-    build = promos.get(f"{mc}-recommended") or promos.get(f"{mc}-latest")
-    if not build:
-        return {}
+async def _forge(mc: str, build: str | None = None) -> dict:
+    if build:
+        # A server pack records "1.20.1-47.4.23", a manifest "47.4.23".
+        build = build[len(mc) + 1:] if build.startswith(f"{mc}-") else build
+        if f"{mc}-{build}" not in await _forge_versions():
+            return {}
+    else:
+        promos = (await _json(FORGE_META)).get("promos") or {}
+        build = promos.get(f"{mc}-recommended") or promos.get(f"{mc}-latest")
+        if not build:
+            return {}
     full = f"{mc}-{build}"
     return {
         "url": f"{FORGE_MAVEN}/{full}/forge-{full}-installer.jar",
         "filename": f"forge-{full}-installer.jar",
         "kind": "installer", "loader_version": build, "source": "MinecraftForge",
     }
+
+
+_FORGE_CACHE: dict[str, tuple[float, set[str]]] = {}
+
+
+async def _forge_versions() -> set[str]:
+    """Every Forge build ever published, as "<mc>-<build>" (maven metadata)."""
+    now = asyncio.get_event_loop().time()
+    hit = _FORGE_CACHE.get("v")
+    if hit and now - hit[0] < _CACHE_TTL:
+        return hit[1]
+    async with _client() as c:
+        r = await c.get(f"{FORGE_MAVEN}/maven-metadata.xml")
+        if r.status_code >= 400:
+            return set()
+        versions = set(re.findall(r"<version>([^<]+)</version>", r.text))
+    _FORGE_CACHE["v"] = (now, versions)
+    return versions
 
 
 def _is_stable(version: str) -> bool:
@@ -425,33 +455,19 @@ CATALOGUE = [
 ]
 
 
-async def catalogue(crafty_catalog: dict | None = None) -> list[dict]:
+async def catalogue() -> list[dict]:
     """The loader list for the create screen, with real version lists.
 
-    Crafty's own index is asked first, because a version Crafty knows about
-    is one it can install without any of the fallbacks below being needed.
-    Upstream fills in whatever Crafty's index is missing.
+    Straight from each loader's own project: there is no intermediate jar
+    index any more, so a version is offered exactly when its project
+    publishes a build for it.
     """
-    out: list[dict] = []
-    crafty_types = ((crafty_catalog or {}).get("mc_java_servers") or {}
-                    ).get("types") or {}
-
     async def one(entry: dict) -> dict:
         key = entry["key"]
-        ckey = crafty_key(key)
-        from_crafty = sorted(
-            ((crafty_types.get(ckey) or {}).get("versions") or {}).keys(),
-            key=_version_key, reverse=True,
-        )
-        upstream = await versions_for(key)
-        merged = list(dict.fromkeys(from_crafty + upstream))
-        merged.sort(key=_version_key, reverse=True)
+        versions = sorted(await versions_for(key), key=_version_key, reverse=True)
         return {
             **entry,
-            "crafty_key": ckey,
-            "versions": merged[:60],
-            "crafty_versions": from_crafty[:60],
-            "in_crafty": bool(from_crafty),
+            "versions": versions[:60],
             "mod_directory": mod_directory(key),
         }
 

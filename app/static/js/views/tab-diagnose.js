@@ -184,7 +184,7 @@ export async function render(ctx) {
     try {
       if (fix.action === 'accept_eula') {
         await api.post(`/api/instances/${ctx.id}/fix/accept-eula`);
-        toast('eula.txt rewritten in the exact form Crafty accepts.', 'ok');
+        toast('eula.txt now accepts the Minecraft EULA.', 'ok');
       } else if (fix.action === 'set_java') {
         const r = await api.post(`/api/instances/${ctx.id}/fix/java`, {});
         toast(r.changed ? `Java ${r.java_major} pinned.`

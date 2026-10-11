@@ -28,7 +28,7 @@ import time
 import uuid
 from typing import Any
 
-from app import config, crafty
+from app import config, engine
 
 log = logging.getLogger("blessforge.backups")
 
@@ -66,7 +66,7 @@ async def snapshot(server_id: str, reason: str, *,
         "partial": False,
     }
     try:
-        entries = await crafty.list_dir(server_id, directory)
+        entries = await engine.list_dir(server_id, directory)
         snap["mods"] = {
             name: not name.endswith(DISABLED_SUFFIX)
             for name, meta in entries.items()
@@ -78,7 +78,7 @@ async def snapshot(server_id: str, reason: str, *,
         log.warning("snapshot %s: could not list %s: %s", server_id, directory, e)
 
     try:
-        snap["manifest"] = await crafty.read_studio_manifest(server_id)
+        snap["manifest"] = await engine.read_manifest(server_id)
     except Exception:
         snap["partial"] = True
 
@@ -149,8 +149,8 @@ async def restore(server_id: str, snap_id: str, *,
 
     want = snap.get("mods") or {}
     try:
-        entries = await crafty.list_dir(server_id, directory)
-    except crafty.CraftyError as e:
+        entries = await engine.list_dir(server_id, directory)
+    except engine.EngineError as e:
         raise RuntimeError(f"cannot read {directory}: {e}")
     have = {
         name: not name.endswith(DISABLED_SUFFIX)
@@ -177,7 +177,7 @@ async def restore(server_id: str, snap_id: str, *,
             continue
         target = base if was_enabled else base + DISABLED_SUFFIX
         try:
-            await crafty.rename_path(server_id, f"{directory}/{current}", target)
+            await engine.rename_path(server_id, f"{directory}/{current}", target)
             changed.append(target)
         except Exception as e:
             failed.append({"file": current, "error": str(e)})
@@ -188,7 +188,7 @@ async def restore(server_id: str, snap_id: str, *,
         if not blob_path.exists():
             continue
         try:
-            await crafty.upload_file(
+            await engine.upload_file(
                 server_id, posixpath.dirname(entry["path"]) or ".",
                 posixpath.basename(entry["path"]), blob_path.read_bytes())
             restored_files.append(entry["path"])

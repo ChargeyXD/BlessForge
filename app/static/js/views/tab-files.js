@@ -21,7 +21,7 @@
 import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num,
   empty, loadingFox, confirmDialog, promptDialog, modal, close, frag,
-  debounce, prefs, copyText, qs,
+  debounce, prefs, copyText, qs, ago,
 } from '../core.js';
 
 const KIND_ICON = {
@@ -223,7 +223,12 @@ export async function render(ctx) {
         e.protected && !e.dir ? icon('shield', 12) : null,
         e.disabled ? pill('disabled', 'dead') : null),
       h('span.sz', e.dir ? '' : (e.size || bytes(e.bytes))),
-      h('span.md', e.modified || ''),
+      // Epoch seconds from the node; relative reads faster in a list,
+      // and the exact time is a hover away.
+      h('span.md', {
+        title: typeof e.modified === 'number'
+          ? new Date(e.modified * 1000).toLocaleString() : (e.modified || ''),
+      }, typeof e.modified === 'number' ? ago(e.modified) : (e.modified || '')),
       h('div.ac',
         !e.dir && e.editable ? h('button.btn.icon.xs.ghost', {
           'aria-label': `Edit ${e.name}`, title: 'Edit',
@@ -307,7 +312,8 @@ export async function render(ctx) {
           const ok = await confirmDialog({
             title: `Extract ${file.name}?`,
             message: 'That is an archive. Extracting unpacks it into this '
-              + 'folder; Crafty does the work in the background.',
+              + 'folder. An archive with anything pointing outside the folder '
+              + 'is refused whole.',
             confirmLabel: 'Extract it',
           });
           if (ok) await extract({ path: res.path, name: file.name });
@@ -322,8 +328,8 @@ export async function render(ctx) {
   }
 
   async function download(e) {
-    // Streamed through the API rather than linked directly, so the Crafty
-    // token never has to reach the browser.
+    // Streamed through the API rather than linked directly, so no node
+    // credential ever has to reach the browser.
     try {
       const res = await api.raw(`/api/instances/${ctx.id}/files/download`
         + qs({ path: e.path }));
@@ -434,7 +440,7 @@ export async function render(ctx) {
     showEditor(ctx, doc, () => open(path, { quiet: true }));
   }
 
-  // Sizing the sidebar walks the whole server directory through Crafty --
+  // Sizing the sidebar walks the whole server directory on the node --
   // ten seconds on a 253-mod instance -- while the listing this tab exists
   // for comes back in under thirty milliseconds. Awaiting both in turn left
   // the tab on its skeleton for fourteen seconds. loadUsage() already paints

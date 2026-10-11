@@ -19,7 +19,7 @@ import posixpath
 import re
 from collections import defaultdict
 
-from app import crafty, curseforge, jarmeta, modrinth, packs
+from app import engine, curseforge, jarmeta, modrinth, packs
 from app import mods as modmgr
 from app.jobs import Job
 
@@ -98,13 +98,13 @@ _PATTERNS = [
             "Something touched java.awt while registering -- building a colour, "
             "usually -- and the JVM went looking for libawt_xawt.so, which is "
             "the X11 half of AWT. A headless JRE does not ship it, and the "
-            "Crafty image uses a headless JRE."
+            "server runtime images are headless JREs."
             + (" The mods involved are: " + ", ".join(_awt_mods(t)) + "."
                if _awt_mods(t) else "")
             + " Setting -Djava.awt.headless=true is worth trying first and is "
             "harmless, but it only helps if nothing turns headless back off at "
-            "runtime -- some mods do. If it does not, this pack needs a Java "
-            "with the full AWT on the Crafty host; there is no version of this "
+            "runtime -- some mods do. If it does not, this pack needs a "
+            "runtime image with the full AWT; there is no version of this "
             "that BlessForge can fix from inside the server directory.",
             fix={"action": "add_flag", "flag": "-Djava.awt.headless=true"},
             evidence=m.group(0), category="runtime",
@@ -203,7 +203,7 @@ _PATTERNS = [
         re.compile(r"Unable to detect a valid JRE|no java found", re.I),
         lambda m, t: _finding(
             "critical", "Java not found",
-            "Crafty could not locate a Java runtime for this instance.",
+            "No Java runtime could be found for this server.",
             category="runtime",
         ),
     ),
@@ -354,16 +354,16 @@ def scan_text(text: str) -> list[dict]:
 async def _read_first_available(server_id: str, paths: list[str]) -> tuple[str, str]:
     for p in paths:
         try:
-            return p, await crafty.read_file(server_id, p)
-        except crafty.CraftyError:
+            return p, await engine.read_file(server_id, p)
+        except engine.EngineError:
             continue
     return "", ""
 
 
 async def _latest_crash_report(server_id: str) -> tuple[str, str]:
     try:
-        entries = await crafty.list_dir(server_id, "crash-reports")
-    except crafty.CraftyError:
+        entries = await engine.list_dir(server_id, "crash-reports")
+    except engine.EngineError:
         return "", ""
     files = [
         (name, meta) for name, meta in entries.items()
@@ -374,10 +374,10 @@ async def _latest_crash_report(server_id: str) -> tuple[str, str]:
     files.sort(key=lambda kv: kv[1].get("modified", ""), reverse=True)
     name = files[0][0]
     try:
-        return f"crash-reports/{name}", await crafty.read_file(
+        return f"crash-reports/{name}", await engine.read_file(
             server_id, f"crash-reports/{name}"
         )
-    except crafty.CraftyError:
+    except engine.EngineError:
         return "", ""
 
 
@@ -418,11 +418,11 @@ async def analyse_logs(server_id: str, tail_lines: int = 400) -> dict:
 
 async def quick_check(server_id: str) -> dict:
     findings: list[dict] = []
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
 
     try:
-        root = await crafty.list_dir(server_id, ".")
-    except crafty.CraftyError as e:
+        root = await engine.list_dir(server_id, ".")
+    except engine.EngineError as e:
         return {"findings": [_finding("critical", "Instance unreadable", str(e))]}
 
     names = {k for k in root if k != "root_path"}
@@ -430,8 +430,7 @@ async def quick_check(server_id: str) -> dict:
     # EULA
     if "eula.txt" in names:
         try:
-            eula = await crafty.read_file(server_id, "eula.txt")
-            first = eula.split("\n", 1)[0]
+            eula = await engine.read_file(server_id, "eula.txt")
             if not re.search(r"^\s*eula\s*=\s*true", eula, re.I | re.M):
                 findings.append(_finding(
                     "critical", "EULA not accepted",
@@ -439,21 +438,7 @@ async def quick_check(server_id: str) -> dict:
                     "immediately on start.",
                     fix={"action": "accept_eula"}, category="config",
                 ))
-            elif first.lower() not in (
-                "eula=true", "eula = true", "eula= true", "eula =true"
-            ):
-                # Crafty compares the first line to that exact list, so a
-                # leading comment or stray whitespace blocks every start
-                # while the file still *looks* correct.
-                findings.append(_finding(
-                    "critical", "Crafty will not start this server (eula.txt format)",
-                    "The EULA is accepted, but Crafty matches the first line of "
-                    "eula.txt against an exact list. This file's first line is "
-                    f"{first!r}, so Crafty silently refuses to launch and writes "
-                    "no log at all. Rewriting the file fixes it.",
-                    fix={"action": "accept_eula"}, category="config",
-                ))
-        except crafty.CraftyError:
+        except engine.EngineError:
             pass
     else:
         findings.append(_finding(
@@ -466,7 +451,7 @@ async def quick_check(server_id: str) -> dict:
     mod_files: list[str] = []
     if "mods" in names:
         try:
-            entries = await crafty.list_dir(server_id, "mods")
+            entries = await engine.list_dir(server_id, "mods")
             mod_files = [
                 n for n, m in entries.items()
                 if n != "root_path" and isinstance(m, dict) and not m.get("dir")
@@ -477,7 +462,7 @@ async def quick_check(server_id: str) -> dict:
                     "warning", "No mods installed",
                     "The mods directory is empty.", category="mods",
                 ))
-        except crafty.CraftyError:
+        except engine.EngineError:
             pass
     else:
         findings.append(_finding(
@@ -501,7 +486,7 @@ async def quick_check(server_id: str) -> dict:
     # RAM vs what the pack asked for
     try:
         if "user_jvm_args.txt" in names:
-            args = await crafty.read_file(server_id, "user_jvm_args.txt")
+            args = await engine.read_file(server_id, "user_jvm_args.txt")
             m = re.search(r"-Xmx(\d+)([GgMm])", args)
             if m:
                 gb = int(m.group(1)) / (1024 if m.group(2).lower() == "m" else 1)
@@ -511,38 +496,37 @@ async def quick_check(server_id: str) -> dict:
                         f"-Xmx is {gb:g}G. Packs this size usually need 6-10 GB.",
                         fix={"action": "raise_ram"}, category="resources",
                     ))
-    except crafty.CraftyError:
+    except engine.EngineError:
         pass
 
     # Java version. A loader running on too-new a JVM dies before it can
     # write a single log line, so this check has to be state-based.
     try:
-        server = await crafty.get_server(server_id)
+        server = await engine.get_server(server_id)
         command = server.get("execution_command") or ""
         mc = manifest.get("minecraft")
         if not mc:
             m = re.search(r"(\d+\.\d+(?:\.\d+)?)", server.get("executable") or "")
             mc = m.group(1) if m else ""
         if mc and command:
-            need = crafty.required_java_major(mc)
-            m = re.search(r"java-(?:1\.)?(\d+)(?:\.0)?-", command)
-            if m:
-                actual = int(m.group(1))
-                if actual != need:
-                    findings.append(_finding(
-                        "critical", f"Java {actual} used, but Minecraft {mc} needs {need}",
-                        f"This instance launches with Java {actual}. Forge/NeoForge "
-                        f"reject unsupported Java versions and exit before writing "
-                        f"any log, which looks like 'nothing happens' on start.",
-                        fix={"action": "set_java", "minecraft": mc, "java_major": need},
-                        category="runtime",
-                    ))
-            elif re.match(r'^"?java"?\s', command.strip()):
+            need = engine.required_java_major(mc)
+            actual = engine.java_of(server).get("major")
+            if actual and actual != need:
                 findings.append(_finding(
-                    "warning", "No explicit Java version selected",
-                    f"This instance runs whatever 'java' resolves to on the host. "
-                    f"Minecraft {mc} needs Java {need}; if the host default differs, "
-                    f"the server exits silently at startup.",
+                    "critical", f"Java {actual} used, but Minecraft {mc} needs {need}",
+                    f"This server runs on Java {actual}. Forge/NeoForge "
+                    f"reject unsupported Java versions and exit before writing "
+                    f"any log, which looks like 'nothing happens' on start.",
+                    fix={"action": "set_java", "minecraft": mc, "java_major": need},
+                    category="runtime",
+                ))
+            elif not actual:
+                findings.append(_finding(
+                    "warning", "No Java version recorded",
+                    f"This server's record names no Java runtime, so it runs "
+                    f"whatever the node defaults to. Minecraft {mc} needs Java "
+                    f"{need}; if the default differs, the server exits silently "
+                    f"at startup.",
                     fix={"action": "set_java", "minecraft": mc, "java_major": need},
                     category="runtime",
                 ))
@@ -731,8 +715,8 @@ PLATFORM_IDS = {
 async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
     """Download every enabled jar and verify the dependency graph."""
     try:
-        entries = await crafty.list_dir(server_id, directory)
-    except crafty.CraftyError as e:
+        entries = await engine.list_dir(server_id, directory)
+    except engine.EngineError as e:
         raise RuntimeError(f"cannot read {directory}: {e}")
 
     jars = [
@@ -753,7 +737,7 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
         nonlocal done
         async with sem:
             try:
-                blob = await crafty.download_file(
+                blob = await engine.download_file(
                     server_id,
                     f"{modmgr.guard_dir(directory)}/{modmgr.guard_name(name)}")
                 parsed[name] = jarmeta.parse(blob, name)
@@ -851,7 +835,7 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
     # only descriptor is neoforge.mods.toml, so the mod is silently absent --
     # no crash, no log line, just a feature that never appears. That is worth
     # saying out loud, because nothing else in the app would ever mention it.
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     server_loader = (manifest.get("loader") or "").lower()
     mc_version = manifest.get("minecraft") or ""
     misfits = [
@@ -925,7 +909,7 @@ async def suggest_compatible_versions(
     Only identified mods can be resolved automatically -- for the rest we say
     so plainly rather than guessing at a project from a filename.
     """
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     mc = manifest.get("minecraft") or ""
     loader = manifest.get("loader") or ""
     records = {
@@ -1257,13 +1241,13 @@ async def crash_review(server_id: str) -> dict:
     """
     context = await read_crash_context(server_id)
     try:
-        entries = await crafty.list_dir(server_id, "mods")
+        entries = await engine.list_dir(server_id, "mods")
         mod_files = [
             n for n, m in entries.items()
             if n != "root_path" and isinstance(m, dict) and not m.get("dir")
             and n.lower().endswith((".jar", ".jar.disabled"))
         ]
-    except crafty.CraftyError:
+    except engine.EngineError:
         mod_files = []
 
     combined = "\n".join(t for t in (context["crash_text"], context["log_text"]) if t)

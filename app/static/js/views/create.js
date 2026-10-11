@@ -41,8 +41,8 @@ export async function render() {
   } catch (e) {
     mount(node, bannerIfUnhealthy() || null,
       empty('chargey-failed.png', 'Could not read the loader catalogue',
-        e.message + ' — Crafty\'s jar index and the loaders\' own sites were '
-        + 'both unreachable. Check this container\'s route to the internet.',
+        e.message + ' — the loaders\' own sites were unreachable. Check '
+        + 'this container\'s route to the internet.',
         h('button.btn.primary', { onclick: () => render().then((v) =>
           mount(document.querySelector('#main'), v.node)) },
           hl(), h('span', 'Try again'))));
@@ -50,7 +50,7 @@ export async function render() {
   }
   if (!catalogue.length) {
     mount(node, empty('chargey-failed.png', 'No loaders are available',
-      'Neither Crafty\'s jar index nor any upstream project answered.'));
+      'None of the loaders\' own projects answered.'));
     return { node };
   }
 
@@ -116,7 +116,7 @@ export async function render() {
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
       errors.port = 'A port between 1024 and 65535.';
     } else if (usedPorts.has(port)) {
-      errors.port = 'Another server on this Crafty already uses that port.';
+      errors.port = 'Another server already uses that port.';
     }
     return Object.keys(errors).length === 0;
   }
@@ -268,7 +268,7 @@ export async function render() {
                   oninput: (e) => { form.name = e.target.value; },
                   onblur: () => { if (form.name.trim()) { delete errors.name; paint(); } },
                 }),
-                'What it is called in Crafty and here.', errors.name),
+                'What it is called here and in the fleet.', errors.name),
 
               h('div.grid.g2',
                 field('Minecraft version *',
@@ -282,12 +282,9 @@ export async function render() {
                     },
                   }, ...c.versions.map((v) => h('option', {
                     value: v, selected: v === form.minecraft,
-                  }, v,
-                    c.crafty_versions.includes(v) ? '' : '  (fetched upstream)'))),
-                  c.crafty_versions.includes(form.minecraft)
-                    ? 'Crafty has this build cached.'
-                    : 'Crafty\'s index does not have this one — it will be '
-                      + 'fetched from the project itself.',
+                  }, v))),
+                  'Fetched straight from the loader\'s own project when the '
+                    + 'server is created.',
                   errors.minecraft),
 
                 field('Port *',
@@ -385,7 +382,7 @@ export async function render() {
               heapSlider.node,
               h('div.sldr-help', totalRam
                 ? `This box reports ${totalRam} GB, so the gate sits at `
-                  + `${heapCeiling} GB — total, less what the OS, Crafty and `
+                  + `${heapCeiling} GB — total, less what the OS, the node and `
                   + 'everything else need. Tuning re-checks it at creation.'
                 : 'This host\'s memory could not be read from here, so there '
                   + 'is no real gate to draw. Tuning sizes the heap properly '
@@ -397,7 +394,7 @@ export async function render() {
               }, hl(), icon('plus', 15),
                 h('span', submitting ? 'Creating…' : 'Create the server')),
               !state.health?.ready
-                ? h('div.note.bad', 'Not connected to Crafty.')
+                ? h('div.note.bad', 'No node is answering.')
                 : null,
             )),
           h('div.torii', { style: { marginTop: '14px' } }, toriiSvg()),

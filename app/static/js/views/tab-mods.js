@@ -8,8 +8,8 @@
    is checked against what Paper can actually load.
 
    Disabling renames a jar to `.jar.disabled`, which every loader
-   ignores — the same convention Crafty and the CurseForge app
-   use. Nothing here deletes without being asked twice.
+   ignores — the same convention the CurseForge app and every
+   server panel use. Nothing here deletes without being asked twice.
    ============================================================ */
 
 import {
@@ -265,7 +265,8 @@ export async function render(ctx) {
             title: `What ${title} is, from its ${SOURCE_LABEL[m.source] || 'catalogue'} page`,
           }, title)
           : title),
-        h('div.fn', m.file, m.size ? ` · ${m.size}` : ''),
+        h('div.fn', m.file, m.size
+          ? ` · ${typeof m.size === 'number' ? bytes(m.size) : m.size}` : ''),
         h('div.tags',
           // The side tag leads, because it is the question this tab exists
           // to answer and every other chip is metadata by comparison.

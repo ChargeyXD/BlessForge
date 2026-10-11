@@ -1,4 +1,4 @@
-"""The install engine: modpack -> live Crafty instance.
+"""The install pipeline: modpack -> a server that starts.
 
 A pack reaches this module from one of two places, and everything after step
 1 is identical for both:
@@ -12,15 +12,15 @@ Flow, whichever archive shape we get:
 
   1. Fetch and analyse the pack archive (server pack preferred, client
      manifest as fallback) to learn loader + Minecraft version.
-  2. Create the Crafty instance with the matching loader from Crafty's own
-     jar catalog, so Crafty produces a correct execution command. Getting
-     the Forge/NeoForge launch arguments right by hand is the single most
-     error-prone part of a modded server, so we let Crafty own it.
-  3. Wait for that loader install to finish on disk.
-  4. Lay the pack's files over the top in bounded-size batches (zip ->
-     upload -> ask Crafty to unzip), so memory stays flat regardless of
-     pack size.
-  5. Record exactly what was installed in .modpack-studio.json for later
+  2. Create the server and install the loader the pack names -- the exact
+     build when its project still publishes it -- through the ladder in
+     app/provision.py, which also reads the Forge/NeoForge launch arguments
+     back out of what the installer wrote. Those arguments are the single
+     most error-prone part of a modded server, so they are read, not typed.
+  3. Lay the pack's files over the top in bounded-size batches (zip ->
+     upload -> the node extracts), so memory stays flat regardless of pack
+     size.
+  4. Record exactly what was installed in .blessforge.json for later
      version switching, update checks and diagnostics.
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ from typing import Any
 
 import httpx
 
-from app import (blocked, cache, config, crafty, curseforge, jarmeta, modrinth,
+from app import (blocked, cache, config, engine, curseforge, jarmeta, modrinth,
                  optimizer, packs, properties, provision, uploads)
 from app import preflight as preflight_mod
 from app import specs
@@ -51,7 +51,7 @@ from app.packs import PackPlan
 # machine's RAM, because every file in a batch was held as `bytes` and then
 # copied twice more (into a BytesIO zip, then out of it). Now that batches
 # are built on disk and streamed, this only bounds how much scratch space one
-# batch occupies and how often we round-trip to Crafty -- so it can be
+# batch occupies and how often we round-trip to the node -- so it can be
 # smaller, which also makes progress smoother.
 BATCH_BYTES = 64 * 1024 * 1024
 BATCH_FILES = 400
@@ -204,7 +204,7 @@ async def preflight(
         "minecraft": plan.mc_version,
         "loader": plan.loader,
         "loader_version": plan.loader_version,
-        "crafty_loader": plan.crafty_loader,
+        "server_loader": plan.server_loader,
         "recommended_ram_mb": plan.recommended_ram,
         "java_version": plan.java_version,
         "memory": memory,
@@ -352,7 +352,8 @@ async def _download_manifest_mods(
     exported, nothing on the Mods tab explained where a mod had gone, and
     re-enabling one meant finding and downloading it by hand. A jar written
     as `<name>.jar.disabled` is inert to every loader -- the same convention
-    Crafty and the CurseForge app use -- so the server still boots clean, but
+    the CurseForge app and every server panel use -- so the server still
+    boots clean, but
     the mod is present, labelled, and one click from coming back.
     """
     entries = plan.manifest_files
@@ -605,7 +606,7 @@ async def _push_batches(
     Both halves used to happen in memory: the batch was assembled in a
     `BytesIO` and then `getvalue()` copied the lot again, so a 120 MB batch
     briefly cost 240 MB *on top of* the source bytes it was built from. The
-    archive is now written to a scratch file and streamed to Crafty from
+    archive is now written to a scratch file and streamed to the node from
     there, so a batch of any size costs one 8 MB upload chunk.
     """
     batches = _batch(items)
@@ -628,7 +629,7 @@ async def _push_batches(
             pct = start_pct + (end_pct - start_pct) * ((i - 1) / len(batches))
             job.set_step(f"{label} ({i}/{len(batches)}, {size_mb:.0f} MB)", pct)
 
-            await crafty.upload_path(server_id, ".", zip_name, local)
+            await engine.upload_path(server_id, ".", zip_name, local)
         finally:
             # The scratch copy has served its purpose the moment it is sent;
             # leaving it would double the disk cost of every install.
@@ -637,32 +638,25 @@ async def _push_batches(
             except OSError:
                 pass
 
-        await crafty.unzip(server_id, zip_name)
-
-        # Unzip runs on a background thread: wait for a member to appear.
-        probe = batch[0].target
-        if not await crafty.wait_for_path(server_id, probe, timeout=600):
-            job.log_line(
-                f"Timed out waiting for {probe} to appear after extraction", "warn"
-            )
-        # Give the extractor a moment to drain the rest of the archive.
-        await asyncio.sleep(2)
+        # Extraction is finished when this returns, so the archive can go
+        # straight away -- there is no background unzip to wait out.
+        await engine.extract(server_id, zip_name)
         try:
-            await crafty.delete_paths(server_id, [zip_name])
+            await engine.delete_paths(server_id, [zip_name])
         except Exception:
             job.log_line(f"Could not remove temp archive {zip_name}", "warn")
 
 
-# The loader ladder -- "Crafty said 201" is not the same as "this instance can
-# start" -- lives in app/provision.py, because a blank instance needs exactly
-# the same recovery and a second copy of it would drift. These are the thin
-# adapters that turn a PackPlan into the arguments it wants.
+# The loader ladder -- "the server exists" is not the same as "this server
+# can start" -- lives in app/provision.py, because a blank server needs
+# exactly the same steps and a second copy of them would drift. This is the
+# thin adapter that turns a PackPlan into the arguments it wants.
 
 
 async def _wait_for_loader(job: Job, server_id: str, plan: PackPlan) -> dict:
     return await provision.ensure_loader(
-        job, server_id, family=plan.loader or plan.crafty_loader,
-        mc_version=plan.mc_version, crafty_loader=plan.crafty_loader,
+        job, server_id, family=plan.loader or plan.server_loader,
+        mc_version=plan.mc_version, loader_version=plan.loader_version or "",
     )
 
 
@@ -686,44 +680,43 @@ async def _apply_server_settings(
 ) -> None:
     """EULA, RAM, the port, and a few server.properties niceties."""
     try:
-        await crafty.write_file(server_id, "eula.txt", crafty.EULA_ACCEPTED)
+        await engine.write_file(server_id, "eula.txt", engine.EULA_ACCEPTED)
     except Exception:
         job.log_line("Could not write eula.txt", "warn")
 
-    # Crafty's crash watcher stats this directory when a server starts and
-    # raises if it is missing, so make sure both exist up front.
+    # Diagnose and the crash attribution look in both; a loader that has
+    # never started has created neither, so make sure they exist up front.
     for d in ("crash-reports", "logs"):
         try:
-            await crafty.ensure_dir(server_id, d)
+            await engine.ensure_dir(server_id, d)
         except Exception:
             pass
 
     # Forge/NeoForge read JVM args from user_jvm_args.txt.
     if plan.loader in ("forge", "neoforge"):
         args = (
-            f"# Generated by Crafty Modpack Studio\n"
+            f"# Generated by BlessForge\n"
             f"-Xms{max(1, mem_max_gb // 2)}G\n"
             f"-Xmx{mem_max_gb}G\n"
         )
         try:
-            await crafty.write_file(server_id, "user_jvm_args.txt", args)
+            await engine.write_file(server_id, "user_jvm_args.txt", args)
         except Exception:
             job.log_line("Could not write user_jvm_args.txt", "warn")
 
     # The port the user typed at the install step has to be written HERE,
-    # after the pack files have landed. Crafty is told the port at creation
-    # time and writes it into a fresh server.properties, but the pack's own
-    # overrides are laid over the top afterwards -- and a modpack that ships
-    # a server.properties (most of them do) puts 25565 straight back. That is
-    # why every instance ended up on 25565 no matter what was typed.
+    # after the pack files have landed. The pack's own overrides are laid over
+    # the folder, and a modpack that ships a server.properties (most of them
+    # do) puts 25565 straight back. That is why every server once ended up on
+    # 25565 no matter what was typed.
     #
-    # Written through properties.set_port so Crafty's record and
+    # Written through properties.set_port so the server record and
     # server.properties can never disagree; one is what Minecraft binds, the
-    # other is what Crafty polls for status.
+    # other is what the node publishes and polls for status.
     if port:
         try:
             result = await properties.set_port(server_id, port, force=True)
-            job.log_line(f"Port set to {port} in server.properties and Crafty")
+            job.log_line(f"Port set to {port} in server.properties and the server record")
             for w in result.get("warnings", []):
                 job.log_line(w, "warn")
         except Exception as e:
@@ -731,18 +724,9 @@ async def _apply_server_settings(
 
     if motd:
         try:
-            props = await crafty.read_file(server_id, "server.properties")
-            lines = []
-            seen = False
-            for line in props.splitlines():
-                if line.startswith("motd="):
-                    lines.append(f"motd={motd}")
-                    seen = True
-                else:
-                    lines.append(line)
-            if not seen:
-                lines.append(f"motd={motd}")
-            await crafty.write_file(server_id, "server.properties", "\n".join(lines) + "\n")
+            # Through properties.save, which starts from an empty file on a
+            # server that has never run -- Minecraft writes the rest itself.
+            await properties.save(server_id, {"motd": motd})
         except Exception:
             job.log_line("Could not update server.properties", "warn")
 
@@ -766,7 +750,7 @@ async def install_modpack(
     client_reasons: dict[str, list[str]] | None = None,
     optimize: bool = True,
 ) -> dict:
-    """Install a modpack into a new (or existing) Crafty instance.
+    """Install a modpack into a new (or existing) server.
 
     Takes either CurseForge ids or the id of an imported archive; the two
     differ only in where the zip comes from.
@@ -790,10 +774,10 @@ async def install_modpack(
             "Could not determine the Minecraft version for this pack. "
             "It may be an unusual archive layout."
         )
-    if not plan.crafty_loader:
+    if not plan.server_loader:
         raise RuntimeError(
-            f"Loader '{plan.loader or 'unknown'}' is not available in Crafty's "
-            "jar catalog. Fabric, Forge and NeoForge packs are supported."
+            f"Loader '{plan.loader or 'unknown'}' cannot be installed "
+            "automatically. Fabric, Forge and NeoForge packs are supported."
         )
     for w in plan.warnings:
         job.log_line(w, "warn")
@@ -805,23 +789,23 @@ async def install_modpack(
     ram_max = mem_max or ram_max
 
     # --- create the instance ------------------------------------------
+    installed_loader = ""
     if existing_server_id:
         server_id = existing_server_id
         job.set_instance(server_id, server_name)
         job.log_line(f"Installing into existing instance {server_id}")
     else:
         job.set_step(
-            f"Creating Crafty instance ({plan.crafty_loader} {plan.mc_version})", 55
+            f"Creating the server ({plan.server_loader} {plan.mc_version})", 55
         )
-        server_id = await crafty.create_server(
+        server_id = await engine.create_server(
             name=server_name,
-            loader_type=plan.crafty_loader,
-            mc_version=plan.mc_version,
-            mem_min=ram_min,
-            mem_max=ram_max,
             port=port,
+            memory_mb=specs.container_memory_mb(ram_max),
+            mc_version=plan.mc_version,
+            loader=plan.server_loader,
         )
-        job.log_line(f"Created instance {server_id}")
+        job.log_line(f"Created server {server_id}")
         job.set_instance(server_id, server_name)
         # Stamp the instance as soon as it exists, marked unfinished. If the
         # install dies after this point the instance is left behind on
@@ -829,7 +813,7 @@ async def install_modpack(
         # fleet list say "half-finished" rather than showing it as a healthy
         # server with no mods.
         try:
-            await crafty.write_studio_manifest(server_id, {
+            await engine.write_manifest(server_id, {
                 "schema": 1,
                 "complete": False,
                 "started_at": time.time(),
@@ -840,18 +824,21 @@ async def install_modpack(
         except Exception:
             pass
         job.emit("server_created", server_id, server_id=server_id)
-        await _wait_for_loader(job, server_id, plan)
+        loader = await _wait_for_loader(job, server_id, plan)
+        installed_loader = loader.get("loader_version") or ""
 
-    # Crafty installs the catalog's newest loader build for that Minecraft
-    # version, which may not be the exact build the pack was authored
-    # against. That is normally fine within a major line, but worth saying.
+    # The exact build the pack names is installed when its project still
+    # publishes it. When it does not, the newest build for that Minecraft
+    # version stands in -- normally fine within a line, and worth saying.
     installed_note = ""
-    if plan.loader_version:
+    if (plan.loader_version and not existing_server_id
+            and installed_loader and plan.loader_version not in (
+                installed_loader, f"{plan.mc_version}-{installed_loader}")):
         installed_note = (
-            f"Pack targets {plan.loader} {plan.loader_version}; Crafty installs "
-            f"its catalogue build for {plan.mc_version}."
+            f"Pack targets {plan.loader} {plan.loader_version}; that build is "
+            f"not published any more, so {installed_loader} was installed."
         )
-        job.log_line(installed_note)
+        job.log_line(installed_note, "warn")
 
     # --- gather the payload -------------------------------------------
     records: list[dict] = []
@@ -960,7 +947,7 @@ async def install_modpack(
     # Identify the overlay's jars now, while they are in a local archive.
     # Doing it here rather than leaving it to a later Identify pass means the
     # Mods list has real names and icons from the first time it is opened, and
-    # nothing has to be downloaded back out of Crafty to find that out.
+    # nothing has to be downloaded back off the node to find that out.
     await _identify_overlay(job, zf, records)
 
     total_mb = sum(e.size for e in payload) / 1048576
@@ -980,9 +967,9 @@ async def install_modpack(
 
     # Size the heap against the host, not just the pack's wishlist: a pack
     # asking for 8 GB on a box with 5 GB free dies at startup with no log.
-    # Set when the loader keeps its JVM args in Crafty's launch command
-    # rather than in a file; applied after the Java selection below, which
-    # rewrites that same command and would otherwise undo it.
+    # Set when the loader keeps its JVM args in the startup command rather
+    # than in a file; applied last, so nothing after it rewrites the command
+    # and undoes it.
     pending_heap: tuple | None = None
     if optimize:
         try:
@@ -994,11 +981,17 @@ async def install_modpack(
                 host=host,
             )
             heap = mem_max or memory["heap_gb"]
+            # The container has to hold the heap plus the JVM's own
+            # overhead, or the kernel kills it the first time it is busy.
+            # Until plans fix a server's size (WP-08), its size follows the
+            # heap rather than the other way round.
+            await engine.update_server(
+                server_id, {"memory_mb": specs.container_memory_mb(heap)})
             flags = [f["flag"] for f in specs.build_flag_plan(
                 heap_gb=heap, host=host, mc_version=plan.mc_version,
                 loader=plan.loader) if f["enabled"]]
             if plan.loader in ("forge", "neoforge"):
-                await crafty.write_file(
+                await engine.write_file(
                     server_id, "user_jvm_args.txt",
                     specs.render_jvm_args(flags, heap),
                 )
@@ -1009,7 +1002,7 @@ async def install_modpack(
                 )
             else:
                 # Fabric, vanilla, Paper: no user_jvm_args.txt exists, so the
-                # heap lives in Crafty's launch command. This used to be
+                # heap lives in the startup command. This used to be
                 # computed and then thrown away, leaving the instance on
                 # whatever the pack asked for -- a pack requesting 6 GB got
                 # 6 GB on a host with 11 GB total and Minecraft servers
@@ -1021,7 +1014,7 @@ async def install_modpack(
     # The host may default to a Java newer than the loader supports, which
     # kills the server at startup with no log at all. Pin it explicitly.
     try:
-        java = await crafty.set_java_version(server_id, plan.mc_version)
+        java = await engine.set_runtime(server_id, plan.mc_version)
         if plan.java_version and java.get("java_major") and (
             java["java_major"] != plan.java_version
         ):
@@ -1080,7 +1073,7 @@ async def install_modpack(
         "minecraft": plan.mc_version,
         "loader": plan.loader,
         "loader_version": plan.loader_version,
-        "crafty_loader": plan.crafty_loader,
+        "server_loader": plan.server_loader,
         # Kept so the Optimize tab can size the heap against what the pack
         # actually asked for, rather than guessing from the mod count.
         "recommended_ram_mb": plan.recommended_ram,
@@ -1094,7 +1087,7 @@ async def install_modpack(
         "blocked_by_author": blocked_by_author,
     }
     try:
-        await crafty.write_studio_manifest(server_id, manifest)
+        await engine.write_manifest(server_id, manifest)
     except Exception as e:
         job.log_line(f"Could not write install manifest: {e}", "warn")
 
@@ -1141,7 +1134,7 @@ async def _identify_overlay(job: Job, zf, records: list[dict]) -> None:
 
     A server pack lists no project ids, so without this every jar in it is
     "unidentified" until somebody presses Identify -- which then downloads all
-    of them back out of Crafty to learn what the archive already knew.
+    of them back off the node to learn what the archive already knew.
 
     Two bulk calls for the whole pack: CurseForge by its own fingerprint, then
     Modrinth by SHA-1 for whatever is left.
@@ -1243,8 +1236,8 @@ async def switch_pack_version(
     world intact.
     """
     job.set_step("Reading current install", 2)
-    current = await crafty.read_studio_manifest(server_id)
-    server = await crafty.get_server(server_id)
+    current = await engine.read_manifest(server_id)
+    server = await engine.get_server(server_id)
 
     job.log_line(
         f"Current: {(current.get('pack') or {}).get('name','unknown')} "
@@ -1254,15 +1247,15 @@ async def switch_pack_version(
     # Clear out the old mods so removed ones do not linger and crash startup.
     job.set_step("Removing previous mods", 8)
     try:
-        entries = await crafty.list_dir(server_id, "mods")
+        entries = await engine.list_dir(server_id, "mods")
         stale = [
             f"mods/{n}" for n, meta in entries.items()
             if n != "root_path" and isinstance(meta, dict) and not meta.get("dir")
         ]
         if stale:
-            await crafty.delete_paths(server_id, stale)
+            await engine.delete_paths(server_id, stale)
             job.log_line(f"Removed {len(stale)} old mod files")
-    except crafty.CraftyError:
+    except engine.EngineError:
         job.log_line("No existing mods directory", "warn")
 
     if not keep_world:

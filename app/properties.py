@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from app import crafty
+from app import config, engine
 
 PROPERTIES_FILE = "server.properties"
 
@@ -24,8 +24,8 @@ CATALOG: dict[str, tuple] = {
              "The line players see under the server name in their list.", None),
     "server-port": ("int", "25565", "Network",
                     "TCP port the server listens on. Changing it here alone is "
-                    "not enough -- use the Port control so Crafty's record and "
-                    "the firewall mapping stay in step.", None),
+                    "not enough -- use the Port control so the server record "
+                    "and the published port stay in step.", None),
     "server-ip": ("string", "", "Network",
                   "Bind address. Leave empty to listen on all interfaces.", None),
     "query.port": ("int", "25565", "Network",
@@ -177,7 +177,7 @@ GROUP_ORDER = ["Identity", "Network", "Performance", "Players", "World",
 # Changing these needs more than a file write, so the plain editor refuses
 # them and points at the dedicated control.
 GUARDED_KEYS = {
-    "server-port": "Use the Port control so Crafty's record stays in step.",
+    "server-port": "Use the Port control so the server record stays in step.",
 }
 
 
@@ -237,8 +237,8 @@ def coerce(key: str, value) -> str:
 async def load(server_id: str) -> dict:
     """Every property in the file, typed and described."""
     try:
-        raw = await crafty.read_file(server_id, PROPERTIES_FILE)
-    except crafty.CraftyError as e:
+        raw = await engine.read_file(server_id, PROPERTIES_FILE)
+    except engine.EngineError as e:
         raise RuntimeError(f"could not read {PROPERTIES_FILE}: {e}")
 
     values, _ = parse(raw)
@@ -285,15 +285,28 @@ async def load(server_id: str) -> dict:
             "groups": groups, "count": len(values)}
 
 
+async def _read_or_new(server_id: str) -> str:
+    """server.properties, or "" for a server that has never started.
+
+    Minecraft writes the file on its first start, so a freshly created
+    server has none. Starting from empty is right: render() appends the
+    keys being set, and Minecraft fills in every other default itself.
+    Anything other than "not there" is still an error.
+    """
+    try:
+        return await engine.read_file(server_id, PROPERTIES_FILE)
+    except engine.EngineError as e:
+        if e.status == 404:
+            return ""
+        raise RuntimeError(f"could not read {PROPERTIES_FILE}: {e}")
+
+
 async def save(server_id: str, updates: dict) -> dict:
     """Write a set of property changes back to the instance."""
     if not isinstance(updates, dict) or not updates:
         raise ValueError("no changes supplied")
 
-    try:
-        raw = await crafty.read_file(server_id, PROPERTIES_FILE)
-    except crafty.CraftyError as e:
-        raise RuntimeError(f"could not read {PROPERTIES_FILE}: {e}")
+    raw = await _read_or_new(server_id)
 
     clean: dict[str, str] = {}
     rejected: list[dict] = []
@@ -310,41 +323,41 @@ async def save(server_id: str, updates: dict) -> dict:
             rejected.append({"key": key, "why": str(e)})
 
     if clean:
-        await crafty.write_file(server_id, PROPERTIES_FILE, render(raw, clean))
+        await engine.write_file(server_id, PROPERTIES_FILE, render(raw, clean))
     return {"saved": clean, "rejected": rejected,
             "restart_required": bool(clean)}
 
 
 # --- port ---------------------------------------------------------------
 
-# Crafty's container publishes this range, so a port outside it is reachable
-# inside Docker but not from the LAN -- worth saying rather than letting
+# The game ports a node's edge forwards. A port outside the range binds on the
+# node but nobody outside can reach it -- worth saying rather than letting
 # someone wonder why nobody can connect.
-CRAFTY_PUBLISHED_RANGE = (25500, 25600)
+PUBLISHED_RANGE = config.GAME_PORT_RANGE
 
 
 async def port_status(server_id: str) -> dict:
-    """Current port, plus what else on this Crafty is already using one."""
-    server = await crafty.get_server(server_id)
+    """Current port, plus what else on this node is already using one."""
+    server = await engine.get_server(server_id)
     current = server.get("server_port")
 
     props_port = query_port = None
     try:
-        raw = await crafty.read_file(server_id, PROPERTIES_FILE)
+        raw = await engine.read_file(server_id, PROPERTIES_FILE)
         values, _ = parse(raw)
         props_port = values.get("server-port")
         query_port = values.get("query.port")
-    except crafty.CraftyError:
+    except engine.EngineError:
         pass
 
     taken = []
     try:
-        for other in await crafty.list_servers():
+        for other in await engine.list_servers():
             if other.get("server_id") == server_id:
                 continue
             taken.append({"name": other.get("server_name"),
                           "port": other.get("server_port")})
-    except crafty.CraftyError:
+    except engine.EngineError:
         pass
 
     mismatch = (
@@ -352,16 +365,16 @@ async def port_status(server_id: str) -> dict:
         and str(props_port) != str(current)
     )
     return {
-        "crafty_port": current,
+        "record_port": current,
         "properties_port": props_port,
         "query_port": query_port,
         "in_use_by_others": taken,
-        "published_range": list(CRAFTY_PUBLISHED_RANGE),
+        "published_range": list(PUBLISHED_RANGE),
         "mismatch": mismatch,
         "note": (
-            "Crafty's record and server.properties disagree. Crafty uses its "
-            "own value to monitor the server, while Minecraft binds the one in "
-            "server.properties -- saving a port here fixes both."
+            "The server record and server.properties disagree. The node "
+            "publishes and watches the record's port, while Minecraft binds "
+            "the one in server.properties -- saving a port here fixes both."
         ) if mismatch else None,
     }
 
@@ -370,10 +383,10 @@ async def set_port(server_id: str, port: int, *, update_query: bool = True,
                    force: bool = False) -> dict:
     """Change a server's port in both places that matter.
 
-    Crafty stores the port on its own record (used for status polling and the
-    console) while Minecraft binds whatever is in server.properties. Setting
-    only one leaves the server running but permanently shown as offline, so
-    both are written together.
+    The server record holds the port the node publishes and polls, while
+    Minecraft binds whatever is in server.properties. Setting only one leaves
+    the server running but unreachable or shown as offline, so both are
+    written together. The node applies a new port on the next start.
     """
     try:
         port = int(port)
@@ -384,7 +397,7 @@ async def set_port(server_id: str, port: int, *, update_query: bool = True,
 
     warnings: list[str] = []
     conflicts = []
-    for other in await crafty.list_servers():
+    for other in await engine.list_servers():
         if other.get("server_id") == server_id:
             continue
         if other.get("server_port") == port:
@@ -399,28 +412,28 @@ async def set_port(server_id: str, port: int, *, update_query: bool = True,
             f"Also assigned to {', '.join(conflicts)} -- only one can bind it."
         )
 
-    low, high = CRAFTY_PUBLISHED_RANGE
+    low, high = PUBLISHED_RANGE
     if not low <= port <= high:
         warnings.append(
-            f"Crafty's container publishes ports {low}-{high}. Port {port} will "
-            "work inside Docker but will not be reachable from your network "
-            "unless you add it to Crafty's own port mapping."
+            f"This node's edge forwards game ports {low}-{high}. Port {port} "
+            "will bind on the node but will not be reachable from outside "
+            "until it is forwarded too."
         )
 
-    # server.properties first: if this fails, leave Crafty's record alone so
-    # the two cannot end up disagreeing.
+    # server.properties first: if this fails, leave the record alone so the
+    # two cannot end up disagreeing.
     updates = {"server-port": str(port)}
     if update_query:
         updates["query.port"] = str(port)
-    raw = await crafty.read_file(server_id, PROPERTIES_FILE)
-    await crafty.write_file(server_id, PROPERTIES_FILE, render(raw, updates))
+    raw = await _read_or_new(server_id)
+    await engine.write_file(server_id, PROPERTIES_FILE, render(raw, updates))
 
-    await crafty.patch_server(server_id, {"server_port": port})
+    await engine.update_server(server_id, {"server_port": port})
 
     return {
         "port": port,
         "updated": ["server.properties"] + (["query.port"] if update_query else [])
-        + ["crafty record"],
+        + ["server record"],
         "warnings": warnings,
         "restart_required": True,
     }

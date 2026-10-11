@@ -79,7 +79,7 @@ AUTO_APPLY_ACTIONS = {"accept_eula", "set_java", "set_ram", "disable_mods"}
 # "major" actions change or remove content and need explicit confirmation.
 ACTION_SPEC: dict[str, dict] = {
     "accept_eula": {"major": False, "args": [],
-                    "desc": "Rewrite eula.txt in the exact form Crafty requires"},
+                    "desc": "Rewrite eula.txt to accept the Minecraft EULA"},
     "set_java": {"major": False, "args": ["minecraft"],
                  "desc": "Point the instance at the correct Java version"},
     "set_ram": {"major": False, "args": ["max_gb"],

@@ -1,12 +1,12 @@
 /* ============================================================
-   Fleet — every server Crafty knows about, at a glance.
+   Fleet — every server on every node, at a glance.
 
    The one word each card leads with is `state`, computed on the
    server so the rail, this grid and any activity chip can never
    disagree about what a server is doing. `orphan` is the one
-   worth naming: Crafty keeps a record for a server whose files
-   have gone and then fails every request about it forever, which
-   looks like a broken app unless it is said out loud.
+   worth naming: a record whose files have gone, or whose node
+   is not answering, fails every request about it, which looks
+   like a broken app unless it is said out loud.
    ============================================================ */
 
 import {
@@ -16,7 +16,7 @@ import {
 import { run } from '../jobs.js';
 import {
   state, refreshInstances, refreshGroups, go, topActions, bannerIfUnhealthy,
-  onState, groupOf, motif, lastRan,
+  onState, groupOf, motif, lastRan, engineLabel,
 } from '../app.js';
 
 const LOADER_ART = {
@@ -95,8 +95,12 @@ export async function render() {
       banner,
       h('div.sec-head.mon',
         h('div',
-          h('p.eyebrow', 'Crafty Controller · ',
-            h('b', state.health?.config?.crafty_url || 'not configured')),
+          h('p.eyebrow', `${engineLabel(state.health?.checks?.engine?.driver
+            || state.health?.config?.engine)} · `,
+            h('b', state.health?.checks?.engine?.ok
+              ? `${state.health.checks.engine.nodes} node`
+                + `${state.health.checks.engine.nodes === 1 ? '' : 's'}`
+              : 'not answering')),
           h('h2', 'The fleet')),
         h('div.grow'),
         segmented([
@@ -138,13 +142,13 @@ export async function render() {
       !all.length
         ? (state.health?.ready
           ? empty('fox-mascot.png', 'No servers yet',
-            'Crafty has no instances. Create an empty one with just a loader '
+            'There are no servers yet. Create an empty one with just a loader '
             + 'and a version, or install a modpack from the catalogue.',
             h('a.btn.primary', { href: '#/create' }, hl(), h('span', 'Create a server')),
             h('a.btn', { href: '#/discover' }, hl(), h('span', 'Browse modpacks')))
-          : empty('chargey-peek.png', 'Not connected to Crafty yet',
-            'Set CRAFTY_URL and CRAFTY_TOKEN, then reload. Settings lists '
-            + 'exactly what is missing.',
+          : empty('chargey-peek.png', 'No node is answering yet',
+            'BlessForge cannot reach the node that runs the servers. '
+            + 'Settings lists exactly what is missing.',
             h('a.btn.primary', { href: '#/settings' }, hl(), h('span', 'Settings'))))
         : shown.length
           ? h('div.grid.gauto.bleed.stagger', ...shown.map(card))
@@ -245,9 +249,9 @@ function card(s) {
 
     s.state === 'orphan'
       ? h('div.note.bad', { style: { fontSize: '12.5px' } },
-        'Crafty has a record for this server but cannot read its files. It '
-        + 'will keep failing until the directory is restored or the record '
-        + 'is deleted.')
+        'There is a record for this server, but its node cannot read its '
+        + 'files or is not answering. It will keep failing until the folder '
+        + 'is restored, the node comes back, or the record is deleted.')
       : h('div.gauges',
         gauge('CPU', s.cpu, `${(s.cpu ?? 0).toFixed?.(0) ?? 0}%`,
           s.cpu > 85 ? 'bad' : s.cpu > 60 ? 'warn' : ''),

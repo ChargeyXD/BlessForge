@@ -2927,7 +2927,7 @@ html.js-motion .vt-chochin{animation:sway 6.4s ease-in-out infinite}
 html.js-motion .vt-chochin .glow{animation:vtHalo 3.4s ease-in-out infinite}
 @keyframes vtHalo{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
 
-/* --- "running, but Crafty sent no figure" --------------------
+/* --- "running, but the node sent no figure" ------------------
    Distinct from a stopped server, which keeps its art and is
    paled by data-tone="off". Two different silences that must
    not look alike.

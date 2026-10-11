@@ -18,7 +18,7 @@ import httpx
 
 from app import config
 
-UA = "crafty-modpack-studio/1.0 (self-hosted; +https://github.com/)"
+UA = "BlessForge/2.2 (+https://github.com/ChargeyXD/BlessForge)"
 
 
 class ModrinthError(RuntimeError):

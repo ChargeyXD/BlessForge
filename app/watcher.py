@@ -16,7 +16,7 @@ import json
 import logging
 import time
 
-from app import config, crafty
+from app import config, engine
 
 log = logging.getLogger("blessforge.watcher")
 
@@ -45,7 +45,7 @@ async def check_all() -> dict:
 
     state = {"checked_at": time.time(), "servers": {}}
     try:
-        servers = await crafty.list_servers()
+        servers = await engine.list_servers()
     except Exception as e:
         log.warning("update sweep: cannot list servers: %s", e)
         return load()
@@ -86,7 +86,7 @@ async def run_forever() -> None:
     if hours <= 0:
         log.info("scheduled update checks are off (UPDATE_CHECK_HOURS=0)")
         return
-    # Not on boot: starting BlessForge should not fire a sweep at Crafty and
+    # Not on boot: starting BlessForge should not fire a sweep at the nodes and
     # both catalogues while the app is still coming up.
     await asyncio.sleep(300)
     while True:

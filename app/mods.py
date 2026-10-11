@@ -1,10 +1,10 @@
 """Per-instance mod management.
 
 Disabling a mod renames it to `<name>.jar.disabled`, which every loader
-ignores -- the same convention the Crafty and CurseForge UIs use, so a mod
-disabled here looks disabled everywhere else too.
+ignores -- the same convention the CurseForge app and every server panel
+use, so a mod disabled here looks disabled everywhere else too.
 
-Mods installed through this app are recorded in `.modpack-studio.json`,
+Mods installed through this app are recorded in `.blessforge.json`,
 which is what makes "check for updates" and "switch version" possible.
 Jars that predate the app (or came from a server pack) are identified on
 demand by hashing them: CurseForge murmur2 fingerprints first, then
@@ -17,16 +17,16 @@ import posixpath
 import re
 import time
 
-from app import blocked, config, crafty, curseforge, deps, jarmeta, modrinth, packs
+from app import blocked, config, engine, curseforge, deps, jarmeta, modrinth, packs
 from app.jobs import Job
 
 DISABLED_SUFFIX = ".disabled"
 
-# The directories an instance keeps loadable jars in. `directory` arrives on
-# the request body, and every path built from it is handed to Crafty to
+# The directories a server keeps loadable jars in. `directory` arrives on
+# the request body, and every path built from it is handed to the node to
 # rename, delete or download -- so it is checked here rather than trusted.
-# Crafty does reject a traversal, but it does it with a 500 and a traceback,
-# and "the component downstream happens to refuse" is not a guard.
+# The node refuses a traversal too, but "the component downstream happens to
+# refuse" is not a guard on its own.
 MOD_DIRS = {"mods", "plugins", "config", "kubejs", "datapacks", "shaderpacks"}
 
 
@@ -67,10 +67,10 @@ def _base_name(name: str) -> str:
 async def list_mods(server_id: str, directory: str = "mods") -> dict:
     """List every jar in an instance, enriched with whatever we know."""
     directory = guard_dir(directory)
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     try:
-        entries = await crafty.list_dir(server_id, directory)
-    except crafty.CraftyError:
+        entries = await engine.list_dir(server_id, directory)
+    except engine.EngineError:
         return {"directory": directory, "mods": [], "error": "no mods directory",
                 "blocked_by_author": manifest.get("blocked_by_author") or []}
 
@@ -155,8 +155,8 @@ async def set_enabled(server_id: str, filename: str, enabled: bool,
         return {"file": current, "enabled": enabled, "changed": False}
 
     try:
-        await crafty.rename_path(server_id, f"{directory}/{current}", new_name)
-    except crafty.CraftyError:
+        await engine.rename_path(server_id, f"{directory}/{current}", new_name)
+    except engine.EngineError:
         # Callers name a mod by its enabled filename, because that is what the
         # UI shows and what a finding's `files` list carries. If it is already
         # in the state being asked for, the file under that exact name does not
@@ -164,8 +164,8 @@ async def set_enabled(server_id: str, filename: str, enabled: bool,
         # nine errors the second time it ran. Asking what is actually on disk
         # turns that back into the no-op it is.
         try:
-            entries = await crafty.list_dir(server_id, directory)
-        except crafty.CraftyError:
+            entries = await engine.list_dir(server_id, directory)
+        except engine.EngineError:
             raise
         if new_name in entries and current not in entries:
             return {"file": new_name, "enabled": enabled, "changed": False,
@@ -173,7 +173,7 @@ async def set_enabled(server_id: str, filename: str, enabled: bool,
         if current not in entries:
             # Neither name is on disk, so this is not an already-done toggle
             # but a mod that is not there. Say so in those terms: the raw
-            # failure is a rename errno quoting Crafty's own filesystem path,
+            # failure is a rename errno quoting the node's own filesystem path,
             # which tells the user nothing and puts server-side paths in a
             # browser response.
             raise ValueError(
@@ -187,13 +187,13 @@ async def delete_mods(server_id: str, filenames: list[str],
     directory = guard_dir(directory)
     filenames = guard_names(filenames)
     paths = [f"{directory}/{f}" for f in filenames]
-    await crafty.delete_paths(server_id, paths)
+    await engine.delete_paths(server_id, paths)
     await _forget_mods(server_id, filenames)
     return {"deleted": filenames, "count": len(filenames)}
 
 
 async def _forget_mods(server_id: str, filenames: list[str]) -> None:
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     if not manifest.get("mods"):
         return
     drop = {_base_name(f) for f in filenames}
@@ -202,13 +202,13 @@ async def _forget_mods(server_id: str, filenames: list[str]) -> None:
         if posixpath.basename(r.get("file", "")) not in drop
     ]
     try:
-        await crafty.write_studio_manifest(server_id, manifest)
+        await engine.write_manifest(server_id, manifest)
     except Exception:
         pass
 
 
 async def _remember_mod(server_id: str, record: dict) -> None:
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     manifest.setdefault("mods", [])
     base = posixpath.basename(record.get("file", ""))
     manifest["mods"] = [
@@ -218,7 +218,7 @@ async def _remember_mod(server_id: str, record: dict) -> None:
     manifest["mods"].append(record)
     manifest.setdefault("schema", 1)
     try:
-        await crafty.write_studio_manifest(server_id, manifest)
+        await engine.write_manifest(server_id, manifest)
     except Exception:
         pass
 
@@ -245,7 +245,7 @@ async def add_mod(
         if curseforge.is_distribution_blocked(meta):
             # The author turned off third-party downloads. The same jar from
             # Modrinth is fine; fetching it from CurseForge anyway is not.
-            manifest = await crafty.read_studio_manifest(server_id)
+            manifest = await engine.read_manifest(server_id)
             found, _ = await blocked.substitutes(
                 [meta], {meta.get("mod_id"): project},
                 mc_version=manifest.get("minecraft") or "",
@@ -292,12 +292,12 @@ async def add_mod(
     # Replacing = version switch: drop the old jar first so both do not load.
     if replace_file:
         try:
-            await crafty.delete_paths(server_id, [f"{directory}/{replace_file}"])
-        except crafty.CraftyError:
+            await engine.delete_paths(server_id, [f"{directory}/{replace_file}"])
+        except engine.EngineError:
             pass
 
-    await crafty.ensure_dir(server_id, directory)
-    await crafty.upload_file(server_id, directory, filename, blob)
+    await engine.ensure_dir(server_id, directory)
+    await engine.upload_file(server_id, directory, filename, blob)
 
     record = {
         "file": f"{directory}/{filename}",
@@ -411,12 +411,12 @@ async def add_mod_with_dependencies(
         # Re-save the root's record now that the full list is known.
         root_file = installed[0].get("installed")
         if root_file:
-            manifest = await crafty.read_studio_manifest(server_id)
+            manifest = await engine.read_manifest(server_id)
             for rec in manifest.get("mods", []):
                 if posixpath.basename(rec.get("file", "")) == root_file:
                     rec["dependencies"] = sorted(set(dependency_files))
                     try:
-                        await crafty.write_studio_manifest(server_id, manifest)
+                        await engine.write_manifest(server_id, manifest)
                     except Exception:
                         pass
                     break
@@ -441,7 +441,7 @@ async def enrich_icons(server_id: str, directory: str = "mods") -> dict:
     identified. Results are written back into the instance manifest, making
     every later page load free.
     """
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     records = manifest.get("mods", [])
     need_cf = [r for r in records
                if r.get("source") == "curseforge" and r.get("project_id")
@@ -481,7 +481,7 @@ async def enrich_icons(server_id: str, directory: str = "mods") -> dict:
     if updated:
         manifest["mods"] = records
         try:
-            await crafty.write_studio_manifest(server_id, manifest)
+            await engine.write_manifest(server_id, manifest)
         except Exception:
             pass
     return {"updated": updated}
@@ -508,7 +508,7 @@ async def identify_mods(
 ) -> dict:
     """Hash unidentified jars and match them against CurseForge/Modrinth.
 
-    Each jar is pulled back out of Crafty, so this is deliberately an
+    Each jar is pulled back off the node, so this is deliberately an
     explicit action rather than something that runs on every page load.
     """
     listing = await list_mods(server_id, directory)
@@ -526,7 +526,7 @@ async def identify_mods(
         nonlocal done
         async with sem:
             try:
-                blobs[m["file"]] = await crafty.download_file(server_id, m["path"])
+                blobs[m["file"]] = await engine.download_file(server_id, m["path"])
             except Exception as e:
                 job.log_line(f"Could not read {m['file']}: {e}", "warn")
             finally:
@@ -599,7 +599,7 @@ async def identify_mods(
     cf_projects = await curseforge.get_mods(cf_ids) if cf_ids else {}
     mr_projects = await modrinth.get_projects(mr_ids) if mr_ids else {}
 
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     manifest.setdefault("mods", [])
     existing = {posixpath.basename(r.get("file", "")): r for r in manifest["mods"]}
 
@@ -640,7 +640,7 @@ async def identify_mods(
 
     manifest["mods"] = list(existing.values())
     try:
-        await crafty.write_studio_manifest(server_id, manifest)
+        await engine.write_manifest(server_id, manifest)
     except Exception as e:
         job.log_line(f"Could not save identification results: {e}", "warn")
 
@@ -658,7 +658,7 @@ async def identify_mods(
 
 async def check_updates(server_id: str, directory: str = "mods") -> dict:
     """For every identified mod, report whether a newer file exists."""
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     mc = manifest.get("minecraft")
     loader = manifest.get("loader")
     records = [r for r in manifest.get("mods", []) if r.get("project_id")]

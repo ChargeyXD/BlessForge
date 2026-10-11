@@ -10,7 +10,7 @@ from __future__ import annotations
 import posixpath
 import re
 
-from app import crafty
+from app import engine
 
 # Directories worth showing in the config editor.
 CONFIG_ROOTS = [
@@ -41,7 +41,7 @@ def is_editable(name: str) -> bool:
 
 
 def _size_to_bytes(size: str | None) -> int:
-    """Crafty reports human sizes like '4.7MB' -- turn that back into bytes."""
+    """Bytes from whatever a listing carries: an int, or a human '4.7MB'."""
     if not size:
         return 0
     m = re.match(r"([\d.]+)\s*([KMGT]?)B?", str(size).strip(), re.I)
@@ -72,7 +72,7 @@ async def list_configs(server_id: str, root: str | None = None) -> dict:
         if r.split("/")[0] in BLOCKED_DIRS:
             continue
         try:
-            entries = await crafty.walk(server_id, r, max_entries=4000)
+            entries = await engine.walk(server_id, r, max_entries=4000)
         except Exception:
             continue
         for entry in entries:
@@ -94,7 +94,7 @@ async def list_configs(server_id: str, root: str | None = None) -> dict:
 
     if not root:
         try:
-            entries = await crafty.list_dir(server_id, ".")
+            entries = await engine.list_dir(server_id, ".")
             for name, meta in entries.items():
                 if name in ROOT_FILES and isinstance(meta, dict) and not meta.get("dir"):
                     files.append({
@@ -128,7 +128,7 @@ async def list_configs(server_id: str, root: str | None = None) -> dict:
 
 async def read_config(server_id: str, path: str) -> dict:
     _guard(path)
-    content = await crafty.read_file(server_id, path)
+    content = await engine.read_file(server_id, path)
     return {
         "path": path,
         "content": content,
@@ -144,7 +144,7 @@ async def write_config(server_id: str, path: str, content: str) -> dict:
         raise ValueError(f"{path} is not an editable config file type")
     if len(content.encode()) > MAX_EDIT_BYTES:
         raise ValueError("file is too large to save through the editor")
-    await crafty.write_file(server_id, path, content)
+    await engine.write_file(server_id, path, content)
     return {"path": path, "saved": True, "bytes": len(content.encode())}
 
 
@@ -154,9 +154,9 @@ def _guard(path: str) -> None:
         raise ValueError("invalid path")
     # Segment-wise, and every all-dots segment is rejected -- not just "..".
     # "...." is not a traversal on any filesystem we target, but it sails past
-    # a ".." check and reaches Crafty, which answers a 500 with a traceback in
-    # it. A config path never has a dots-only segment, so refuse them here and
-    # keep the failure a 400 with a sentence in it.
+    # a ".." check and reaches the node, which would refuse it with a less
+    # useful message. A config path never has a dots-only segment, so refuse
+    # them here and keep the failure a 400 with a sentence in it.
     parts = clean.split("/")
     if any(p == "" or set(p) == {"."} for p in parts):
         raise ValueError("invalid path")

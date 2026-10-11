@@ -8,7 +8,7 @@ id, which is exactly what a CurseForge manifest is made of.
 
 Mods with no CurseForge id (Modrinth, or a jar somebody dropped in by hand)
 cannot go in `files`, so their jars travel inside `overrides/mods/` the way
-the CurseForge app itself does it. Those have to come back out of Crafty,
+the CurseForge app itself does it. Those have to come back off the node,
 which is the slow part, so it is optional and off by default.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import re
 import time
 import zipfile
 
-from app import crafty, curseforge, mods as modmgr
+from app import engine, curseforge, mods as modmgr
 from app.jobs import Job
 
 DISABLED_SUFFIX = ".disabled"
@@ -35,7 +35,7 @@ async def export_instance(job: Job, server_id: str, *,
                           bundle_others: bool = True) -> dict:
     """Build a CurseForge modpack zip from what is installed."""
     job.set_step("Reading the install manifest", 5)
-    manifest = await crafty.read_studio_manifest(server_id)
+    manifest = await engine.read_manifest(server_id)
     mc = manifest.get("minecraft") or ""
     loader = manifest.get("loader") or ""
     pack = manifest.get("pack") or {}
@@ -90,7 +90,7 @@ async def export_instance(job: Job, server_id: str, *,
         job.set_step(f"Fetching {len(others)} non-CurseForge jars", 40)
         for i, other in enumerate(others):
             try:
-                blob = await crafty.download_file(server_id, f"mods/{other['file']}")
+                blob = await engine.download_file(server_id, f"mods/{other['file']}")
                 bundled[other["file"]] = blob
             except Exception as e:
                 job.log_line(f"Could not fetch {other['file']}: {e}", "warn")

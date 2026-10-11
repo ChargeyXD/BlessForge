@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 
-from app import crafty, properties
+from app import engine, properties
 
 MOJANG_PROFILE = "https://api.mojang.com/users/profiles/minecraft/{name}"
 SESSION_PROFILE = ("https://sessionserver.mojang.com/session/minecraft/"
@@ -143,8 +143,8 @@ async def resolve_profile(name: str, *, online_mode: bool = True) -> dict:
 
 async def _read_json_list(server_id: str, path: str) -> list[dict]:
     try:
-        raw = await crafty.read_file(server_id, path)
-    except crafty.CraftyError:
+        raw = await engine.read_file(server_id, path)
+    except engine.EngineError:
         return []
     try:
         data = json.loads(raw or "[]")
@@ -156,15 +156,15 @@ async def _read_json_list(server_id: str, path: str) -> list[dict]:
 async def _write_json_list(server_id: str, path: str, items: list) -> None:
     payload = json.dumps(items, indent=2)
     try:
-        await crafty.write_file(server_id, path, payload)
-    except crafty.CraftyError:
-        await crafty.create_entry(server_id, ".", path, directory=False)
-        await crafty.write_file(server_id, path, payload)
+        await engine.write_file(server_id, path, payload)
+    except engine.EngineError:
+        await engine.create_entry(server_id, ".", path, directory=False)
+        await engine.write_file(server_id, path, payload)
 
 
 async def _read_notes(server_id: str) -> dict:
     try:
-        raw = await crafty.read_file(server_id, NOTES_FILE)
+        raw = await engine.read_file(server_id, NOTES_FILE)
         data = json.loads(raw or "{}")
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -173,15 +173,15 @@ async def _read_notes(server_id: str) -> dict:
 
 async def _write_notes(server_id: str, data: dict) -> None:
     try:
-        await crafty.write_file(server_id, NOTES_FILE,
+        await engine.write_file(server_id, NOTES_FILE,
                                 json.dumps(data, indent=2))
-    except crafty.CraftyError:
+    except engine.EngineError:
         try:
-            await crafty.create_entry(server_id, ".", NOTES_FILE,
+            await engine.create_entry(server_id, ".", NOTES_FILE,
                                       directory=False)
-            await crafty.write_file(server_id, NOTES_FILE,
+            await engine.write_file(server_id, NOTES_FILE,
                                     json.dumps(data, indent=2))
-        except crafty.CraftyError:
+        except engine.EngineError:
             pass
 
 
@@ -195,7 +195,7 @@ async def online_players(server_id: str, *, running: bool | None = None
                          ) -> dict:
     """Who is on the server right now.
 
-    Crafty's own stats carry the count, and on most versions the names too.
+    The node's stats carry the count, and on most versions the names too.
     When they do not, the server's `list` output is the only source -- so it
     is parsed out of the console tail rather than sending a command and
     hoping (which would print `list` into everyone's chat log every refresh).
@@ -203,7 +203,7 @@ async def online_players(server_id: str, *, running: bool | None = None
     names: list[str] = []
     count = maximum = None
     try:
-        stats = await crafty.get_stats(server_id)
+        stats = await engine.get_stats(server_id)
         if running is None:
             running = bool(stats.get("running"))
         count = stats.get("online")
@@ -226,7 +226,7 @@ async def online_players(server_id: str, *, running: bool | None = None
 
     if running and not names and (count or 0) > 0:
         try:
-            lines = await crafty.console_lines(server_id)
+            lines = await engine.console_lines(server_id)
             for line in reversed(lines[-400:]):
                 m = _LIST_LINE.search(line)
                 if not m:
@@ -366,7 +366,7 @@ def avatar_url(uuid_: str, name: str) -> str:
 
 async def _safe_properties(server_id: str) -> dict:
     try:
-        raw = await crafty.read_file(server_id, "server.properties")
+        raw = await engine.read_file(server_id, "server.properties")
         values, _ = properties.parse(raw)
         return values
     except Exception:
@@ -378,13 +378,13 @@ async def _safe_properties(server_id: str) -> dict:
 
 async def _is_running(server_id: str) -> bool:
     try:
-        return bool((await crafty.get_stats(server_id)).get("running"))
+        return bool((await engine.get_stats(server_id)).get("running"))
     except Exception:
         return False
 
 
 async def _command(server_id: str, line: str) -> None:
-    await crafty.send_command(server_id, line)
+    await engine.send_command(server_id, line)
 
 
 def _result(action: str, target: str, live: bool, extra: str = "") -> dict:
