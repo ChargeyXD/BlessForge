@@ -21,21 +21,30 @@ A decision is **global by default** -- the reason a mod is fine is a property
 of the mod, not of the server it happens to be on -- but can be scoped to one
 instance when it genuinely is situational.
 
-Stored as one JSON file under DATA_DIR/state: small, hand-editable, and
-obvious when someone wonders why a mod stopped being flagged. The v1 format (a flat
-`items` map of stem -> entry) is read and migrated in place, so nobody loses
-a list they already built.
+Stored in the database (`mod_decisions`) and held in memory, because the
+client-only scorer asks about every jar of a pack synchronously and a
+database round trip per jar would be the slowest part of a review. `load()`
+fills the memory at start; every change is written back before it returns.
+The list used to be a JSON file; app/db/importer.py carries an existing one
+across (both of its historical formats) on the first start.
 """
 from __future__ import annotations
 
-import json
+import asyncio
+import logging
 import re
 import time
 from typing import Any, Iterable
 
-from app import config
+from sqlalchemy import delete, select
 
-_PATH = config.state_path("client-only-whitelist.json")
+from app import db
+from app.db.models import ModDecision
+
+log = logging.getLogger(__name__)
+
+# The file this list lived in before 2.2. app/db/importer.py reads it once.
+LEGACY_FILE = "client-only-whitelist.json"
 
 ALLOW, BLOCK = "allow", "block"
 GLOBAL = "global"
@@ -79,22 +88,29 @@ def _blank() -> dict[str, Any]:
 _cache: dict[str, Any] | None = None
 
 
-def load() -> dict[str, Any]:
-    """The list, read once and then held.
-
-    Held in memory as well as on disk so a decision still applies for this run
-    when the data directory turns out not to be writable -- a real state on
-    this app (see the /data trap) that must not silently discard what the
-    operator just chose.
-    """
+def _data() -> dict[str, Any]:
+    """The list in memory. Empty until `load()` has read the database."""
     global _cache
-    if _cache is not None:
-        return _cache
+    if _cache is None:
+        _cache = _blank()
+    return _cache
+
+
+_FIELDS = ("key", "verdict", "scope", "name", "example_file", "mod_id",
+           "project_id", "source", "reason", "evidence", "added_at")
+
+
+async def load() -> dict[str, Any]:
+    """Read every decision from the database into memory."""
+    global _cache
     try:
-        data = json.loads(_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = None
-    _cache = _migrate(data)
+        async with db.session() as s:
+            rows = (await s.execute(select(ModDecision))).scalars().all()
+        _cache = {"schema": 2, "entries": [
+            {f: getattr(r, f) for f in _FIELDS} for r in rows]}
+    except Exception as e:      # noqa: BLE001 -- the review works without it
+        log.warning("could not read mod decisions: %s", e)
+        _cache = _blank()
     return _cache
 
 
@@ -123,21 +139,47 @@ def _migrate(data: Any) -> dict[str, Any]:
     return {"schema": 2, "entries": entries, "migrated_from": 1}
 
 
-def _save(data: dict) -> bool:
-    """True if it reached disk. The caller decides whether to say so."""
+_save_lock = asyncio.Lock()
+
+
+async def _save(data: dict) -> bool:
+    """True if it reached the database. The caller decides whether to say so.
+
+    The list is rewritten in one transaction -- it is a few hundred rows at
+    most -- so a half-saved list cannot exist.
+    """
     global _cache
     _cache = data
-    # Durable, not merely "written". A direct write_text over the live file
-    # leaves a truncated file if the process dies mid-write, and these are
-    # somebody's client-only decisions. See config.write_state.
-    return config.write_state(_PATH, json.dumps(data, indent=1, sort_keys=True))
+    async with _save_lock:
+        try:
+            async with db.session() as s:
+                await s.execute(delete(ModDecision))
+                for e in data["entries"]:
+                    s.add(ModDecision(**{
+                        "key": e.get("key") or "",
+                        "verdict": e.get("verdict") or ALLOW,
+                        "scope": e.get("scope") or GLOBAL,
+                        "name": str(e.get("name") or "")[:200],
+                        "example_file": str(e.get("example_file") or "")[:255],
+                        "mod_id": e.get("mod_id"),
+                        "project_id": (str(e["project_id"])
+                                       if e.get("project_id") else None),
+                        "source": e.get("source"),
+                        "reason": e.get("reason") or "",
+                        "evidence": list(e.get("evidence") or []),
+                        "added_at": float(e.get("added_at") or time.time()),
+                    }))
+            return True
+        except Exception as e:      # noqa: BLE001 -- reported as persisted: false
+            log.warning("could not save mod decisions: %s", e)
+            return False
 
 
 def items(*, server_id: str | None = None, verdict: str | None = None
           ) -> list[dict]:
     """Everything on the list, newest first, optionally scoped."""
     out = []
-    for e in load()["entries"]:
+    for e in _data()["entries"]:
         if verdict and e.get("verdict") != verdict:
             continue
         if server_id and e.get("scope") not in (GLOBAL, server_id):
@@ -169,7 +211,7 @@ def decide(file_name: str, *, mod_id: str | None = None,
     """
     key = stem_key(file_name)
     candidates = [
-        e for e in load()["entries"]
+        e for e in _data()["entries"]
         if e.get("scope") in (GLOBAL, server_id)
         and _matches(e, key=key, mod_id=mod_id, project_id=project_id)
     ]
@@ -200,12 +242,12 @@ def blocks(file_name: str, *, mod_id: str | None = None,
 
 def allowed_set() -> set[str]:
     """Every globally-allowed stem, for callers checking a whole pack."""
-    return {e["key"] for e in load()["entries"]
+    return {e["key"] for e in _data()["entries"]
             if e.get("verdict") == ALLOW and e.get("scope") == GLOBAL
             and e.get("key")}
 
 
-def add(file_name: str, *, name: str = "", reason: str = "",
+async def add(file_name: str, *, name: str = "", reason: str = "",
         verdict: str = ALLOW, scope: str = GLOBAL, mod_id: str | None = None,
         project_id: str | None = None, source: str | None = None,
         evidence: Iterable[str] | None = None) -> dict:
@@ -215,7 +257,7 @@ def add(file_name: str, *, name: str = "", reason: str = "",
     if not (file_name or mod_id or project_id):
         raise ValueError("a file name, mod id or project id is required")
 
-    data = load()
+    data = _data()
     key = stem_key(file_name) if file_name else ""
     entry = {
         "key": key,
@@ -239,12 +281,12 @@ def add(file_name: str, *, name: str = "", reason: str = "",
                 and _matches(e, key=key, mod_id=mod_id, project_id=project_id))
     ]
     data["entries"].append(entry)
-    entry["persisted"] = _save(data)
+    entry["persisted"] = await _save(data)
     return entry
 
 
-def remove(key_or_file: str, *, scope: str | None = None) -> bool:
-    data = load()
+async def remove(key_or_file: str, *, scope: str | None = None) -> bool:
+    data = _data()
     key = stem_key(key_or_file)
     before = len(data["entries"])
     data["entries"] = [
@@ -258,36 +300,36 @@ def remove(key_or_file: str, *, scope: str | None = None) -> bool:
     ]
     if len(data["entries"]) == before:
         return False
-    _save(data)
+    await _save(data)
     return True
 
 
-def clear(*, scope: str | None = None) -> int:
-    data = load()
+async def clear(*, scope: str | None = None) -> int:
+    data = _data()
     before = len(data["entries"])
     if scope:
         data["entries"] = [e for e in data["entries"]
                            if e.get("scope") != scope]
     else:
         data["entries"] = []
-    _save(data)
+    await _save(data)
     return before - len(data["entries"])
 
 
 def export() -> dict:
     """The whole list, for backing up or moving between installs."""
     return {"schema": 2, "exported_at": time.time(),
-            "entries": load()["entries"]}
+            "entries": _data()["entries"]}
 
 
-def import_entries(payload: dict, *, replace: bool = False) -> dict:
+async def import_entries(payload: dict, *, replace: bool = False) -> dict:
     """Merge a previously exported list back in."""
     incoming = payload.get("entries")
     if not isinstance(incoming, list):
         # Tolerate a v1 export.
         migrated = _migrate(payload)
         incoming = migrated["entries"]
-    data = _blank() if replace else load()
+    data = _blank() if replace else _data()
     existing = data["entries"] if not replace else []
     added = 0
     for raw in incoming:
@@ -316,10 +358,11 @@ def import_entries(payload: dict, *, replace: bool = False) -> dict:
         existing.append(entry)
         added += 1
     data["entries"] = existing
-    persisted = _save(data)
+    persisted = await _save(data)
     return {"imported": added, "total": len(existing), "persisted": persisted}
 
 
 def _reset_for_tests() -> None:
+    """Forget the in-memory list (what a fresh process would see before load)."""
     global _cache
     _cache = None

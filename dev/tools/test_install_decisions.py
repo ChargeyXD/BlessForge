@@ -29,6 +29,8 @@ import zipfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+import _dbtest  # noqa: E402,F401 -- a temp STATE_DIR and database
+
 from app import (clientscan, engine, installer, optimizer, packs,  # noqa: E402
                  preflight, properties, whitelist)
 from app.engine.mock import MockEngine  # noqa: E402
@@ -326,19 +328,24 @@ async def main():
           balanced["verdict"] == "server", balanced["verdict"])
 
     # --- the operator's own decisions -----------------------------------------
+    await _dbtest.fresh()
     whitelist._reset_for_tests()
-    whitelist.add("figura-0.1.4.jar", name="Figura", verdict="allow")
+    await whitelist.add("figura-0.1.4.jar", name="Figura", verdict="allow")
     allowed = [scored("figura-0.1.5.jar", "Figura", "figura", "client")]
     clientscan.apply_overrides(allowed)
     check("an allow survives a version bump (the stem is what matches)",
           allowed[0]["verdict"] == "server", allowed[0]["verdict"])
 
     whitelist._reset_for_tests()
-    whitelist.add("somemod-1.0.jar", name="Some mod", verdict="block")
+    await whitelist.add("somemod-1.0.jar", name="Some mod", verdict="block")
     blocked = [scored("somemod-2.0.jar", "Some mod", "somemod", "server", (), -50)]
     clientscan.apply_overrides(blocked)
     check("a block overrides a clean score",
           blocked[0]["verdict"] == "client", blocked[0]["verdict"])
+    whitelist._reset_for_tests()
+    await whitelist.load()
+    check("a decision survives a restart (it is in the database)",
+          whitelist.blocks("somemod-3.0.jar"))
     whitelist._reset_for_tests()
 
     passed = sum(results)

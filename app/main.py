@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import json
+import logging
 import re
 import shutil
 import time
@@ -24,6 +25,7 @@ from app import (
     clientscan,
     config,
     configs,
+    db,
     engine,
     curseforge,
     deps,
@@ -49,11 +51,26 @@ from app import (
     watcher,
     whitelist,
 )
+from app.db import importer
 from app.jobs import registry
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """Own the background update sweep for the life of the process."""
+    """Bring the database up, then own the update sweep for the process.
+
+    Order matters: migrations first, then the one-time import of an older
+    install's JSON state, then the first-run admin (which must not be made
+    if the import is about to bring the real accounts across), then the
+    in-memory views of racks and mod decisions.
+    """
+    await db.init()
+    try:
+        await importer.run()
+    except Exception as e:      # noqa: BLE001 -- logged; the app still starts
+        logging.getLogger(__name__).error("the JSON import failed: %s", e)
+    await auth.bootstrap()
+    await fleetgroups.load()
+    await whitelist.load()
     task = asyncio.create_task(watcher.run_forever())
     try:
         yield
@@ -63,6 +80,7 @@ async def _lifespan(_app: FastAPI):
             await task
         except (asyncio.CancelledError, Exception):
             pass
+        await db.dispose()
 
 
 app = FastAPI(title="BlessForge", version="2.1.0", lifespan=_lifespan)
@@ -193,11 +211,13 @@ async def health(fresh: bool = False) -> dict:
             return _health_cache[1]
 
         state = config.configured()
-        engine_check, cf_check, mr_check = await asyncio.gather(
+        engine_check, cf_check, mr_check, db_check = await asyncio.gather(
             _check_engine(state), _check_curseforge(state), _check_modrinth(state),
+            db.ping(),
         )
         checks: dict[str, Any] = {
             "engine": engine_check,
+            "database": db_check,
             "curseforge": cf_check,
             "modrinth": mr_check,
             # A /data the app cannot write is invisible until the first install
@@ -1723,7 +1743,7 @@ async def fleet_groups() -> dict:
 @app.post("/api/fleet/groups")
 async def fleet_group_save(body: dict = Body(...)) -> dict:
     try:
-        return fleetgroups.save_group(
+        return await fleetgroups.save_group(
             body.get("id"), body.get("name") or "", body.get("motif"),
             await _known_ids())
     except ValueError as e:
@@ -1732,7 +1752,7 @@ async def fleet_group_save(body: dict = Body(...)) -> dict:
 
 @app.delete("/api/fleet/groups/{group_id}")
 async def fleet_group_delete(group_id: str) -> dict:
-    return fleetgroups.delete_group(group_id, await _known_ids())
+    return await fleetgroups.delete_group(group_id, await _known_ids())
 
 
 @app.post("/api/fleet/groups/plan")
@@ -1740,7 +1760,7 @@ async def fleet_group_plan(body: dict = Body(...)) -> dict:
     groups = body.get("groups")
     if not isinstance(groups, list):
         raise HTTPException(status_code=400, detail="groups must be a list")
-    return fleetgroups.plan(groups, await _known_ids())
+    return await fleetgroups.plan(groups, await _known_ids())
 
 
 @app.post("/api/fleet/assign")
@@ -1749,7 +1769,7 @@ async def fleet_assign(body: dict = Body(...)) -> dict:
     if not isinstance(ids, list):
         raise HTTPException(status_code=400, detail="server_ids must be a list")
     try:
-        return fleetgroups.assign([str(i) for i in ids],
+        return await fleetgroups.assign([str(i) for i in ids],
                                   body.get("group_id") or None,
                                   await _known_ids())
     except ValueError as e:
@@ -1767,7 +1787,7 @@ async def fleet_seen(body: dict = Body(...)) -> dict:
     items = body.get("items")
     if not isinstance(items, list):
         raise HTTPException(status_code=400, detail="items must be a list")
-    return fleetgroups.observe(items, bool(body.get("full")))
+    return await fleetgroups.observe(items, bool(body.get("full")))
 
 
 # --- the AI, as a quiet assistant to the tuner --------------------------
@@ -2199,7 +2219,7 @@ async def whitelist_add(body: dict = Body(...)) -> dict:
         raise HTTPException(
             400, "a file name, mod id or project id is required")
     try:
-        return whitelist.add(
+        return await whitelist.add(
             file_name,
             name=body.get("name") or "",
             reason=body.get("reason") or "",
@@ -2216,12 +2236,12 @@ async def whitelist_add(body: dict = Body(...)) -> dict:
 
 @app.delete("/api/whitelist/{key}")
 async def whitelist_remove(key: str, scope: str | None = None) -> dict:
-    return {"removed": whitelist.remove(key, scope=scope)}
+    return {"removed": await whitelist.remove(key, scope=scope)}
 
 
 @app.post("/api/whitelist/clear")
 async def whitelist_clear(body: dict = Body(default={})) -> dict:
-    return {"removed": whitelist.clear(scope=body.get("scope"))}
+    return {"removed": await whitelist.clear(scope=body.get("scope"))}
 
 
 @app.get("/api/whitelist/export")
@@ -2233,7 +2253,7 @@ async def whitelist_export() -> dict:
 @app.post("/api/whitelist/import")
 async def whitelist_import(body: dict = Body(...)) -> dict:
     try:
-        return whitelist.import_entries(body.get("payload") or body,
+        return await whitelist.import_entries(body.get("payload") or body,
                                         replace=bool(body.get("replace")))
     except Exception as e:
         raise _err(e)
@@ -2966,7 +2986,7 @@ async def guard(request: Request, call_next):
     if permission == policy.PUBLIC:
         return await call_next(request)
 
-    user = auth.session_user(request.cookies.get(COOKIE))
+    user = await auth.session_user(request.cookies.get(COOKIE))
     if not user:
         return JSONResponse({"detail": "Sign in to continue.",
                              "error": "unauthenticated"}, status_code=401)
@@ -2984,13 +3004,13 @@ async def guard(request: Request, call_next):
 
     if permission == policy.ADMIN:
         if user.get("role") != "admin":
-            auth.audit(actor=user["username"], action="denied.admin",
+            await auth.audit(actor=user["username"], action="denied.admin",
                        detail=f"{method} {path}", ip=_client_ip(request),
                        ok=False)
             return JSONResponse({"detail": "Admins only.",
                                  "error": "forbidden"}, status_code=403)
     elif permission != policy.ANY and not auth.may(user, permission):
-        auth.audit(actor=user["username"], action="denied.permission",
+        await auth.audit(actor=user["username"], action="denied.permission",
                    detail=f"{method} {path} needs {permission}",
                    ip=_client_ip(request), ok=False)
         return JSONResponse(
@@ -3000,7 +3020,7 @@ async def guard(request: Request, call_next):
     if scoped:
         sid = policy.server_id_of(path)
         if sid and not auth.in_scope(user, sid, _rack_of):
-            auth.audit(actor=user["username"], action="denied.scope",
+            await auth.audit(actor=user["username"], action="denied.scope",
                        server_id=sid, detail=f"{method} {path}",
                        ip=_client_ip(request), ok=False)
             # 404, not 403: whether a server exists is itself information,
@@ -3015,7 +3035,7 @@ async def guard(request: Request, call_next):
     # every poll appears is a log nobody reads.
     if method != "GET" and response.status_code < 400 \
             and permission not in (policy.ANY, policy.PUBLIC):
-        auth.audit(actor=user["username"], action=_action_for(method, path),
+        await auth.audit(actor=user["username"], action=_action_for(method, path),
                    server_id=policy.server_id_of(path) or "",
                    detail=f"{method} {path}", ip=_client_ip(request))
     return response
@@ -3058,19 +3078,19 @@ def _action_for(method: str, path: str) -> str:
 
 @app.post("/api/auth/login")
 async def auth_login(request: Request, body: dict = Body(...)) -> Response:
-    auth.bootstrap()
+    await auth.bootstrap()
     username = str(body.get("username") or "")
     try:
-        user = auth.authenticate(username, str(body.get("password") or ""))
+        user = await auth.authenticate(username, str(body.get("password") or ""))
     except auth.AuthError as e:
-        auth.audit(actor=username or "?", action="auth.login",
+        await auth.audit(actor=username or "?", action="auth.login",
                    detail=str(e), ip=_client_ip(request), ok=False)
         raise HTTPException(status_code=e.status, detail=str(e))
 
-    token, expires = auth.start_session(
+    token, expires = await auth.start_session(
         user, agent=request.headers.get("user-agent", ""),
         ip=_client_ip(request))
-    auth.audit(actor=user["username"], action="auth.login",
+    await auth.audit(actor=user["username"], action="auth.login",
                detail="signed in", ip=_client_ip(request))
     payload = {"user": auth.public_user(user), "expires": expires}
     response = JSONResponse(payload)
@@ -3081,11 +3101,11 @@ async def auth_login(request: Request, body: dict = Body(...)) -> Response:
 @app.post("/api/auth/logout")
 async def auth_logout(request: Request) -> Response:
     token = request.cookies.get(COOKIE)
-    user = auth.session_user(token)
+    user = await auth.session_user(token)
     if token:
-        auth.revoke(token)
+        await auth.revoke(token)
     if user:
-        auth.audit(actor=user["username"], action="auth.logout",
+        await auth.audit(actor=user["username"], action="auth.logout",
                    detail="signed out", ip=_client_ip(request))
     response = JSONResponse({"ok": True})
     response.delete_cookie(COOKIE, path="/")
@@ -3095,12 +3115,12 @@ async def auth_logout(request: Request) -> Response:
 @app.get("/api/auth/session")
 async def auth_session(request: Request) -> dict:
     """Who am I. Public, because the login screen asks it before signing in."""
-    auth.bootstrap()
-    user = auth.session_user(request.cookies.get(COOKIE))
+    await auth.bootstrap()
+    user = await auth.session_user(request.cookies.get(COOKIE))
     return {
         "authenticated": bool(user),
         "user": auth.public_user(user) if user else None,
-        "default_password_in_use": auth.using_default_password(),
+        "default_password_in_use": await auth.using_default_password(),
         "roles": auth.ROLES,
         "session_days": auth.SESSION_DAYS,
     }
@@ -3109,27 +3129,27 @@ async def auth_session(request: Request) -> dict:
 @app.post("/api/auth/password")
 async def auth_password(request: Request, body: dict = Body(...)) -> dict:
     """Change your own password. Requires the current one."""
-    user = auth.session_user(request.cookies.get(COOKIE))
+    user = await auth.session_user(request.cookies.get(COOKIE))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in to continue.")
     current = str(body.get("current") or "")
     if not auth.verify_password(user.get("password"), current):
-        auth.audit(actor=user["username"], action="auth.password",
+        await auth.audit(actor=user["username"], action="auth.password",
                    detail="wrong current password", ip=_client_ip(request),
                    ok=False)
         raise HTTPException(status_code=403,
                             detail="That is not your current password.")
     try:
-        auth.set_password(user["username"], str(body.get("password") or ""))
+        await auth.set_password(user["username"], str(body.get("password") or ""))
     except auth.AuthError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
     # Every OTHER session for this account dies: changing a password is
     # what you do when you think somebody else has it.
     kept = request.cookies.get(COOKIE)
-    auth.revoke_all(user["username"])
-    auth.audit(actor=user["username"], action="auth.password",
+    await auth.revoke_all(user["username"])
+    await auth.audit(actor=user["username"], action="auth.password",
                detail="changed their own password", ip=_client_ip(request))
-    token, _ = auth.start_session(user, agent=request.headers.get("user-agent", ""),
+    token, _ = await auth.start_session(user, agent=request.headers.get("user-agent", ""),
                                  ip=_client_ip(request))
     response = JSONResponse({"ok": True, "user": auth.public_user(user)})
     _set_session_cookie(response, token, request, auth.SESSION_TTL)
@@ -3148,16 +3168,17 @@ async def admin_permissions() -> dict:
 
 @app.get("/api/admin/users")
 async def admin_users() -> dict:
-    users = auth.list_users()
+    users = await auth.list_users()
+    counts = await auth.session_counts()      # one query, not one per user
     for u in users:
-        u["sessions"] = len(auth.sessions_for(u["username"]))
+        u["sessions"] = counts.get(u["username"], 0)
     return {"items": users}
 
 
 @app.post("/api/admin/users")
 async def admin_create_user(request: Request, body: dict = Body(...)) -> dict:
     try:
-        user = auth.create_user(
+        user = await auth.create_user(
             username=str(body.get("username") or ""),
             password=str(body.get("password") or ""),
             role=str(body.get("role") or "member"),
@@ -3169,7 +3190,7 @@ async def admin_create_user(request: Request, body: dict = Body(...)) -> dict:
     except auth.AuthError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
     actor = request.state.user["username"]
-    auth.audit(actor=actor, action="admin.users.create",
+    await auth.audit(actor=actor, action="admin.users.create",
                detail=f"created {user['username']} as {user['role']}",
                ip=_client_ip(request))
     return {"user": auth.public_user(user)}
@@ -3179,7 +3200,7 @@ async def admin_create_user(request: Request, body: dict = Body(...)) -> dict:
 async def admin_update_user(username: str, request: Request,
                             body: dict = Body(...)) -> dict:
     try:
-        user = auth.update_user(
+        user = await auth.update_user(
             username,
             role=body.get("role"), display=body.get("display"),
             permissions=body.get("permissions"), scope=body.get("scope"),
@@ -3187,7 +3208,7 @@ async def admin_update_user(username: str, request: Request,
         )
     except auth.AuthError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
-    auth.audit(actor=request.state.user["username"], action="admin.users.update",
+    await auth.audit(actor=request.state.user["username"], action="admin.users.update",
                detail=f"changed {username}: "
                       + ", ".join(k for k, v in body.items() if v is not None),
                ip=_client_ip(request))
@@ -3204,12 +3225,12 @@ async def admin_set_password(username: str, request: Request,
     change on next login and kills every session they had.
     """
     try:
-        auth.set_password(username, str(body.get("password") or ""),
+        await auth.set_password(username, str(body.get("password") or ""),
                           must_change=bool(body.get("must_change", True)))
     except auth.AuthError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
-    dropped = auth.revoke_all(username)
-    auth.audit(actor=request.state.user["username"],
+    dropped = await auth.revoke_all(username)
+    await auth.audit(actor=request.state.user["username"],
                action="admin.users.password",
                detail=f"reset the password for {username}; "
                       f"{dropped} session(s) ended",
@@ -3223,23 +3244,23 @@ async def admin_delete_user(username: str, request: Request) -> dict:
         raise HTTPException(status_code=409,
                             detail="You cannot delete your own account.")
     try:
-        auth.delete_user(username)
+        await auth.delete_user(username)
     except auth.AuthError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
-    auth.audit(actor=request.state.user["username"], action="admin.users.delete",
+    await auth.audit(actor=request.state.user["username"], action="admin.users.delete",
                detail=f"deleted {username}", ip=_client_ip(request))
     return {"ok": True}
 
 
 @app.get("/api/admin/users/{username}/sessions")
 async def admin_user_sessions(username: str) -> dict:
-    return {"items": auth.sessions_for(username)}
+    return {"items": await auth.sessions_for(username)}
 
 
 @app.delete("/api/admin/users/{username}/sessions")
 async def admin_end_sessions(username: str, request: Request) -> dict:
-    dropped = auth.revoke_all(username)
-    auth.audit(actor=request.state.user["username"],
+    dropped = await auth.revoke_all(username)
+    await auth.audit(actor=request.state.user["username"],
                action="admin.users.sessions",
                detail=f"ended {dropped} session(s) for {username}",
                ip=_client_ip(request))
@@ -3250,15 +3271,15 @@ async def admin_end_sessions(username: str, request: Request) -> dict:
 async def admin_audit(limit: int = 200, actor: str = "", action: str = "",
                       server_id: str = "", since: float = 0.0,
                       q: str = "") -> dict:
-    return {"items": auth.audit_entries(limit=limit, actor=actor, action=action,
+    return {"items": await auth.audit_entries(limit=limit, actor=actor, action=action,
                                         server_id=server_id, since=since,
                                         query=q)}
 
 
 @app.get("/api/admin/audit/actions")
 async def admin_audit_actions() -> dict:
-    return {"actions": auth.audit_actions(),
-            "actors": sorted({u["username"] for u in auth.list_users()})}
+    return {"actions": await auth.audit_actions(),
+            "actors": sorted({u["username"] for u in await auth.list_users()})}
 
 
 # The backdrop, resolved server-side rather than probed from the browser.

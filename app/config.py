@@ -52,6 +52,12 @@ def _port_range(raw: str) -> tuple[int, int]:
 
 GAME_PORT_RANGE = _port_range(os.environ.get("GAME_PORT_RANGE", "") or "25500-25600")
 
+# --- The database ---------------------------------------------------------
+# postgresql+asyncpg://user:password@host:5432/blessforge in production.
+# Blank falls back to a SQLite file under STATE_DIR, for a node-less dev run
+# and the offline tests; /api/health says which is in use.
+DATABASE_URL = (os.environ.get("DATABASE_URL", "") or "").strip()
+
 # --- CurseForge --------------------------------------------------------
 CURSEFORGE_API_KEY = (os.environ.get("CURSEFORGE_API_KEY", "") or "").strip()
 if len(CURSEFORGE_API_KEY) >= 2 and (

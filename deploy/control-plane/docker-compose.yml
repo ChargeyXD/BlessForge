@@ -1,0 +1,54 @@
+# The BlessForge control plane, for a small VPS in an EU datacenter.
+#
+# This is the panel, its API and its database -- never the game servers.
+# Those run on nodes (each with the BlessForge agent), which this reaches over
+# WireGuard. Keeping the two apart means a busy or broken node can never take
+# the panel, the storefront's API or the billing webhooks down with it.
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d
+#
+# Put a TLS-terminating reverse proxy (Caddy, Traefik, nginx) in front of
+# port 8710; it is published on localhost only, on purpose.
+
+name: blessforge-cp
+
+services:
+  api:
+    image: ghcr.io/chargeyxd/blessforge:latest
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        format: raw
+    environment:
+      ENGINE: "agent"
+      DATABASE_URL: "postgresql+asyncpg://blessforge:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/blessforge"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8710:8710"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8710/api/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "blessforge"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "blessforge"
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blessforge -d blessforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s

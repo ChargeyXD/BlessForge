@@ -2,3 +2,9 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 httpx==0.28.1
 python-multipart==0.0.20
+# The database (WP-03). Pinned to the versions the test suite ran against;
+# all four ship wheels for the image's Python 3.12 on amd64 and arm64.
+sqlalchemy[asyncio]==2.1.4
+asyncpg==0.32.0
+aiosqlite==0.22.1
+alembic==1.20.0

@@ -101,6 +101,14 @@ export async function render() {
                   + `${health.checks.engine.nodes === 1 ? '' : 's'} · `
                   + `${health.checks.engine.latency_ms} ms`
                 : null),
+            checkRow('Database', health.checks?.database,
+              health.checks?.database?.url,
+              health.checks?.database?.ok
+                ? (health.checks.database.production_ready
+                  ? `Postgres · ${health.checks.database.url}`
+                  : 'SQLite fallback — fine for trying it, not for real '
+                    + 'accounts. Set DATABASE_URL to a Postgres.')
+                : null),
             checkRow('CurseForge', health.checks?.curseforge,
               'api.curseforge.com'),
             checkRow('Modrinth', health.checks?.modrinth, 'api.modrinth.com'),

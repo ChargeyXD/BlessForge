@@ -27,6 +27,7 @@ os.environ["STATE_DIR"] = _TMP
 os.environ.setdefault("DATA_DIR", _TMP)
 os.environ.setdefault("CACHE_DIR", str(pathlib.Path(_TMP) / "cache"))
 
+import _dbtest  # noqa: E402 -- a temp database for the role checks
 from app import auth, policy  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -107,17 +108,27 @@ check("...and is None when there is not one",
       policy.server_id_of("/api/health") is None)
 
 # --- 5. the policy is reachable for each role --------------------------
-auth.reset_for_tests()
-for leftover in pathlib.Path(_TMP).glob("*.json"):
-    leftover.unlink()
-auth.bootstrap()
-auth.create_user(username="op", password="operator long password",
-                 role="operator", must_change=False, scope={"all": True})
-auth.create_user(username="look", password="guest long password",
-                 role="guest", must_change=False, scope={"all": True})
-admin = auth.find_user("admin")
-op = auth.find_user("op")
-guest = auth.find_user("look")
+import asyncio  # noqa: E402
+
+
+async def _accounts():
+    """Every account the role checks need, made in one event loop."""
+    from app import db
+    await _dbtest.fresh()
+    await auth.bootstrap()
+    await auth.create_user(username="op", password="operator long password",
+                           role="operator", must_change=False, scope={"all": True})
+    await auth.create_user(username="look", password="guest long password",
+                           role="guest", must_change=False, scope={"all": True})
+    found = (await auth.find_user("admin"), await auth.find_user("op"),
+             await auth.find_user("look"))
+    await auth.update_user("op", scope={"servers": ["aaa"]})
+    scoped = await auth.find_user("op")
+    await db.dispose()
+    return (*found, scoped)
+
+
+admin, op, guest, op_scoped = asyncio.run(_accounts())
 
 
 def allowed(user, method, path):
@@ -156,8 +167,7 @@ check("an admin can do all of it",
           ("POST", "/api/admin/users"), ("POST", "/api/instances/aaa/command")]))
 
 # --- 6. scope is enforced separately from permission -------------------
-auth.update_user("op", scope={"servers": ["aaa"]})
-op = auth.find_user("op")
+op = op_scoped
 check("an operator may restart the server they are given",
       allowed(op, "POST", "/api/instances/aaa/action/restart"))
 check("...and may NOT restart one they are not, with the same permission",

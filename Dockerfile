@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="BlessForge" \
-      org.opencontainers.image.description="Install CurseForge modpacks into Crafty Controller, or import your own export, then manage mods, configs, performance and startup problems." \
+      org.opencontainers.image.description="A Minecraft server panel: install CurseForge modpacks or your own exports, then manage mods, configs, performance and startup problems." \
       org.opencontainers.image.source="https://github.com/ChargeyXD/BlessForge" \
       org.opencontainers.image.url="https://github.com/ChargeyXD/BlessForge" \
       org.opencontainers.image.documentation="https://github.com/ChargeyXD/BlessForge#readme" \
@@ -25,7 +25,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# curl for healthcheck + ca-certificates for secure outbound API calls (CurseForge/Modrinth/Crafty)
+# curl for healthcheck + ca-certificates for secure outbound API calls (CurseForge/Modrinth/nodes)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -34,6 +34,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
+# The schema's migrations. The app runs `alembic upgrade head` itself on
+# start, so an image without these would boot against an empty database.
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
 # The app runs unprivileged as uid 1000. The container still STARTS as root so
 # the entrypoint can hand it a writable /data -- CasaOS creates bind-mount

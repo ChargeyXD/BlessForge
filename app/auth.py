@@ -1,25 +1,30 @@
 """Who is using this BlessForge, and what they are allowed to touch.
 
 BlessForge shipped with no authentication at all: anyone who could reach
-the port could delete a world. This adds accounts, sessions, a permission
-model and an audit trail, without adding a database or a dependency --
-`hashlib.scrypt` and `secrets` are enough to do it properly.
+the port could delete a world. This is the accounts, sessions, permission
+model and audit trail that fixed that.
 
 The shape of it
 ---------------
-  users.json     accounts, hashed passwords, permissions and scope
-  sessions.json  live sessions, keyed by a HASH of the token
-  audit.jsonl    append-only record of everything anyone did
+  users       accounts, scrypt password records, permissions and scope
+  sessions    live sessions, keyed by a HASH of the token
+  audit_log   everything anyone did
 
-All three go through `config.write_state`, so a power cut cannot leave a
-half-written account file (see the note there; it has happened).
+All three are database tables (app/db/models.py). They used to be JSON
+files under /data/state; app/db/importer.py carries an existing install's
+files across on its first start with a database, and renames them
+`*.imported` so the import cannot run twice.
+
+This module is security code, so it keeps NO cache of accounts or sessions:
+every request reads the session row and its user. A cache would make
+"disable this account" mean "disable it in a while".
 
 Passwords
 ---------
 scrypt, which is memory-hard and therefore expensive to attack with a GPU
 farm in a way PBKDF2 is not. n=2^14 costs about 60ms per verification on
 the kind of box this runs on: slow enough to make an offline attack on a
-stolen file painful, fast enough that nobody notices logging in. Every
+stolen database painful, fast enough that nobody notices logging in. Every
 password gets its own 16-byte salt, and the parameters are stored WITH the
 hash so they can be raised later without invalidating existing accounts.
 
@@ -30,35 +35,31 @@ measurement of how much of the hash you guessed.
 Sessions
 --------
 A token is 32 bytes from `secrets.token_urlsafe`. The SERVER STORES ONLY
-ITS SHA-256: a leaked sessions.json is then a list of useless hashes
+ITS SHA-256: a leaked sessions table is then a list of useless hashes
 rather than a set of working keys, exactly as for passwords. Tokens expire
 after 30 days and are checked against that on every request.
 
-What is deliberately NOT here
------------------------------
-No self-service signup and no password reset by email. Both are ways in
-for someone who is not supposed to be here, and this is a control panel
-for a handful of people who know each other. An admin sets passwords. If
-the last admin is locked out, `dev/tools/reset_admin.py` is the answer,
-and it requires filesystem access to the box -- which is the correct level
-of proof for that operation.
+What is deliberately NOT here (yet)
+-----------------------------------
+No self-service signup and no password reset by email: those arrive with
+public accounts (WP-07), with email verification, rate limits and 2FA in
+front of them. Until then an admin sets passwords.
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import hmac
-import json
 import re
 import secrets
 import time
 import unicodedata
 from typing import Any
 
-from .config import read_state, state_path, write_state
+from sqlalchemy import delete, func, or_, select
 
-USERS_FILE = "users.json"
-SESSIONS_FILE = "sessions.json"
-AUDIT_FILE = "audit.jsonl"
+from app import db
+from app.db.models import AuditEntry, Session as SessionRow, User
 
 # scrypt parameters. Stored alongside every hash so these can be raised
 # without locking anyone out -- an old hash keeps verifying with the
@@ -79,7 +80,10 @@ TOKEN_BYTES = 32
 MAX_FAILURES = 8
 LOCKOUT_SECONDS = 15 * 60
 
-AUDIT_MAX = 5000            # lines kept; the file is trimmed past this
+# How often a session's `last_seen` is written. It changes on every
+# request, and a write per API call for a field nobody reads in real time
+# is load for nothing.
+LAST_SEEN_EVERY = 300
 
 DEFAULT_ADMIN = "admin"
 DEFAULT_PASSWORD = "password"
@@ -144,69 +148,6 @@ class AuthError(Exception):
         self.status = status
 
 
-# --- storage ------------------------------------------------------------
-
-_users: dict[str, Any] | None = None
-_sessions: dict[str, Any] | None = None
-
-
-def _blank_users() -> dict[str, Any]:
-    return {"version": 1, "users": [], "created_at": time.time()}
-
-
-def _load_users() -> dict[str, Any]:
-    global _users
-    if _users is not None:
-        return _users
-    text = read_state(state_path(USERS_FILE))
-    try:
-        raw = json.loads(text) if text else None
-    except ValueError:
-        raw = None
-    if not isinstance(raw, dict) or not isinstance(raw.get("users"), list):
-        _users = _blank_users()
-    else:
-        _users = {"version": 1, "users": [u for u in raw["users"]
-                                          if isinstance(u, dict) and u.get("username")],
-                  "created_at": raw.get("created_at") or time.time()}
-    return _users
-
-
-def _save_users() -> bool:
-    return write_state(state_path(USERS_FILE),
-                       json.dumps(_load_users(), indent=1))
-
-
-def _load_sessions() -> dict[str, Any]:
-    global _sessions
-    if _sessions is not None:
-        return _sessions
-    text = read_state(state_path(SESSIONS_FILE))
-    try:
-        raw = json.loads(text) if text else None
-    except ValueError:
-        raw = None
-    live = {}
-    now = time.time()
-    if isinstance(raw, dict) and isinstance(raw.get("sessions"), dict):
-        for key, rec in raw["sessions"].items():
-            if isinstance(rec, dict) and (rec.get("expires") or 0) > now:
-                live[str(key)] = rec
-    _sessions = {"version": 1, "sessions": live}
-    return _sessions
-
-
-def _save_sessions() -> bool:
-    return write_state(state_path(SESSIONS_FILE),
-                       json.dumps(_load_sessions(), indent=1))
-
-
-def reset_for_tests() -> None:
-    global _users, _sessions
-    _users = None
-    _sessions = None
-
-
 # --- passwords ----------------------------------------------------------
 
 def hash_password(password: str) -> dict[str, Any]:
@@ -224,8 +165,8 @@ def verify_password(stored: Any, password: str) -> bool:
     """Constant-time check against a stored hash.
 
     Returns False for a malformed record rather than raising: a corrupt
-    line in users.json must not become a way in, and must not become a
-    500 that tells an attacker the account exists.
+    record must not become a way in, and must not become a 500 that tells
+    an attacker the account exists.
     """
     if not isinstance(stored, dict) or stored.get("algo") != "scrypt":
         return False
@@ -247,7 +188,7 @@ def password_problem(password: str) -> str | None:
     Deliberately short of a policy nobody can satisfy. Length is the only
     property that reliably buys anything; forced symbol classes mostly buy
     `Password1!`. The one specific rejection is the default, because
-    leaving it in place is the whole risk this migration creates.
+    leaving it in place is the whole risk the first-run account creates.
     """
     if not isinstance(password, str) or len(password) < 10:
         return "Use at least 10 characters."
@@ -258,7 +199,7 @@ def password_problem(password: str) -> str | None:
     return None
 
 
-# --- users --------------------------------------------------------------
+# --- users: the pure half ----------------------------------------------------
 
 def normalise_username(name: str) -> str:
     base = unicodedata.normalize("NFKC", str(name or "")).strip().lower()
@@ -267,17 +208,6 @@ def normalise_username(name: str) -> str:
             "A username is 2-32 characters, letters, digits, dot, dash or "
             "underscore.")
     return base
-
-
-def find_user(username: str) -> dict[str, Any] | None:
-    try:
-        want = normalise_username(username)
-    except AuthError:
-        return None
-    for user in _load_users()["users"]:
-        if user.get("username") == want:
-            return user
-    return None
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
@@ -352,49 +282,6 @@ def in_scope(user: dict[str, Any] | None, server_id: str | None,
     return False
 
 
-def create_user(*, username: str, password: str, role: str = "member",
-                display: str = "", permissions: list[str] | None = None,
-                scope: dict[str, Any] | None = None,
-                must_change: bool = True,
-                enforce_policy: bool = True) -> dict[str, Any]:
-    """Make an account.
-
-    `enforce_policy` exists for exactly one caller. `bootstrap` has to
-    create an account whose password is `password`, which is precisely
-    what `password_problem` refuses -- the policy and the migration want
-    opposite things, and the honest way to say so is a named exemption
-    rather than a policy with a hole in it. Everything else goes through
-    the gate.
-    """
-    name = normalise_username(username)
-    if find_user(name):
-        raise AuthError(f"There is already a user called {name}.", 409)
-    if role not in ROLES:
-        raise AuthError(f"Unknown role {role!r}.")
-    if enforce_policy:
-        problem = password_problem(password)
-        if problem:
-            raise AuthError(problem)
-    user = {
-        "username": name,
-        "display": str(display or "").strip()[:60] or name,
-        "role": role,
-        "password": hash_password(password),
-        "permissions": [p for p in (permissions or DEFAULT_PERMISSIONS)
-                        if p in PERMISSIONS],
-        "scope": _clean_scope(scope),
-        "must_change": bool(must_change),
-        "created_at": time.time(),
-        "last_login": None,
-        "failures": 0,
-        "locked_until": 0,
-        "disabled": False,
-    }
-    _load_users()["users"].append(user)
-    _save_users()
-    return user
-
-
 def _clean_scope(scope: Any) -> dict[str, Any]:
     if not isinstance(scope, dict):
         return {"all": False, "servers": [], "racks": []}
@@ -405,82 +292,179 @@ def _clean_scope(scope: Any) -> dict[str, Any]:
     }
 
 
-def update_user(username: str, **changes: Any) -> dict[str, Any]:
-    user = find_user(username)
-    if not user:
-        raise AuthError("No such user.", 404)
-    if "role" in changes and changes["role"] is not None:
-        if changes["role"] not in ROLES:
-            raise AuthError(f"Unknown role {changes['role']!r}.")
-        if user.get("role") == "admin" and changes["role"] != "admin":
-            _guard_last_admin(user)
-        user["role"] = changes["role"]
-    if changes.get("display") is not None:
-        user["display"] = str(changes["display"]).strip()[:60] or user["username"]
-    if changes.get("permissions") is not None:
-        user["permissions"] = [p for p in changes["permissions"] if p in PERMISSIONS]
-    if changes.get("scope") is not None:
-        user["scope"] = _clean_scope(changes["scope"])
-    if changes.get("disabled") is not None:
-        if changes["disabled"] and user.get("role") == "admin":
-            _guard_last_admin(user)
-        user["disabled"] = bool(changes["disabled"])
-        if user["disabled"]:
-            revoke_all(user["username"])
-    if changes.get("unlock"):
-        user["failures"] = 0
-        user["locked_until"] = 0
-    _save_users()
-    return user
+def _as_dict(row: User) -> dict[str, Any]:
+    """A user row in the shape the rest of the app has always used."""
+    return {
+        "id": row.id,
+        "username": row.username,
+        "email": row.email,
+        "display": row.display or row.username,
+        "role": row.role,
+        "password": row.password_hash,
+        "permissions": list(row.permissions or []),
+        "denied": list(row.denied or []),
+        "scope": dict(row.scope or {}),
+        "must_change": bool(row.must_change),
+        "created_at": db.epoch(row.created_at),
+        "last_login": db.epoch(row.last_login),
+        "failures": int(row.failures or 0),
+        "locked_until": db.epoch(row.locked_until) or 0,
+        "disabled": bool(row.disabled),
+    }
 
 
-def _guard_last_admin(user: dict[str, Any]) -> None:
+# --- users: storage --------------------------------------------------------------
+
+async def _row(s, username: str, *, lock: bool = False) -> User | None:
+    try:
+        want = normalise_username(username)
+    except AuthError:
+        return None
+    q = select(User).where(User.username == want)
+    if lock:
+        q = q.with_for_update()
+    return (await s.execute(q)).scalar_one_or_none()
+
+
+async def find_user(username: str) -> dict[str, Any] | None:
+    async with db.session() as s:
+        row = await _row(s, username)
+        return _as_dict(row) if row else None
+
+
+async def create_user(*, username: str, password: str, role: str = "member",
+                      display: str = "", permissions: list[str] | None = None,
+                      scope: dict[str, Any] | None = None,
+                      must_change: bool = True,
+                      enforce_policy: bool = True) -> dict[str, Any]:
+    """Make an account.
+
+    `enforce_policy` exists for exactly one caller. `bootstrap` has to
+    create an account whose password is `password`, which is precisely
+    what `password_problem` refuses -- the policy and the first run want
+    opposite things, and the honest way to say so is a named exemption
+    rather than a policy with a hole in it. Everything else goes through
+    the gate.
+    """
+    name = normalise_username(username)
+    if role not in ROLES:
+        raise AuthError(f"Unknown role {role!r}.")
+    if enforce_policy:
+        problem = password_problem(password)
+        if problem:
+            raise AuthError(problem)
+    async with db.session() as s:
+        if await _row(s, name):
+            raise AuthError(f"There is already a user called {name}.", 409)
+        row = User(
+            username=name,
+            display=str(display or "").strip()[:60] or name,
+            role=role,
+            password_hash=hash_password(password),
+            permissions=[p for p in (permissions or DEFAULT_PERMISSIONS)
+                         if p in PERMISSIONS],
+            denied=[],
+            scope=_clean_scope(scope),
+            must_change=bool(must_change),
+        )
+        s.add(row)
+        await s.flush()
+        return _as_dict(row)
+
+
+async def _guard_last_admin(s, row: User) -> None:
     """Refuse to remove the last way back in.
 
     Locking every admin out of a self-hosted panel is unrecoverable from
-    the UI by design -- there is no password reset email to fall back on.
+    the UI by design. The admin rows are locked while they are counted, so
+    two admins demoting each other at the same moment cannot both win.
     """
-    admins = [u for u in _load_users()["users"]
-              if u.get("role") == "admin" and not u.get("disabled")]
-    if len(admins) <= 1 and any(a.get("username") == user.get("username")
-                                for a in admins):
+    admins = (await s.execute(
+        select(User).where(User.role == "admin", User.disabled.is_(False))
+        .order_by(User.id).with_for_update())).scalars().all()
+    if len(admins) <= 1 and any(a.id == row.id for a in admins):
         raise AuthError(
             "That is the only admin left. Make somebody else an admin first, "
             "or you will lock yourself out with no way back in from here.", 409)
 
 
-def set_password(username: str, password: str, *,
-                 must_change: bool = False) -> dict[str, Any]:
-    user = find_user(username)
-    if not user:
-        raise AuthError("No such user.", 404)
+async def _lock_admins(s) -> None:
+    """Lock every admin row, in id order, before touching any one of them.
+
+    A change that could remove an admin has to count the admins with their
+    rows locked. Locking the target first and the set second lets two such
+    changes each hold one row and wait on the other -- a deadlock, which
+    Postgres resolves by failing one of them with a 500. Taking the whole
+    set first, always in the same order, makes them queue instead.
+    """
+    await s.execute(select(User.id).where(User.role == "admin")
+                    .order_by(User.id).with_for_update())
+
+
+async def update_user(username: str, **changes: Any) -> dict[str, Any]:
+    async with db.session() as s:
+        if changes.get("role") is not None or changes.get("disabled"):
+            await _lock_admins(s)
+        row = await _row(s, username, lock=True)
+        if not row:
+            raise AuthError("No such user.", 404)
+        if "role" in changes and changes["role"] is not None:
+            if changes["role"] not in ROLES:
+                raise AuthError(f"Unknown role {changes['role']!r}.")
+            if row.role == "admin" and changes["role"] != "admin":
+                await _guard_last_admin(s, row)
+            row.role = changes["role"]
+        if changes.get("display") is not None:
+            row.display = str(changes["display"]).strip()[:60] or row.username
+        if changes.get("permissions") is not None:
+            row.permissions = [p for p in changes["permissions"] if p in PERMISSIONS]
+        if changes.get("scope") is not None:
+            row.scope = _clean_scope(changes["scope"])
+        if changes.get("disabled") is not None:
+            if changes["disabled"] and row.role == "admin":
+                await _guard_last_admin(s, row)
+            row.disabled = bool(changes["disabled"])
+            if row.disabled:
+                await s.execute(delete(SessionRow).where(SessionRow.user_id == row.id))
+        if changes.get("unlock"):
+            row.failures = 0
+            row.locked_until = None
+        await s.flush()
+        return _as_dict(row)
+
+
+async def set_password(username: str, password: str, *,
+                       must_change: bool = False) -> dict[str, Any]:
     problem = password_problem(password)
     if problem:
         raise AuthError(problem)
-    user["password"] = hash_password(password)
-    user["must_change"] = bool(must_change)
-    user["failures"] = 0
-    user["locked_until"] = 0
-    _save_users()
-    return user
+    async with db.session() as s:
+        row = await _row(s, username, lock=True)
+        if not row:
+            raise AuthError("No such user.", 404)
+        row.password_hash = hash_password(password)
+        row.must_change = bool(must_change)
+        row.failures = 0
+        row.locked_until = None
+        await s.flush()
+        return _as_dict(row)
 
 
-def delete_user(username: str) -> None:
-    user = find_user(username)
-    if not user:
-        raise AuthError("No such user.", 404)
-    if user.get("role") == "admin":
-        _guard_last_admin(user)
-    store = _load_users()
-    store["users"] = [u for u in store["users"]
-                      if u.get("username") != user["username"]]
-    revoke_all(user["username"])
-    _save_users()
+async def delete_user(username: str) -> None:
+    async with db.session() as s:
+        await _lock_admins(s)
+        row = await _row(s, username, lock=True)
+        if not row:
+            raise AuthError("No such user.", 404)
+        if row.role == "admin":
+            await _guard_last_admin(s, row)
+        await s.delete(row)             # sessions go with it (ON DELETE CASCADE)
 
 
-def list_users() -> list[dict[str, Any]]:
-    return [public_user(u) for u in
-            sorted(_load_users()["users"], key=lambda u: u.get("username", ""))]
+async def list_users() -> list[dict[str, Any]]:
+    async with db.session() as s:
+        rows = (await s.execute(select(User).order_by(User.username))).scalars().all()
+        return [public_user(_as_dict(r)) for r in rows]
 
 
 # --- sessions -----------------------------------------------------------
@@ -488,246 +472,239 @@ def list_users() -> list[dict[str, Any]]:
 def _token_key(token: str) -> str:
     """Sessions are stored under the token's hash, never the token.
 
-    Same argument as for passwords: a leaked sessions.json should be a
+    Same argument as for passwords: a leaked sessions table should be a
     list of useless strings, not a drawer of working keys.
     """
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
-def start_session(user: dict[str, Any], *, agent: str = "",
-                  ip: str = "") -> tuple[str, float]:
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+async def start_session(user: dict[str, Any], *, agent: str = "",
+                        ip: str = "") -> tuple[str, float]:
     token = secrets.token_urlsafe(TOKEN_BYTES)
     expires = time.time() + SESSION_TTL
-    _load_sessions()["sessions"][_token_key(token)] = {
-        "username": user["username"],
-        "created": time.time(),
-        "expires": expires,
-        "agent": str(agent or "")[:180],
-        "ip": str(ip or "")[:60],
-        "last_seen": time.time(),
-    }
-    _save_sessions()
+    async with db.session() as s:
+        s.add(SessionRow(token_sha256=_token_key(token), user_id=user["id"],
+                         expires_at=db.from_epoch(expires),
+                         user_agent=str(agent or "")[:200],
+                         ip=str(ip or "")[:64]))
     return token, expires
 
 
-def session_user(token: str | None) -> dict[str, Any] | None:
-    """The account behind a token, or None. Expired tokens are dropped."""
+async def session_user(token: str | None) -> dict[str, Any] | None:
+    """The account behind a token, or None. Expired sessions are dropped."""
     if not token:
         return None
-    store = _load_sessions()
-    rec = store["sessions"].get(_token_key(token))
-    if not rec:
-        return None
-    if (rec.get("expires") or 0) <= time.time():
-        store["sessions"].pop(_token_key(token), None)
-        _save_sessions()
-        return None
-    user = find_user(rec.get("username", ""))
-    if not user or user.get("disabled"):
-        return None
-    # `last_seen` is only persisted occasionally: it changes on every
-    # request, and writing users' session file on every request would be
-    # a disk write per API call for a field nobody reads in real time.
-    if time.time() - (rec.get("last_seen") or 0) > 300:
-        rec["last_seen"] = time.time()
-        _save_sessions()
-    return user
+    key = _token_key(token)
+    async with db.session() as s:
+        found = (await s.execute(
+            select(SessionRow, User).join(User, User.id == SessionRow.user_id)
+            .where(SessionRow.token_sha256 == key))).first()
+        if not found:
+            return None
+        rec, user = found
+        now = time.time()
+        if (db.epoch(rec.expires_at) or 0) <= now:
+            await s.delete(rec)
+            return None
+        if user.disabled:
+            return None
+        if now - (db.epoch(rec.last_seen) or 0) > LAST_SEEN_EVERY:
+            rec.last_seen = _now()
+        return _as_dict(user)
 
 
-def revoke(token: str) -> None:
-    store = _load_sessions()
-    if store["sessions"].pop(_token_key(token), None) is not None:
-        _save_sessions()
+async def revoke(token: str) -> None:
+    async with db.session() as s:
+        await s.execute(delete(SessionRow)
+                        .where(SessionRow.token_sha256 == _token_key(token)))
 
 
-def revoke_all(username: str) -> int:
+async def revoke_all(username: str) -> int:
     """Drop every session for one account. Used on disable and on reset."""
-    store = _load_sessions()
-    gone = [k for k, v in store["sessions"].items()
-            if v.get("username") == username]
-    for key in gone:
-        store["sessions"].pop(key, None)
-    if gone:
-        _save_sessions()
-    return len(gone)
+    async with db.session() as s:
+        row = await _row(s, username)
+        if not row:
+            return 0
+        result = await s.execute(delete(SessionRow)
+                                 .where(SessionRow.user_id == row.id))
+        return int(result.rowcount or 0)
 
 
-def sessions_for(username: str) -> list[dict[str, Any]]:
-    return [{"created": v.get("created"), "expires": v.get("expires"),
-             "agent": v.get("agent"), "ip": v.get("ip"),
-             "last_seen": v.get("last_seen")}
-            for v in _load_sessions()["sessions"].values()
-            if v.get("username") == username]
+async def sessions_for(username: str) -> list[dict[str, Any]]:
+    async with db.session() as s:
+        row = await _row(s, username)
+        if not row:
+            return []
+        rows = (await s.execute(select(SessionRow)
+                                .where(SessionRow.user_id == row.id))).scalars().all()
+        return [{"created": db.epoch(r.created_at), "expires": db.epoch(r.expires_at),
+                 "agent": r.user_agent, "ip": r.ip,
+                 "last_seen": db.epoch(r.last_seen)} for r in rows]
+
+
+async def session_counts() -> dict[str, int]:
+    """Live sessions per username, in one query (the admin register)."""
+    async with db.session() as s:
+        rows = (await s.execute(
+            select(User.username, func.count(SessionRow.token_sha256))
+            .join(SessionRow, SessionRow.user_id == User.id)
+            .group_by(User.username))).all()
+        return {name: int(n) for name, n in rows}
 
 
 # --- logging in ---------------------------------------------------------
 
-def authenticate(username: str, password: str) -> dict[str, Any]:
+async def authenticate(username: str, password: str) -> dict[str, Any]:
     """Check a username and password, with throttling.
 
     The failure message is the same whether the account does not exist or
     the password is wrong. Saying which would turn the login form into a
     tool for discovering usernames.
     """
-    user = find_user(username)
     now = time.time()
+    async with db.session() as s:
+        row = await _row(s, username, lock=True)
+        if row and (db.epoch(row.locked_until) or 0) > now:
+            wait = int((db.epoch(row.locked_until) - now) / 60) + 1
+            raise AuthError(
+                f"Too many failed attempts. Try again in {wait} minute"
+                f"{'s' if wait != 1 else ''}, or ask an admin to unlock it.", 429)
 
-    if user and (user.get("locked_until") or 0) > now:
-        wait = int((user["locked_until"] - now) / 60) + 1
-        raise AuthError(
-            f"Too many failed attempts. Try again in {wait} minute"
-            f"{'s' if wait != 1 else ''}, or ask an admin to unlock it.", 429)
-
-    ok = bool(user) and not user.get("disabled") \
-        and verify_password(user.get("password"), password)
-
-    if not ok:
-        if user:
-            user["failures"] = int(user.get("failures") or 0) + 1
-            if user["failures"] >= MAX_FAILURES:
-                user["locked_until"] = now + LOCKOUT_SECONDS
-                user["failures"] = 0
-            _save_users()
+        ok = bool(row) and not row.disabled \
+            and verify_password(row.password_hash, password)
+        if not ok:
+            if row:
+                row.failures = int(row.failures or 0) + 1
+                if row.failures >= MAX_FAILURES:
+                    row.locked_until = db.from_epoch(now + LOCKOUT_SECONDS)
+                    row.failures = 0
+            else:
+                # Spend roughly the same time as a real verification would,
+                # so a fast rejection cannot be read as "no such user".
+                hashlib.scrypt(b"decoy", salt=b"decoy-salt-16byt", n=SCRYPT_N,
+                               r=SCRYPT_R, p=SCRYPT_P, dklen=KEY_BYTES)
+            failure = AuthError("That username and password do not match.", 401)
         else:
-            # Spend roughly the same time as a real verification would, so
-            # a fast rejection cannot be read as "no such user".
-            hashlib.scrypt(b"decoy", salt=b"decoy-salt-16byt", n=SCRYPT_N,
-                           r=SCRYPT_R, p=SCRYPT_P, dklen=KEY_BYTES)
-        raise AuthError("That username and password do not match.", 401)
-
-    user["failures"] = 0
-    user["locked_until"] = 0
-    user["last_login"] = now
-    _save_users()
-    return user
+            row.failures = 0
+            row.locked_until = None
+            row.last_login = db.from_epoch(now)
+            failure = None
+        await s.flush()
+        result = _as_dict(row) if row else None
+    # Raised after the session commits, so a failure still counts.
+    if failure:
+        raise failure
+    return result
 
 
 # --- first run ----------------------------------------------------------
 
-def bootstrap() -> dict[str, Any]:
+async def bootstrap() -> dict[str, Any]:
     """Make sure there is a way in, exactly once.
 
-    An install that predates accounts has no users.json, and the person
-    upgrading has no credentials to be given. So the first start creates
-    `admin` / `password` and marks it must-change -- the next screen after
-    that first login is a password change that cannot be skipped.
+    An install with no accounts has no credentials to hand anyone. So the
+    first start creates `admin` / `password` and marks it must-change --
+    the next screen after that first login is a password change that cannot
+    be skipped.
 
     It is a real risk for as long as it lasts, which is why it is reported
     loudly by `/api/auth/session` and why the default password is the one
     value `password_problem` refuses to accept as a replacement.
     """
-    store = _load_users()
-    if store["users"]:
-        return {"created": False, "users": len(store["users"])}
-    create_user(username=DEFAULT_ADMIN, password=DEFAULT_PASSWORD,
-                role="admin", display="Administrator", must_change=True,
-                enforce_policy=False)
-    audit(actor="system", action="auth.bootstrap",
-          detail="created the first admin account")
+    if not await needs_bootstrap():
+        async with db.session() as s:
+            count = (await s.execute(select(func.count(User.id)))).scalar_one()
+        return {"created": False, "users": int(count)}
+    try:
+        await create_user(username=DEFAULT_ADMIN, password=DEFAULT_PASSWORD,
+                          role="admin", display="Administrator", must_change=True,
+                          enforce_policy=False)
+    except AuthError as e:
+        if e.status == 409:             # a concurrent first request got there
+            return {"created": False, "users": 1}
+        raise
+    await audit(actor="system", action="auth.bootstrap",
+                detail="created the first admin account")
     return {"created": True, "username": DEFAULT_ADMIN,
             "password": DEFAULT_PASSWORD}
 
 
-def needs_bootstrap() -> bool:
-    return not _load_users()["users"]
+async def needs_bootstrap() -> bool:
+    async with db.session() as s:
+        return (await s.execute(select(func.count(User.id)))).scalar_one() == 0
 
 
-def using_default_password() -> bool:
+async def using_default_password() -> bool:
     """True while any admin still has the shipped password."""
-    for user in _load_users()["users"]:
-        if user.get("role") == "admin" and user.get("must_change") \
-                and verify_password(user.get("password"), DEFAULT_PASSWORD):
-            return True
-    return False
+    async with db.session() as s:
+        rows = (await s.execute(select(User).where(
+            User.role == "admin", User.must_change.is_(True)))).scalars().all()
+    return any(verify_password(r.password_hash, DEFAULT_PASSWORD) for r in rows)
 
 
 # --- audit --------------------------------------------------------------
 
-def audit(*, actor: str, action: str, server_id: str = "", detail: str = "",
-          ip: str = "", ok: bool = True) -> None:
-    """Append one line to the record. Never raises.
+async def audit(*, actor: str, action: str, server_id: str = "", detail: str = "",
+                ip: str = "", ok: bool = True, ticket_id: str | None = None,
+                before: dict | None = None, after: dict | None = None) -> None:
+    """Record one action. Never raises.
 
-    JSONL rather than a JSON array so an append is an append -- a crash
-    mid-write costs the last line, not the file. Nothing in the app should
-    fail because the audit log could not be written, but everything
-    interesting should try.
+    Nothing in the app should fail because the audit log could not be
+    written, but everything interesting should try. `before`/`after` carry
+    the values an admin write changed.
     """
-    line = json.dumps({
-        "at": round(time.time(), 3), "actor": actor or "?", "action": action,
-        "server_id": server_id or "", "detail": (detail or "")[:400],
-        "ip": (ip or "")[:60], "ok": bool(ok),
-    }, separators=(",", ":"))
-    path = state_path(AUDIT_FILE)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
+        async with db.session() as s:
+            s.add(AuditEntry(
+                actor=(actor or "?")[:64], action=(action or "?")[:64],
+                target=(server_id or "")[:64], detail=(detail or "")[:2000],
+                ip=(ip or "")[:64], ok=bool(ok), ticket_id=ticket_id,
+                before=before, after=after))
+    except Exception:       # noqa: BLE001 -- the audit must never break an action
         return
-    _trim_audit(path)
 
 
-_audit_writes = 0
-
-
-def _trim_audit(path) -> None:
-    """Keep the file bounded, checked occasionally rather than every write."""
-    global _audit_writes
-    _audit_writes += 1
-    if _audit_writes % 200:
-        return
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return
-    if len(lines) <= AUDIT_MAX:
-        return
-    write_state(path, "\n".join(lines[-AUDIT_MAX:]) + "\n")
-
-
-def audit_entries(*, limit: int = 200, actor: str = "", action: str = "",
-                  server_id: str = "", since: float = 0.0,
-                  query: str = "") -> list[dict[str, Any]]:
-    """Newest first, filtered. Reads the tail rather than the whole file."""
-    path = state_path(AUDIT_FILE)
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    out: list[dict[str, Any]] = []
-    needle = (query or "").lower()
-    for line in reversed(raw):
-        if len(out) >= max(1, min(limit, 2000)):
-            break
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue
-        if actor and rec.get("actor") != actor:
-            continue
-        if action and not str(rec.get("action", "")).startswith(action):
-            continue
-        if server_id and rec.get("server_id") != server_id:
-            continue
-        if since and (rec.get("at") or 0) < since:
-            continue
-        if needle and needle not in json.dumps(rec).lower():
-            continue
-        out.append(rec)
+def _entry(r: AuditEntry) -> dict[str, Any]:
+    out = {"at": round(db.epoch(r.at) or 0, 3), "actor": r.actor,
+           "action": r.action, "server_id": r.target, "detail": r.detail,
+           "ip": r.ip, "ok": bool(r.ok)}
+    if r.ticket_id:
+        out["ticket_id"] = r.ticket_id
+    if r.before is not None or r.after is not None:
+        out["before"], out["after"] = r.before, r.after
     return out
 
 
-def audit_actions() -> list[str]:
+async def audit_entries(*, limit: int = 200, actor: str = "", action: str = "",
+                        server_id: str = "", since: float = 0.0,
+                        query: str = "") -> list[dict[str, Any]]:
+    """Newest first, filtered in the database."""
+    q = select(AuditEntry)
+    if actor:
+        q = q.where(AuditEntry.actor == actor)
+    if action:
+        q = q.where(AuditEntry.action.startswith(action, autoescape=True))
+    if server_id:
+        q = q.where(AuditEntry.target == server_id)
+    if since:
+        q = q.where(AuditEntry.at >= db.from_epoch(since))
+    if query:
+        needle = f"%{query.lower()}%"
+        q = q.where(or_(*(func.lower(col).like(needle) for col in (
+            AuditEntry.actor, AuditEntry.action, AuditEntry.target,
+            AuditEntry.detail, AuditEntry.ip))))
+    q = q.order_by(AuditEntry.at.desc(), AuditEntry.id.desc()).limit(
+        max(1, min(int(limit or 200), 2000)))
+    async with db.session() as s:
+        return [_entry(r) for r in (await s.execute(q)).scalars().all()]
+
+
+async def audit_actions() -> list[str]:
     """Every action name that actually appears, for the filter dropdown."""
-    path = state_path(AUDIT_FILE)
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    seen = set()
-    for line in raw[-AUDIT_MAX:]:
-        try:
-            seen.add(json.loads(line).get("action", ""))
-        except ValueError:
-            continue
-    return sorted(a for a in seen if a)
+    async with db.session() as s:
+        rows = (await s.execute(select(AuditEntry.action).distinct())).scalars().all()
+    return sorted(a for a in rows if a)

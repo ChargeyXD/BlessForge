@@ -16,24 +16,35 @@ to any one server, so neither can live in a `.blessforge.json` manifest:
   `last_running_at` honest whether or not BlessForge was the thing that
   started the server, and it is the key the rail sorts on.
 
-Both are best effort. If `/data` cannot be written the state still works
-for the life of the process and every response says `persisted: false`,
-which the front end surfaces once rather than failing the action -- losing
-a rack layout on restart is a disappointment, refusing to let someone make
-one is a fault.
+Both live in the database (racks, rack_members, server_activity) and are
+held in memory as well, because the rack of a server is asked for on every
+scoped request (`auth.in_scope`) and the fleet poll touches activity every
+few seconds. `load()` fills the memory from the database at start; every
+change is written back before the call returns.
 
-There is no database here by design; this follows `whitelist.py`.
+Both are best effort. If the database cannot be written the state still
+works for the life of the process and every response says `persisted:
+false`, which the front end surfaces once rather than failing the action --
+losing a rack layout on restart is a disappointment, refusing to let
+someone make one is a fault.
 """
 from __future__ import annotations
 
-import json
+import asyncio
+import logging
 import re
 import time
 import unicodedata
 from typing import Any
 
-from .config import read_state, state_path, write_state
+from sqlalchemy import delete, select
 
+from app import db
+from app.db.models import Rack, RackMember, ServerActivity
+
+log = logging.getLogger(__name__)
+
+# The file this state lived in before 2.2. app/db/importer.py reads it once.
 STATE_FILE = "fleet-state.json"
 
 # The shrine marks a rack can wear. Kept in step with MOTIFS in app.js --
@@ -59,49 +70,97 @@ def _blank() -> dict[str, Any]:
 
 
 def _load() -> dict[str, Any]:
+    """The state in memory. Blank until `load()` has read the database."""
     global _state
-    if _state is not None:
-        return _state
-    path = state_path(STATE_FILE)
-    # read_state returns None for a file that is missing OR torn -- a
-    # half-written or all-NUL file is not data, and starting empty is the
-    # only safe reading of it.
-    text = read_state(path)
-    try:
-        raw = json.loads(text) if text else None
-    except ValueError:
-        raw = None
-    if raw is None:
+    if _state is None:
         _state = _blank()
-        return _state
-    state = _blank()
-    if isinstance(raw, dict):
-        groups = raw.get("groups")
-        if isinstance(groups, list):
-            state["groups"] = [g for g in (_clean_group(x) for x in groups) if g]
-        assign = raw.get("assign")
-        if isinstance(assign, dict):
-            state["assign"] = {str(k): str(v) for k, v in assign.items()
-                               if isinstance(v, str)}
-        activity = raw.get("activity")
-        if isinstance(activity, dict):
-            state["activity"] = {str(k): v for k, v in activity.items()
-                                 if isinstance(v, dict)}
-        state["updated_at"] = float(raw.get("updated_at") or 0)
-    _state = state
     return _state
 
 
-def _save() -> bool:
-    """Write the state. Never raises -- the caller carries on either way."""
+def clean_state(raw: Any) -> dict[str, Any]:
+    """Normalise a state document, from the database or an old JSON file.
+
+    A hand-edited file cannot put an arbitrary string into a class name or
+    an id: unknown motifs fall back, unnamed and non-dict groups are
+    dropped, and assignments are kept only as strings.
+    """
+    state = _blank()
+    if not isinstance(raw, dict):
+        return state
+    groups = raw.get("groups")
+    if isinstance(groups, list):
+        state["groups"] = [g for g in (_clean_group(x) for x in groups) if g]
+    assign = raw.get("assign")
+    if isinstance(assign, dict):
+        state["assign"] = {str(k): str(v) for k, v in assign.items()
+                           if isinstance(v, str)}
+    activity = raw.get("activity")
+    if isinstance(activity, dict):
+        state["activity"] = {str(k): v for k, v in activity.items()
+                             if isinstance(v, dict)}
+    state["updated_at"] = float(raw.get("updated_at") or 0)
+    return state
+
+
+async def load() -> dict[str, Any]:
+    """Read racks and activity from the database into memory."""
+    global _state, _persisted
+    try:
+        async with db.session() as s:
+            racks = (await s.execute(select(Rack).order_by(Rack.position))).scalars().all()
+            members = (await s.execute(select(RackMember))).scalars().all()
+            activity = (await s.execute(select(ServerActivity))).scalars().all()
+        _state = clean_state({
+            "groups": [{"id": r.id, "name": r.name, "motif": r.motif} for r in racks],
+            "assign": {m.server_id: m.rack_id for m in members},
+            "activity": {a.server_id: dict(a.record or {}) for a in activity},
+        })
+        _persisted = True
+    except Exception as e:      # noqa: BLE001 -- the panel works without it
+        log.warning("could not read racks from the database: %s", e)
+        _state = _blank()
+        _persisted = False
+    return _state
+
+
+_save_lock = asyncio.Lock()
+
+
+async def _save(*, activity_only: bool = False) -> bool:
+    """Write the state back. Never raises -- the caller carries on either way.
+
+    The whole layout is a few dozen rows, so it is rewritten in one
+    transaction rather than diffed: there is no half-saved layout to reason
+    about. Saves are serialised, so two changes in flight cannot interleave
+    their deletes and inserts.
+    """
     global _persisted
     state = _load()
     state["updated_at"] = time.time()
-    path = state_path(STATE_FILE)
-    # Was tmp-write-then-rename, which is atomic but NOT durable: on a hard
-    # restart the rename reached the disk before the bytes did and this file
-    # came back as 559 NUL bytes. write_state fsyncs before renaming.
-    _persisted = write_state(path, json.dumps(state, indent=1))
+    async with _save_lock:
+        try:
+            async with db.session() as s:
+                if not activity_only:
+                    await s.execute(delete(RackMember))
+                    await s.execute(delete(Rack))
+                    await s.flush()
+                    ids = set()
+                    for i, g in enumerate(state["groups"]):
+                        ids.add(g["id"])
+                        s.add(Rack(id=g["id"], name=g["name"], motif=g["motif"],
+                                   position=i))
+                    await s.flush()
+                    for sid, gid in state["assign"].items():
+                        if gid in ids:
+                            s.add(RackMember(server_id=sid, rack_id=gid))
+                await s.execute(delete(ServerActivity))
+                await s.flush()
+                for sid, rec in state["activity"].items():
+                    s.add(ServerActivity(server_id=sid, record=rec))
+            _persisted = True
+        except Exception as e:      # noqa: BLE001 -- reported as persisted: false
+            log.warning("could not save racks: %s", e)
+            _persisted = False
     return _persisted
 
 
@@ -167,7 +226,7 @@ def document(known: set[str] | None = None) -> dict[str, Any]:
     }
 
 
-def save_group(gid: str | None, name: str, motif: str | None,
+async def save_group(gid: str | None, name: str, motif: str | None,
                known: set[str] | None = None) -> dict[str, Any]:
     """Create a rack, or rename/remark an existing one."""
     state = _load()
@@ -190,22 +249,22 @@ def save_group(gid: str | None, name: str, motif: str | None,
         existing["motif"] = cleaned["motif"]
         saved = existing
 
-    _save()
+    await _save()
     doc = document(known)
     doc["group"] = next((g for g in doc["groups"] if g["id"] == saved["id"]),
                         None)
     return doc
 
 
-def delete_group(gid: str, known: set[str] | None = None) -> dict[str, Any]:
+async def delete_group(gid: str, known: set[str] | None = None) -> dict[str, Any]:
     state = _load()
     state["groups"] = [g for g in state["groups"] if g["id"] != gid]
     state["assign"] = {k: v for k, v in state["assign"].items() if v != gid}
-    _save()
+    await _save()
     return document(known)
 
 
-def assign(server_ids: list[str], group_id: str | None,
+async def assign(server_ids: list[str], group_id: str | None,
            known: set[str] | None = None) -> dict[str, Any]:
     """Hang servers on a rack, or (with group_id None) back in the yard."""
     state = _load()
@@ -217,11 +276,11 @@ def assign(server_ids: list[str], group_id: str | None,
             state["assign"][sid] = group_id
         else:
             state["assign"].pop(sid, None)
-    _save()
+    await _save()
     return document(known)
 
 
-def plan(groups: list[Any], known: set[str] | None = None) -> dict[str, Any]:
+async def plan(groups: list[Any], known: set[str] | None = None) -> dict[str, Any]:
     """Hang several racks at once, from a suggested layout.
 
     Additive: a suggestion never takes down a rack that is already there,
@@ -245,7 +304,7 @@ def plan(groups: list[Any], known: set[str] | None = None) -> dict[str, Any]:
         ids = raw.get("server_ids") if isinstance(raw, dict) else None
         for server_id in (ids or []):
             state["assign"][str(server_id)] = cleaned["id"]
-    _save()
+    await _save()
     doc = document(known)
     doc["made"] = made
     return doc
@@ -253,7 +312,7 @@ def plan(groups: list[Any], known: set[str] | None = None) -> dict[str, Any]:
 
 # --- activity -----------------------------------------------------------
 
-def observe(items: list[Any], full: bool = False) -> dict[str, Any]:
+async def observe(items: list[Any], full: bool = False) -> dict[str, Any]:
     """Record what the fleet poll just saw, and hand back the whole record.
 
     `last_started` is only set on a witnessed down -> up edge. The first
@@ -312,23 +371,23 @@ def observe(items: list[Any], full: bool = False) -> dict[str, Any]:
             notable = True
 
     # The fleet polls every few seconds and a running server moves
-    # `last_running_at` on every single one. Writing /data that often, for
-    # a number whose only reader says "ran 4 minutes ago", is pure wear on
-    # the disk. Transitions land immediately; the ticking clock lands at
+    # `last_running_at` on every single one. Writing that often, for a
+    # number whose only reader says "ran 4 minutes ago", is load for
+    # nothing. Transitions land immediately; the ticking clock lands at
     # most once a minute.
     if notable or (ticked and now - _last_tick_save > 60):
         if ticked:
             _last_tick_save = now
-        _save()
+        await _save(activity_only=True)
     return {"servers": activity, "at": now, "persisted": _persisted}
 
 
-def forget(server_id: str) -> None:
+async def forget(server_id: str) -> None:
     """Drop everything remembered about a server that has been deleted."""
     state = _load()
     if state["activity"].pop(str(server_id), None) is not None \
             or state["assign"].pop(str(server_id), None) is not None:
-        _save()
+        await _save()
 
 
 def reset_for_tests() -> None:

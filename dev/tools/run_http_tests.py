@@ -4,8 +4,10 @@
 `test_auth_http.py` walks the FIRST-RUN path, so it needs a server whose
 state is empty -- and pointing it at a real instance would create and delete
 accounts there. This starts one on a spare port with a fresh temporary
-DATA_DIR / STATE_DIR (and, when DATABASE_URL is set, that database), runs
-each suite, and tears the server down whatever happens.
+DATA_DIR / STATE_DIR and database, runs each suite, and tears the server
+down whatever happens. The database is a SQLite file in that directory, or
+-- with TEST_DATABASE_URL set -- that Postgres, emptied first (so point it
+at a database that exists only for tests).
 
     python dev/tools/run_http_tests.py              # every HTTP suite
     python dev/tools/run_http_tests.py test_auth_http
@@ -45,9 +47,27 @@ def wait_up(url: str, seconds: float = 40) -> bool:
     return False
 
 
+def empty_database(url: str) -> None:
+    """Drop and recreate the public schema of a test-only Postgres."""
+    import asyncio
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    async def go():
+        eng = create_async_engine(url)
+        async with eng.begin() as conn:
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+        await eng.dispose()
+    asyncio.run(go())
+
+
 def main(argv: list[str]) -> int:
     suites = argv or SUITES
     data = pathlib.Path(tempfile.mkdtemp(prefix="bf-http-"))
+    test_db = os.environ.get("TEST_DATABASE_URL", "").strip()
+    if test_db:
+        empty_database(test_db)
     port = free_port()
     url = f"http://127.0.0.1:{port}"
     env = {
@@ -61,6 +81,7 @@ def main(argv: list[str]) -> int:
         # the health check down.
         "CURSEFORGE_API_KEY": "", "CURSEFORGE_API_KEY_B64": "",
         "OLLAMA_URL": "", "MODRINTH_ENABLED": "false",
+        "DATABASE_URL": test_db,
     }
     log = open(data / "server.log", "wb")
     # The fleet routes need something to list: the in-memory engine, seeded
@@ -77,7 +98,7 @@ def main(argv: list[str]) -> int:
             print((data / "server.log").read_text(errors="replace")[-2000:])
             return 1
         for name in suites:
-            print(f"== {name}")
+            print(f"== {name} ({'postgres' if test_db else 'sqlite'})")
             r = subprocess.run(
                 [sys.executable, str(ROOT / "dev" / "tools" / f"{name}.py")],
                 cwd=ROOT, env={**env, "BF_URL": url})

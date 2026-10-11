@@ -42,12 +42,14 @@ services:
     # larger than that; it is not a soft limit, the container is killed.
     mem_limit: 1g
 
-    # The default bridge, deliberately. A CasaOS box accumulates one network
-    # per app and Docker's address pools run out after about thirty, after
-    # which every new project fails with "all predefined address pools have
-    # been fully subnetted". BlessForge only talks outward, so it needs no
-    # private network of its own.
-    network_mode: bridge
+    # The project's own network, which the database needs: on Docker's
+    # default bridge containers cannot find each other by name. That costs
+    # one of the ~30 address pools a CasaOS box has (past them, every new
+    # project fails with "all predefined address pools have been fully
+    # subnetted") -- one network for the whole app, not one per service.
+    depends_on:
+      postgres:
+        condition: service_healthy
 
     # Reach services on the host: an Ollama for the AI assistant, and a node
     # agent when it runs on this same machine.
@@ -65,6 +67,13 @@ services:
       # BlessForge, each running the BlessForge node agent; "mock" keeps
       # everything in memory, for trying the interface with no node at all.
       ENGINE: "mock"
+
+      # ---- The database --------------------------------------------------
+      # Accounts, sessions, the audit log, racks and decisions live in the
+      # Postgres service below. Change POSTGRES_PASSWORD in BOTH places
+      # before the first start; the database is never published outside
+      # this compose project.
+      DATABASE_URL: "postgresql+asyncpg://blessforge:CHANGE-ME@postgres:5432/blessforge"
 
       # ---- Mod sources --------------------------------------------------
       # Your own CurseForge key, base64-encoded: echo -n '<key>' | base64 -w0
@@ -95,8 +104,8 @@ services:
       SERVER_READY_TIMEOUT: "900"
       TZ: "UTC"
 
-      # BlessForge measures RAM and CPU from inside its own container. If
-      # Crafty runs on a DIFFERENT machine, set these to describe that machine
+      # BlessForge measures RAM and CPU from inside its own container. If the
+      # node runs on a DIFFERENT machine, set these to describe that machine
       # or the optimizer will size heaps against the wrong host.
       # HOST_RAM_GB: "16"
       # HOST_CPU_COUNT: "8"
@@ -108,15 +117,15 @@ services:
       # This MUST be a folder of its own, and the path has to be spelled out
       # here. A named volume looks tidier but leaves the host path blank in
       # CasaOS's install dialog, and an unassigned row there is filled in by
-      # hand -- which is how this once ended up bind-mounted onto Crafty's
-      # AppData, where the app could not write a single byte and every install
+      # hand -- which is how this once ended up bind-mounted onto another
+      # app's folder, where it could not write a single byte and every install
       # failed with no visible error. The container starts as root purely to
       # chown this folder and then drops to uid 1000 (see entrypoint.sh), so a
       # root-created bind mount works with no manual chown.
       - /DATA/AppData/blessforge/data:/data
 
     healthcheck:
-      # /api/healthz is a static liveness probe -- it never touches Crafty or
+      # /api/healthz is a static liveness probe -- it never touches a node or
       # CurseForge, so a misconfigured key cannot make the container look dead.
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8710/api/healthz"]
       interval: 30s
@@ -186,6 +195,29 @@ services:
           mode: rw
           description:
             en_us: "BlessForge's own folder: modpack download cache and imported pack exports. Give it an empty folder of its own -- not Crafty's."
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: blessforge-postgres
+    restart: unless-stopped
+    # Small: BlessForge's tables are accounts, sessions and records, not
+    # worlds. The RAM it does not take is RAM a Minecraft server can have.
+    mem_limit: 512m
+    environment:
+      POSTGRES_USER: "blessforge"
+      # Must match the password in DATABASE_URL above.
+      POSTGRES_PASSWORD: "CHANGE-ME"
+      POSTGRES_DB: "blessforge"
+    volumes:
+      # Its own folder beside BlessForge's, spelled out for the same reason
+      # as /data: a named volume leaves a blank row in the CasaOS dialog.
+      - /DATA/AppData/blessforge/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blessforge -d blessforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
 x-casaos:
   architectures:

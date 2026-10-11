@@ -25,3 +25,14 @@ users.json
 sessions.json
 audit.jsonl
 fleet-state.json
+
+# The database. A dev run with no DATABASE_URL keeps a SQLite file under
+# STATE_DIR; the control-plane compose keeps its data and Postgres files
+# beside itself. None of it belongs in a commit, and its .env holds secrets.
+*.db
+*.db-wal
+*.db-shm
+*.imported
+deploy/control-plane/.env
+deploy/control-plane/data/
+deploy/control-plane/postgres/
