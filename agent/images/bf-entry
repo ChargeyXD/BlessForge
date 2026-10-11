@@ -1,0 +1,25 @@
+#!/bin/sh
+# bf-entry: the first thing that runs in every BlessForge server container.
+#
+# Docker's init (tini, from HostConfig.Init) is PID 1 and forwards signals.
+# This only checks the folder, then REPLACES itself with the server (exec),
+# so the server reads the console on stdin and gets SIGTERM directly. The
+# command arrives as argv from the agent -- never through a shell.
+set -eu
+
+cd /server 2>/dev/null || {
+  echo "[BlessForge] /server is missing: the node did not mount the server folder." >&2
+  exit 70
+}
+if [ ! -w /server ]; then
+  echo "[BlessForge] /server is not writable by uid $(id -u):" \
+       "the folder on the node has the wrong owner." >&2
+  exit 70
+fi
+if [ "$#" -eq 0 ]; then
+  echo "[BlessForge] no startup command was given." >&2
+  exit 64
+fi
+
+echo "[BlessForge] Java: $(java -version 2>&1 | head -n 1)"
+exec "$@"

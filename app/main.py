@@ -18,6 +18,7 @@ from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 
 from app import (
+    agent_api,
     ai,
     auth,
     backups,
@@ -38,6 +39,7 @@ from app import (
     loaders,
     modrinth,
     mods as modmgr,
+    nodes,
     optimizer,
     players,
     plugins,
@@ -69,6 +71,8 @@ async def _lifespan(_app: FastAPI):
     except Exception as e:      # noqa: BLE001 -- logged; the app still starts
         logging.getLogger(__name__).error("the JSON import failed: %s", e)
     await auth.bootstrap()
+    if config.ENGINE == "agent":
+        await engine.load_nodes()
     await fleetgroups.load()
     await whitelist.load()
     # With Redis the worker owns the scheduled sweep; without it, this
@@ -89,7 +93,8 @@ async def _lifespan(_app: FastAPI):
         await db.dispose()
 
 
-app = FastAPI(title="BlessForge", version="2.1.0", lifespan=_lifespan)
+app = FastAPI(title="BlessForge", version="2.2.0", lifespan=_lifespan)
+app.include_router(agent_api.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -166,6 +171,10 @@ _health_lock = asyncio.Lock()
 
 
 async def _check_engine(state: dict) -> dict:
+    if engine.kind() == "agent" and not engine.drivers():
+        return {"ok": False, "driver": "agent", "nodes": 0, "servers": 0,
+                "error": "no node is registered yet -- register one (Admin, or "
+                         "POST /api/admin/nodes) and start its agent"}
     try:
         started = time.perf_counter()
         servers = await asyncio.wait_for(engine.list_servers(), timeout=5.0)
@@ -1216,6 +1225,57 @@ async def _console_snapshot(server_id: str, source: str = "auto",
             running = False
     return {"lines": lines, "source": used, "running": running,
             "count": len(lines)}
+
+
+@app.get("/api/instances/{server_id}/console/socket")
+async def console_socket(server_id: str, request: Request) -> dict:
+    """A short-lived token for the agent's console websocket.
+
+    The browser talks to the node directly for the console -- no poll, no
+    hop through this API -- with a token signed here that the agent checks
+    against this panel's public key. Only an agent engine has one; on the
+    in-memory engine the console falls back to /console/stream.
+    """
+    from app.engine.agent import AgentEngine
+    drv = await engine._driver(server_id)
+    if not isinstance(drv, AgentEngine):
+        return {"available": False}
+    user = request.state.user
+    perms = ["console.read"] + (["console.command"]
+                                if auth.may(user, "console.command") else [])
+    token, expires = await nodes.sign_browser_token(
+        user=user, server_uuid=server_id, node_id=drv.node_id, perms=perms)
+    return {"available": True, "url": drv.socket_url(server_id, token, drv.url),
+            "expires": expires, "may_type": "console.command" in perms}
+
+
+@app.post("/api/instances/{server_id}/files/transfer")
+async def files_transfer(server_id: str, request: Request,
+                         body: dict = Body(...)) -> dict:
+    """A signed link to move one file straight between the browser and the node.
+
+    Saves streaming a world folder through this API twice. The token names
+    the one path it covers and expires in five minutes.
+    """
+    from app.engine.agent import AgentEngine
+    mode = body.get("mode")
+    if mode not in ("download", "upload"):
+        raise HTTPException(400, "mode must be download or upload")
+    user = request.state.user
+    if mode == "upload" and not auth.may(user, "files.write"):
+        raise HTTPException(403, "You do not have permission to do that (files.write).")
+    path = files.guard_path(body.get("path"), allow_root=False)
+    drv = await engine._driver(server_id)
+    if not isinstance(drv, AgentEngine):
+        return {"available": False}
+    perm = "files.read" if mode == "download" else "files.write"
+    token, expires = await nodes.sign_browser_token(
+        user=user, server_uuid=server_id, node_id=drv.node_id, perms=[perm],
+        path=path)
+    from urllib.parse import urlencode
+    query = urlencode({"token": token, "server": server_id, "path": path})
+    return {"available": True, "method": "GET" if mode == "download" else "POST",
+            "url": f"{drv.url}/v1/{mode}?{query}", "expires": expires}
 
 
 @app.get("/api/instances/{server_id}/console")
@@ -2971,7 +3031,7 @@ async def guard(request: Request, call_next):
         return await call_next(request)
 
     permission, scoped = policy.required(method, path)
-    if permission == policy.PUBLIC:
+    if permission in (policy.PUBLIC, policy.NODE):
         return await call_next(request)
 
     user = await auth.session_user(request.cookies.get(COOKIE))
@@ -3152,6 +3212,44 @@ async def admin_permissions() -> dict:
     return {"permissions": auth.PERMISSIONS, "roles": auth.ROLES,
             "role_permissions": auth.ROLE_PERMISSIONS,
             "global_permissions": sorted(auth.GLOBAL_PERMISSIONS)}
+
+
+@app.get("/api/admin/nodes")
+async def admin_nodes() -> dict:
+    return {"items": await nodes.list_nodes(), "engine": engine.kind()}
+
+
+@app.post("/api/admin/nodes")
+async def admin_register_node(request: Request, body: dict = Body(...)) -> dict:
+    """Register a node. The answer holds its agent config -- shown once."""
+    try:
+        made = await nodes.register(
+            name=str(body.get("name") or ""), fqdn=str(body.get("fqdn") or ""),
+            agent_port=int(body.get("agent_port") or 8443),
+            scheme=str(body.get("scheme") or "https"),
+            region=body.get("region") or None,
+            panel_url=body.get("panel_url") or None,
+            runtime=str(body.get("runtime") or "docker"),
+            extra=body.get("agent") if isinstance(body.get("agent"), dict) else None)
+    except nodes.NodeError as e:
+        raise HTTPException(e.status, str(e))
+    await engine.load_nodes()
+    await auth.audit(actor=request.state.user["username"], action="admin.nodes.create",
+                     detail=f"{made['node']['id']} at {made['node']['fqdn']}",
+                     after={k: made["node"][k] for k in ("id", "fqdn", "agent_port")},
+                     ip=_client_ip(request))
+    return made
+
+
+@app.get("/api/admin/nodes/{node_id}/system")
+async def admin_node_system(node_id: str) -> dict:
+    drv = engine.drivers().get(node_id)
+    if drv is None or not hasattr(drv, "_call"):
+        raise HTTPException(404, "no such node")
+    try:
+        return await drv._call("GET", "/v1/system", timeout=15)
+    except Exception as e:
+        raise _err(e)
 
 
 @app.get("/api/admin/users")

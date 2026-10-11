@@ -36,6 +36,10 @@ PUBLIC = "@public"
 ANY = "@any"
 ADMIN = "@admin"
 DENY = "@deny"
+# `NODE` needs no session either -- and must not have one: it is a node's
+# agent calling, and the route itself checks the node token
+# (app/agent_api.py). A browser cookie never opens one of these.
+NODE = "@node"
 
 
 class Rule(NamedTuple):
@@ -66,7 +70,14 @@ RULES: list[Rule] = [
     _r("POST", "/api/auth/logout", ANY),
     _r("POST", "/api/auth/password", ANY),      # changing your OWN password
 
+    # --- the node agents (node token, checked in the route) -------------
+    _r("GET", "/api/agent/servers", NODE),
+    _r("POST", "/api/agent/events", NODE),
+    _r("POST", "/api/agent/sftp-auth", NODE),
+
     # --- admin only ----------------------------------------------------
+    _r("*", "/api/admin/nodes", ADMIN),
+    _r("GET", "/api/admin/nodes/{node_id}/system", ADMIN),
     _r("*", "/api/admin/users", ADMIN),
     _r("*", "/api/admin/users/{username}", ADMIN),
     _r("*", "/api/admin/users/{username}/password", ADMIN),
@@ -95,6 +106,7 @@ RULES: list[Rule] = [
 
     # --- console --------------------------------------------------------
     _r("GET", "/api/instances/{server_id}/console", "console.read", True),
+    _r("GET", "/api/instances/{server_id}/console/socket", "console.read", True),
     _r("GET", "/api/instances/{server_id}/console/stream", "console.read", True),
     _r("GET", "/api/instances/{server_id}/logs", "console.read", True),
     _r("POST", "/api/instances/{server_id}/command", "console.command", True),
@@ -103,6 +115,7 @@ RULES: list[Rule] = [
     _r("GET", "/api/instances/{server_id}/files", "files.read", True),
     _r("GET", "/api/instances/{server_id}/files/read", "files.read", True),
     _r("GET", "/api/instances/{server_id}/files/download", "files.read", True),
+    _r("POST", "/api/instances/{server_id}/files/transfer", "files.read", True),
     _r("GET", "/api/instances/{server_id}/files/search", "files.read", True),
     _r("GET", "/api/instances/{server_id}/files/usage", "files.read", True),
     _r("POST", "/api/instances/{server_id}/files/write", "files.write", True),

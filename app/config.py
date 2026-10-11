@@ -58,6 +58,16 @@ GAME_PORT_RANGE = _port_range(os.environ.get("GAME_PORT_RANGE", "") or "25500-25
 # and the offline tests; /api/health says which is in use.
 DATABASE_URL = (os.environ.get("DATABASE_URL", "") or "").strip()
 
+# --- Nodes ----------------------------------------------------------------------
+# Encrypts what BlessForge stores for its nodes (their tokens) and the key it
+# signs browser tokens with. Set it in production and keep it: losing it
+# means registering every node again. Blank, a dev box generates one under
+# STATE_DIR (and says so).
+SECRET_KEY = (os.environ.get("BLESSFORGE_SECRET", "") or "").strip()
+# How a node's agent reaches this panel (it goes into the agent's config).
+PUBLIC_API_URL = (os.environ.get("PUBLIC_API_URL", "") or
+                  f"http://127.0.0.1:{os.environ.get('PORT', '8710')}").rstrip("/")
+
 # --- The job queue --------------------------------------------------------
 # redis://host:6379/0. Set, long jobs (installs, provisioning, the update
 # sweep) run in the worker process (`arq app.worker.WorkerSettings`) and

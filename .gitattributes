@@ -10,6 +10,8 @@
 *.sh        text eol=lf
 Dockerfile  text eol=lf
 entrypoint.sh text eol=lf
+agent/images/bf-entry text eol=lf
+*.service   text eol=lf
 
 # Everything else is normalised in the index and left to the platform in the
 # working copy, which is the sane default.

@@ -37,3 +37,7 @@ deploy/control-plane/.env
 deploy/control-plane/data/
 deploy/control-plane/postgres/
 deploy/control-plane/redis/
+
+# A node agent's config holds its token in the clear (dev/agent/README.md).
+agent.toml
+.agent/

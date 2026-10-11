@@ -1,0 +1,8 @@
+# The node agent's own dependencies -- it is installed on nodes, apart from
+# the panel. Pinned to the versions the security suite ran against.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pyjwt==2.15.1
+cryptography==50.0.2
+psutil==7.2.2

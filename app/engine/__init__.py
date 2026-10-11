@@ -25,7 +25,7 @@ __all__ = [
     "EULA_ACCEPTED", "POWER_ACTIONS", "EngineError", "ServerEngine",
     "java_in_command", "java_of", "power_action", "required_java_major",
     "uptime_seconds", "configure", "kind", "drivers", "remember", "for_server",
-    "default_node", "list_servers", "get_server", "get_stats", "create_server",
+    "default_node", "load_nodes", "list_servers", "get_server", "get_stats", "create_server",
     "delete_server", "update_server", "power", "install", "set_runtime",
     "list_dir", "dir_exists", "read_file", "write_file", "delete_paths",
     "rename_path", "move_path", "create_entry", "ensure_dir", "upload_file",
@@ -94,13 +94,64 @@ def for_server(server_id: str) -> ServerEngine:
     """The driver for the node holding this server."""
     _ensure()
     if not _drivers:
-        raise EngineError("no node is configured, so there are no servers", 503)
+        raise EngineError("no node is registered, so there are no servers yet",
+                          503)
     node = _server_node.get(server_id)
     if node and node in _drivers:
         return _drivers[node]
     if len(_drivers) == 1:
         return next(iter(_drivers.values()))
     raise EngineError(f"no node is known to hold server {server_id}", 404)
+
+
+async def load_nodes() -> int:
+    """Build an agent driver for every registered node, and map their servers.
+
+    Only for ENGINE=agent. Called at start (API and worker) and after a node
+    is registered. Returns how many nodes there are.
+    """
+    _ensure()
+    if _configured != "agent":
+        return len(_drivers)
+    from sqlalchemy import select
+    from app import db, nodes
+    from app.db.models import Server
+    from app.engine.agent import AgentEngine
+    rows = await nodes.all_rows()
+    fresh = {}
+    for node in rows:
+        try:
+            fresh[node.id] = AgentEngine(node, nodes.agent_url(node),
+                                         nodes.token_header(node))
+        except Exception as e:      # noqa: BLE001 -- one bad node is not all of them
+            import logging
+            logging.getLogger(__name__).warning("node %s skipped: %s", node.id, e)
+    _drivers.clear()
+    _drivers.update(fresh)
+    async with db.session() as s:
+        for sid, nid in (await s.execute(select(Server.uuid, Server.node_id))).all():
+            if nid:
+                remember(sid, nid)
+    return len(_drivers)
+
+
+async def _driver(server_id: str) -> ServerEngine:
+    """for_server, falling back to the database for a server created elsewhere."""
+    try:
+        return for_server(server_id)
+    except EngineError as e:
+        if e.status != 404 or _configured != "agent":
+            raise
+    from app import db
+    from app.db.models import Server
+    async with db.session() as s:
+        row = await s.get(Server, server_id)
+    if row is None or not row.node_id:
+        raise EngineError(f"no server {server_id}", 404)
+    remember(server_id, row.node_id)
+    if row.node_id not in _drivers:
+        await load_nodes()
+    return for_server(server_id)
 
 
 def default_node() -> str:
@@ -136,11 +187,11 @@ async def list_servers() -> list[dict]:
 
 
 async def get_server(server_id: str) -> dict:
-    return await for_server(server_id).get_server(server_id)
+    return await (await _driver(server_id)).get_server(server_id)
 
 
 async def get_stats(server_id: str) -> dict:
-    return await for_server(server_id).get_stats(server_id)
+    return await (await _driver(server_id)).get_stats(server_id)
 
 
 async def create_server(*, name: str, port: int, memory_mb: int,
@@ -161,31 +212,31 @@ async def create_server(*, name: str, port: int, memory_mb: int,
 
 
 async def delete_server(server_id: str, delete_files: bool = True) -> None:
-    await for_server(server_id).delete_server(server_id, delete_files)
+    await (await _driver(server_id)).delete_server(server_id, delete_files)
     _server_node.pop(server_id, None)
 
 
 async def update_server(server_id: str, fields: dict) -> None:
-    await for_server(server_id).update_server(server_id, fields)
+    await (await _driver(server_id)).update_server(server_id, fields)
 
 
 async def power(server_id: str, action: str) -> None:
-    await for_server(server_id).power(server_id, power_action(action))
+    await (await _driver(server_id)).power(server_id, power_action(action))
 
 
 async def install(server_id: str, spec: dict) -> dict:
-    return await for_server(server_id).install(server_id, spec)
+    return await (await _driver(server_id)).install(server_id, spec)
 
 
 async def set_runtime(server_id: str, mc_version: str) -> dict:
-    return await for_server(server_id).set_runtime(server_id, mc_version)
+    return await (await _driver(server_id)).set_runtime(server_id, mc_version)
 
 
 # --- files --------------------------------------------------------------------
 
 
 async def list_dir(server_id: str, path: str = ".") -> dict:
-    return await for_server(server_id).list_dir(server_id, path)
+    return await (await _driver(server_id)).list_dir(server_id, path)
 
 
 async def dir_exists(server_id: str, path: str) -> bool:
@@ -197,29 +248,29 @@ async def dir_exists(server_id: str, path: str) -> bool:
 
 
 async def read_file(server_id: str, path: str) -> str:
-    return await for_server(server_id).read_file(server_id, path)
+    return await (await _driver(server_id)).read_file(server_id, path)
 
 
 async def write_file(server_id: str, path: str, contents: str) -> None:
-    await for_server(server_id).write_file(server_id, path, contents)
+    await (await _driver(server_id)).write_file(server_id, path, contents)
 
 
 async def delete_paths(server_id: str, rel_paths: list[str]) -> None:
     if rel_paths:
-        await for_server(server_id).delete_paths(server_id, rel_paths)
+        await (await _driver(server_id)).delete_paths(server_id, rel_paths)
 
 
 async def rename_path(server_id: str, path: str, new_name: str) -> None:
-    await for_server(server_id).rename_path(server_id, path, new_name)
+    await (await _driver(server_id)).rename_path(server_id, path, new_name)
 
 
 async def move_path(server_id: str, path: str, dest_dir: str) -> None:
-    await for_server(server_id).move_path(server_id, path, dest_dir)
+    await (await _driver(server_id)).move_path(server_id, path, dest_dir)
 
 
 async def create_entry(server_id: str, parent: str, name: str,
                        directory: bool = False) -> None:
-    await for_server(server_id).create_entry(server_id, parent, name, directory)
+    await (await _driver(server_id)).create_entry(server_id, parent, name, directory)
 
 
 async def ensure_dir(server_id: str, rel_dir: str) -> None:
@@ -233,11 +284,11 @@ async def ensure_dir(server_id: str, rel_dir: str) -> None:
 
 async def upload_file(server_id: str, location: str, filename: str,
                       payload: bytes) -> None:
-    await for_server(server_id).upload_file(server_id, location, filename, payload)
+    await (await _driver(server_id)).upload_file(server_id, location, filename, payload)
 
 
 async def upload_path(server_id: str, location: str, filename: str, src: Any) -> None:
-    await for_server(server_id).upload_path(server_id, location, filename, src)
+    await (await _driver(server_id)).upload_path(server_id, location, filename, src)
 
 
 async def extract(server_id: str, rel_zip_path: str) -> None:
@@ -246,15 +297,15 @@ async def extract(server_id: str, rel_zip_path: str) -> None:
     Finished when this returns -- unlike the controller this replaced, whose
     unzip answered "started" and left the caller to poll for the result.
     """
-    await for_server(server_id).extract(server_id, rel_zip_path)
+    await (await _driver(server_id)).extract(server_id, rel_zip_path)
 
 
 async def download_file(server_id: str, rel_path: str) -> bytes:
-    return await for_server(server_id).download_file(server_id, rel_path)
+    return await (await _driver(server_id)).download_file(server_id, rel_path)
 
 
 async def stream_file(server_id: str, rel_path: str) -> AsyncIterator[bytes]:
-    async for chunk in for_server(server_id).stream_file(server_id, rel_path):
+    async for chunk in (await _driver(server_id)).stream_file(server_id, rel_path):
         yield chunk
 
 
@@ -311,14 +362,14 @@ async def walk(server_id: str, root: str = ".", max_entries: int = 20000) -> lis
 
 
 async def console_lines(server_id: str, *, from_file: bool = False) -> list[str]:
-    return await for_server(server_id).console_lines(server_id, from_file=from_file)
+    return await (await _driver(server_id)).console_lines(server_id, from_file=from_file)
 
 
 async def send_command(server_id: str, command: str) -> dict:
     line = (command or "").strip()
     if not line:
         raise ValueError("no command given")
-    return await for_server(server_id).send_command(server_id, line)
+    return await (await _driver(server_id)).send_command(server_id, line)
 
 
 # --- the BlessForge manifest ----------------------------------------------------

@@ -11,3 +11,6 @@ alembic==1.20.0
 # The job queue (WP-04).
 arq==0.28.0
 redis==5.3.1
+# Nodes (WP-05): encrypted node tokens, and Ed25519 browser tokens.
+cryptography==50.0.2
+pyjwt==2.15.1

@@ -1,12 +1,15 @@
 /* ============================================================
    Console — the server's output, live, with a command box.
 
-   The backend follows the node's console and streams only the
-   lines that are new. Two behaviours matter here and
-   both are about being able to read scrollback on a chatty
-   server: following pauses the moment you scroll up and resumes
-   when you scroll back to the bottom, and the filter never
-   discards lines, it only hides them.
+   On a node running the BlessForge agent the browser talks to
+   the node itself over a websocket, with a five-minute token the
+   panel signs: lines arrive as they are written, and commands go
+   back the same way. Where there is no agent (the in-memory
+   engine) it falls back to the panel's polled stream. Two
+   behaviours matter either way, both about reading scrollback on
+   a chatty server: following pauses the moment you scroll up and
+   resumes at the bottom, and the filter never discards lines, it
+   only hides them.
    ============================================================ */
 
 import {
@@ -42,6 +45,9 @@ export async function render(ctx) {
   let query = '';
   let lines = [];
   let source = null;
+  let socket = null;
+  let socketFailures = 0;
+  let mayType = true;
   let closed = false;
 
   const cmd = h('input.inp', {
@@ -73,6 +79,15 @@ export async function render(ctx) {
     sent = [...sent.filter((s) => s !== line), line].slice(-40);
     histIdx = sent.length;
     prefs.set('console.history', sent);
+    // Over the socket the node echoes the command into the console itself.
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      if (!mayType) {
+        toast('You can read this console but not type into it.', 'warn');
+        return;
+      }
+      socket.send(JSON.stringify({ type: 'command', command: line }));
+      return;
+    }
     try {
       await api.post(`/api/instances/${ctx.id}/command`, { command: line });
       push([`> ${line}`], true);
@@ -142,7 +157,71 @@ export async function render(ctx) {
     },
   }, icon('eye', 13), h('span', 'Following'));
 
-  function connect() {
+  function setRunning(running) {
+    statusPill.className = `pill ${running ? 'ok' : 'dead'}`;
+    statusPill.textContent = running ? 'running' : 'stopped';
+    cmd.disabled = !running;
+    cmd.placeholder = running
+      ? 'Type a command and press Enter (no leading /)'
+      : 'The server is not running';
+  }
+
+  /* The node's own socket. A token is good for one connection; a dropped
+     socket asks for a fresh one rather than reusing it, and two failures
+     in a row fall back to the polled stream for the rest of the visit. */
+  async function connectSocket() {
+    let info;
+    try {
+      info = await api.get(`/api/instances/${ctx.id}/console/socket`);
+    } catch {
+      return false;
+    }
+    if (!info?.available || closed) return false;
+    mayType = info.may_type !== false;
+    return new Promise((resolve) => {
+      let opened = false;
+      socket = new WebSocket(info.url);
+      socket.onopen = () => {
+        opened = true;
+        socketFailures = 0;
+        sourcePill.textContent = 'live from the node';
+        sourcePill.title = 'Straight from the node, over a websocket';
+        resolve(true);
+      };
+      socket.onmessage = (event) => {
+        let frame;
+        try { frame = JSON.parse(event.data); } catch { return; }
+        if (frame.type === 'backlog') {
+          lines = frame.lines || [];
+          repaint();
+          setRunning(['starting', 'running'].includes(frame.state));
+        } else if (frame.type === 'lines') {
+          push(frame.lines || []);
+        } else if (frame.type === 'stats') {
+          setRunning(!!frame.running);
+        } else if (frame.type === 'error') {
+          toast(frame.message, 'warn');
+        }
+      };
+      socket.onclose = () => {
+        socket = null;
+        if (!opened) { resolve(false); return; }
+        if (closed) return;
+        statusPill.className = 'pill warn';
+        statusPill.textContent = 'reconnecting';
+        socketFailures += 1;
+        setTimeout(() => { if (!closed) connect(); }, 1500);
+      };
+    });
+  }
+
+  async function connect() {
+    if (socketFailures < 2 && await connectSocket()) return;
+    if (closed) return;
+    connectStream();
+  }
+
+  function connectStream() {
     source?.close();
     source = new EventSource(`/api/instances/${ctx.id}/console/stream`);
     source.onmessage = (event) => {
@@ -250,7 +329,7 @@ export async function render(ctx) {
 
   return {
     node,
-    dispose() { closed = true; source?.close(); },
+    dispose() { closed = true; source?.close(); socket?.close(); },
     onRunningChanged(running) {
       cmd.disabled = !running;
       statusPill.className = `pill ${running ? 'ok' : 'dead'}`;

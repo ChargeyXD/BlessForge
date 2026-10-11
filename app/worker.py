@@ -49,6 +49,7 @@ async def startup(ctx) -> None:
     jobs.OWNER = OWNER
     await db.init()
     eng.configure()
+    await eng.load_nodes()
     await whitelist.load()
     ctx["heartbeat"] = asyncio.create_task(jobs.heartbeat_forever())
     ctx["sweep"] = asyncio.create_task(_sweep_forever())
