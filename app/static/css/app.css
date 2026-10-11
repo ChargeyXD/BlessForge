@@ -2290,6 +2290,14 @@ html.js-motion .ofuda.thinking .ofuda-seal{
   .ofuda-line{gap:6px}
 }
 
+/* The waiting ofuda: mods a pack names that their authors will not let a
+   third party fetch. Same strip, a warning seal rather than the vermilion
+   one -- it is a request for the operator's hands, not a receipt. */
+.ofuda.waiting{border-color:var(--amber-ink)}
+.ofuda.waiting .ofuda-seal{background:var(--amber-ink)}
+.ofuda.waiting .ofuda-line{align-items:center}
+.waiting-acts{display:inline-flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+
 /* Two containers the rack screen leans on. Left to browser defaults they
    work, in the sense that nothing overlaps -- but the racks end up evenly
    spaced with the plaques hanging off them, which reads as a list of

@@ -1356,3 +1356,44 @@ export function sourceMark(source) {
     h('img', { src: art.src, alt: '', loading: 'lazy', width: 13, height: 13 }),
     h('span', art.label));
 }
+
+
+/* Mods a pack lists that BlessForge would not fetch: their authors turned
+   off third-party downloads, and Modrinth does not carry the jar either.
+   An ofuda, because like the Tune screen's it records a decision taken on
+   the operator's behalf -- here a refusal -- and it has to say what to do
+   about it. `onUpload(item)` adds a per-row upload button (the Mods tab);
+   without it the strip is a notice (the review, the install report). */
+const CF_PAGE = /^https:\/\/www\.curseforge\.com\//;
+
+export function blockedByAuthor(items, { onUpload } = {}) {
+  if (!items?.length) return null;
+  const n = items.length;
+  return h('div.ofuda.waiting', { role: 'note' },
+    h('span.ofuda-seal', { 'aria-hidden': 'true' }),
+    h('div', { style: { minWidth: '0', flex: '1 1 auto' } },
+      h('div.ofuda-hd',
+        `${n} mod${n > 1 ? 's' : ''} you will have to bring yourself`),
+      h('div.ofuda-sum',
+        `${n > 1 ? 'Their authors' : 'Its author'} turned off third-party `
+        + 'downloads and Modrinth does not carry '
+        + `${n > 1 ? 'them' : 'it'}, so BlessForge will not fetch `
+        + `${n > 1 ? 'them' : 'it'}. Download each from its CurseForge page `
+        + 'and upload the jar here.'),
+      h('ul.ofuda-lines', ...items.map((b) => h('li.ofuda-line',
+        h('span.move', b.name || b.file_name || 'unnamed file'),
+        b.required === false ? pill('optional', 'ghost') : null,
+        b.required_by ? h('span.what', `for ${b.required_by}`) : null,
+        h('span.ofuda-note.mono', b.file_name || ''),
+        h('span.waiting-acts',
+          CF_PAGE.test(b.url || '')
+            ? h('a.btn.xs.ghost', {
+              href: b.url, target: '_blank', rel: 'noopener noreferrer',
+            }, icon('link', 12), h('span', 'CurseForge page'))
+            : null,
+          onUpload
+            ? h('button.btn.xs', { onclick: () => onUpload(b) },
+              hl(), icon('upload', 12), h('span', 'Upload jar'))
+            : null)))),
+      h('div.ofuda-foot', 'listed until a jar with that name is in the folder')));
+}

@@ -1,10 +1,14 @@
 """AI assistant for troubleshooting, via an Ollama-compatible HTTP API.
 
-The model runs on a shared Ollama server (`OLLAMA_URL`), not on this host.
-That is worth knowing when reading the tuning below: prompt evaluation is no
-longer the dominant cost, so the evidence budget is generous rather than
-miserly, and the context window is sized from the prompt instead of being
-kept deliberately tiny.
+The model runs on an Ollama server the operator runs (`OLLAMA_URL`), or on
+one beside BlessForge (`OLLAMA_LOCAL_URL`). There is no default endpoint:
+with `OLLAMA_URL` blank the assistant is simply off, and everything else in
+the app works without it. An earlier version defaulted to somebody else's
+endpoint, which sent crash reports to a third party nobody had chosen;
+README.md "The AI assistant" explains running your own.
+
+Prompt evaluation on a remote endpoint is the dominant cost, which is why
+the evidence budget below is selected rather than sent whole.
 
 Deliberate constraints, because a small model is a useful pattern-matcher and
 a poor decision-maker:
@@ -34,7 +38,9 @@ import httpx
 
 from app import config
 
-OLLAMA_URL = (os.environ.get("OLLAMA_URL", "https://ai.shadowco.xyz")).rstrip("/")
+# Blank means "no assistant". Never default this to an endpoint somebody
+# else runs: every crash report and mod list would go there.
+OLLAMA_URL = (os.environ.get("OLLAMA_URL", "") or "").strip().rstrip("/")
 # Qwen3-4B-Instruct: small (2.5 GB, Q4_K_M) but a reliable JSON emitter with
 # a 256k context, which is what a full crash report needs.
 AI_MODEL = os.environ.get("AI_MODEL", "qwen3:4b-instruct")
@@ -202,8 +208,18 @@ def current_endpoint() -> str:
         except OSError:
             saved = ""
         saved = _ALIASES.get(saved, saved)
-        _endpoint = saved if saved in (OLLAMA_URL, LOCAL_URL) else OLLAMA_URL
+        _endpoint = saved if saved and saved in _known() else OLLAMA_URL
     return _endpoint
+
+
+def _known() -> tuple[str, ...]:
+    """The endpoints that may be chosen: the configured one, if any, and local."""
+    return tuple(u for u in (OLLAMA_URL, LOCAL_URL) if u)
+
+
+def configured() -> bool:
+    """Is any endpoint in use at all? Blank OLLAMA_URL and no local choice: no."""
+    return bool(current_endpoint())
 
 
 # 127.0.0.1 and localhost are the same endpoint; a choice saved under either
@@ -215,9 +231,9 @@ def set_endpoint(url: str) -> str:
     """Switch endpoints. Only the two known ones are accepted."""
     global _endpoint
     url = _ALIASES.get((url or "").rstrip("/"), (url or "").rstrip("/"))
-    if url not in (OLLAMA_URL, LOCAL_URL):
+    if not url or url not in _known():
         raise ValueError(
-            f"unknown endpoint {url!r}; expected {OLLAMA_URL} or {LOCAL_URL}"
+            f"unknown endpoint {url!r}; expected one of {', '.join(_known())}"
         )
     _endpoint = url
     config.write_state(_ENDPOINT_FILE, url)   # applies either way
@@ -226,21 +242,30 @@ def set_endpoint(url: str) -> str:
 
 def endpoints() -> list[dict]:
     active = current_endpoint()
-    return [
-        {"url": OLLAMA_URL, "label": "shared", "active": active == OLLAMA_URL,
-         "note": "The default. Behind a proxy that allows 120s to first byte, "
-                 "so long crash reports are summarised rather than sent whole."},
+    out = []
+    if OLLAMA_URL:
+        out.append(
+            {"url": OLLAMA_URL, "label": "configured",
+             "active": active == OLLAMA_URL,
+             "note": "The endpoint set in OLLAMA_URL. If it sits behind a "
+                     "proxy with a short first-byte timeout, long crash "
+                     "reports are summarised rather than sent whole."})
+    out.append(
         {"url": LOCAL_URL, "label": "local", "active": active == LOCAL_URL,
          "note": "An Ollama on this machine. No proxy timeout, so nothing has "
-                 "to be trimmed to fit -- but it has to actually be running."},
-    ]
+                 "to be trimmed to fit -- but it has to actually be running."})
+    return out
 
 
 def _client(timeout: float | None = None) -> httpx.AsyncClient:
     headers = {"Accept": "application/json"}
-    # The bearer token belongs to the shared endpoint; sending it to a local
-    # Ollama would leak it onto the network for no reason.
+    # The bearer token belongs to the configured endpoint; sending it to a
+    # local Ollama would leak it onto the network for no reason.
     url = current_endpoint()
+    if not url:
+        raise RuntimeError(
+            "The assistant is off: no Ollama endpoint is configured. Set "
+            "OLLAMA_URL to an Ollama you run (README: The AI assistant).")
     if OLLAMA_API_KEY and url == OLLAMA_URL:
         headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
     return httpx.AsyncClient(
@@ -287,13 +312,21 @@ async def status() -> dict:
     """Is the assistant usable, and with which model?"""
     if not AI_ENABLED:
         return {"available": False, "reason": "AI_ENABLED is false"}
+    if not configured():
+        return {
+            "available": False, "configured": False,
+            "reason": "the assistant is off -- no Ollama endpoint is set",
+            "hint": ("Set OLLAMA_URL to an Ollama you run, or choose the "
+                     "local endpoint if one is running beside BlessForge. "
+                     "Nothing else in the app needs it."),
+        }
     try:
         async with _client(timeout=8) as c:
             r = await c.get("/api/tags")
             if r.status_code >= 400:
                 return {"available": False,
                         "reason": f"Ollama returned {r.status_code}",
-                        "url": OLLAMA_URL}
+                        "url": current_endpoint()}
             models = [m["name"] for m in r.json().get("models", [])]
     except Exception as e:
         return {
@@ -310,7 +343,7 @@ async def status() -> dict:
 
     if AI_MODEL in models:
         return {"available": True, "model": AI_MODEL, "models": models,
-                "url": OLLAMA_URL}
+                "url": current_endpoint()}
     # Tolerate a tag mismatch (":latest" and friends).
     base = AI_MODEL.split(":")[0]
     fallback = next((m for m in models if m.split(":")[0] == base), None)
@@ -324,7 +357,7 @@ async def status() -> dict:
         "models": models,
         "url": current_endpoint(),
         "hint": f"Install it on the Ollama host with: ollama pull {AI_MODEL} "
-                f"(or use the Pull button, which asks {OLLAMA_URL} to fetch it).",
+                f"(or use the Pull button, which asks {current_endpoint()} to fetch it).",
     }
 
 

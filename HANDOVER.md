@@ -1601,15 +1601,14 @@ missing from disk.
     `Authorization`, no cookies, no JWTs, no CurseForge key), but it contains
     LAN IPs and server names, and it bloats the repo. Removing it from HEAD
     does not shrink existing clones; history rewrite would.
-13. **The CurseForge API key is in the public repo**, base64-encoded in
-    `docker-compose.yml`. Base64 is encoding, not encryption. This predates
-    these sessions and appears deliberate (the friend's install needs it), but
-    treat the key as disclosed and rotate if that is not intended.
-14. **`ai.shadowco.xyz` is now a hard-coded default** in `config`, compose and
-    `.env.example`. It is someone's endpoint, reachable without a key at time
-    of writing. If that changes, `OLLAMA_URL` and `OLLAMA_API_KEY` are the
-    knobs; a blank `OLLAMA_URL` disables the assistant and nothing else
-    breaks.
+13. ~~**The CurseForge API key is in the public repo.**~~ Removed in WP-01
+    (2026-10-11): no key value is in any tracked file, and
+    `test_blocked_downloads.py` fails if one comes back. It is still in git
+    *history* -- removing it from HEAD does not change old commits -- so the
+    owner has to rotate it.
+14. ~~**`ai.shadowco.xyz` is a hard-coded default.**~~ Removed in WP-01:
+    `OLLAMA_URL` defaults to empty and the assistant is off until somebody
+    points it at an Ollama they run. README "AI assistant" says how.
 
 ### Servers deleted 2026-08-28 — explained, not a fault
 

@@ -70,6 +70,18 @@ if _KEY_B64 and (not CURSEFORGE_API_KEY or _looks_truncated(CURSEFORGE_API_KEY))
     except (ValueError, UnicodeDecodeError):
         pass
 
+# A Docker secret (or any file) wins over both of the above: it is the one
+# source that never passes through an environment block or a dialog at all,
+# so nothing can expand or log it on the way in.
+_KEY_FILE = (os.environ.get("CURSEFORGE_API_KEY_FILE", "") or "").strip()
+if _KEY_FILE:
+    try:
+        _from_file = Path(_KEY_FILE).read_text(encoding="utf-8").strip()
+        if _from_file:
+            CURSEFORGE_API_KEY = _from_file
+    except OSError:
+        pass
+
 CURSEFORGE_API_BASE = os.environ.get(
     "CURSEFORGE_API_BASE", "https://api.curseforge.com"
 ).rstrip("/")
@@ -238,7 +250,7 @@ def curseforge_key_warning() -> str | None:
             f"by variable expansion. {fix}"
         )
     # The check above only fires when SOME of the bcrypt prefix survived. A
-    # key eaten completely -- `$2a$10$D3Bo...` sourced by bash, where every
+    # key eaten completely -- `$2a$10$...` sourced by bash, where every
     # `$...` is a positional parameter -- comes out with no `$` at all and
     # still passes a length test. That mangled key then fails every request
     # with a 403 that reads like a revoked key rather than a quoting bug,

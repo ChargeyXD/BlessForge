@@ -260,6 +260,14 @@ async def _curseforge_pool(mc: str, loader: str, on_step=None) -> list[dict]:
                     # non-matching file is treated as "not known yet" and the
                     # real one is resolved when the hand is dealt.
                     files = m.get("latest_files") or []
+                    # Third-party distribution is a per-project switch, so a
+                    # project whose every listed file has no download address
+                    # has it turned off. Such a mod never enters the pool: a
+                    # roll is only worth dealing if every card can be fetched
+                    # without going around its author.
+                    if files and all(curseforge.is_distribution_blocked(f)
+                                     for f in files):
+                        continue
                     picked = next(
                         (f for f in files
                          if mc in (f.get("game_versions") or [])
@@ -783,6 +791,19 @@ async def resolve_hand(hand: list[dict], c: dict, job: Job | None = None
                     "name": m["name"], "kind": "no-builds",
                     "reason": f"has no {c['loader']} build for {mc}"})
                 return
+            if m["source"] == "curseforge":
+                # A pool cached before blocked projects were filtered out
+                # can still deal one; it is dropped here instead, and the
+                # caller deals a replacement like for any other drop.
+                fetchable = [b for b in builds
+                             if not curseforge.is_distribution_blocked(b)]
+                if not fetchable:
+                    problems.append({
+                        "name": m["name"], "kind": "distribution-blocked",
+                        "reason": "its author does not allow third-party "
+                                  "downloads"})
+                    return
+                builds = fetchable
 
             best, why = _pick_build(builds, mc, loader)
             if not best:
@@ -1259,6 +1280,7 @@ async def _with_dependencies(resolved: list[dict], c: dict, job: Job | None = No
     extra: dict[tuple, dict] = {}
     warnings: list[str] = []
     failures: list[str] = []
+    blocked_deps: list[tuple[dict, dict]] = []
     sem = asyncio.Semaphore(5)
 
     async def one(m: dict) -> None:
@@ -1280,6 +1302,12 @@ async def _with_dependencies(resolved: list[dict], c: dict, job: Job | None = No
                 key = (dep["source"], str(dep["project_id"]))
                 if key in have or key in extra:
                     continue
+                if dep.get("distribution_blocked"):
+                    # The mod cannot load without it and it cannot be
+                    # fetched. Shipping the pair would ship a crash, so the
+                    # mod that needs it goes instead.
+                    blocked_deps.append((m, dep))
+                    continue
                 extra[key] = {
                     "source": dep["source"],
                     "project_id": dep["project_id"],
@@ -1295,6 +1323,13 @@ async def _with_dependencies(resolved: list[dict], c: dict, job: Job | None = No
                 }
 
     await asyncio.gather(*(one(m) for m in resolved))
+    if blocked_deps:
+        gone = {id(m) for m, _ in blocked_deps}
+        resolved = [m for m in resolved if id(m) not in gone]
+        for m, dep in blocked_deps:
+            warnings.append(
+                f"Dropped {m['name']}: it needs {dep.get('name') or 'a library'}"
+                ", whose author does not allow third-party downloads")
     if extra:
         warnings.append(f"{len(extra)} dependencies were added to the hand")
     if failures:

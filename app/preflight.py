@@ -31,7 +31,7 @@ import zipfile
 
 import httpx
 
-from app import clientscan, config, curseforge, packs
+from app import blocked, clientscan, config, curseforge, modrinth, packs
 from app.jobs import Job
 from app.packs import PackPlan
 
@@ -94,6 +94,18 @@ async def analyse_manifest_pack(
     mod_ids = {m.get("mod_id") for m in file_meta.values() if m.get("mod_id")}
     projects = await curseforge.get_mods(mod_ids) if mod_ids else {}
 
+    # Files whose authors turned off third-party downloads are settled here,
+    # before anything is fetched: the same jar from Modrinth if it is there,
+    # otherwise listed for the operator to upload. Never downloaded.
+    substitutes, blocked_list = await blocked.substitutes(
+        list(file_meta.values()), projects,
+        mc_version=plan.mc_version or "", loader=plan.loader or "")
+    blocked_ids = {b.get("file_id") for b in blocked_list}
+    if blocked_list:
+        job.log_line(
+            f"{len(blocked_list)} mod(s) block third-party downloads and are "
+            "not on Modrinth; they will need uploading by hand", "warn")
+
     wanted: list[dict] = []
     for entry in entries:
         fid, pid = entry.get("fileID"), entry.get("projectID")
@@ -102,6 +114,8 @@ async def analyse_manifest_pack(
             continue
         fname = meta.get("file_name") or ""
         if not fname.lower().endswith(".jar"):
+            continue
+        if fid in blocked_ids:
             continue
         project = projects.get(pid, {})
         wanted.append({
@@ -115,6 +129,7 @@ async def analyse_manifest_pack(
             "categories": project.get("categories") or [],
             "size": meta.get("size"),
             "download_url": meta.get("download_url"),
+            "substitute": substitutes.get(fid),
             "required": entry.get("required", True),
         })
 
@@ -147,6 +162,13 @@ async def analyse_manifest_pack(
 
     await clientscan.score_all(job, items)
     result = _split(items)
+    result["blocked_by_author"] = blocked_list
+    result["substituted"] = [
+        {"file_name": (file_meta.get(fid) or {}).get("file_name"),
+         "from": "modrinth", "via": v.get("substitute_via"),
+         "modrinth_file": v.get("file_name")}
+        for fid, v in substitutes.items()
+    ]
     job.log_line(
         f"{result['candidates'] and len(result['candidates']) or 0} possible "
         f"client-only mods ({result['confirmed']} confirmed, "
@@ -176,13 +198,17 @@ async def _read_catalogue_jars(job: Job, wanted: list[dict]) -> list[dict]:
             blob = None
             async with sem:
                 try:
-                    meta = {"file_id": w["file_id"],
-                            "file_name": w["file_name"],
-                            "download_url": w.get("download_url"),
-                            "size": w.get("size")}
-                    cached = await curseforge.cache_jar(meta, client)
-                    blob = (cached.read_bytes() if cached
-                            else await curseforge.download_cached(meta, client))
+                    if w.get("substitute"):
+                        # Same mod from where its author does publish it.
+                        blob = await modrinth.download(w["substitute"])
+                    else:
+                        meta = {"file_id": w["file_id"],
+                                "file_name": w["file_name"],
+                                "download_url": w.get("download_url"),
+                                "size": w.get("size")}
+                        cached = await curseforge.cache_jar(meta, client)
+                        blob = (cached.read_bytes() if cached
+                                else await curseforge.download_cached(meta, client))
                 except Exception:
                     blob = None
                 finally:
@@ -260,6 +286,8 @@ async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile,
 
     await clientscan.score_all(job, items)
     result = _split(items)
+    # A server pack carries its jars; nothing in it is fetched from anyone.
+    result["blocked_by_author"] = []
     job.log_line(
         f"{len(result['candidates'])} possible client-only jars in the server "
         f"pack"

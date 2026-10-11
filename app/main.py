@@ -2280,7 +2280,7 @@ async def ai_pull(body: dict = Body(default={})) -> dict:
         result = await ai.pull_model(model, on_progress=progress)
         if not result.get("ok"):
             raise RuntimeError(result.get("error", "pull failed"))
-        j.log_line(f"{model} is now available on {ai.OLLAMA_URL}")
+        j.log_line(f"{model} is now available on {ai.current_endpoint()}")
         return result
 
     registry.start(job, run)

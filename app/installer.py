@@ -38,7 +38,7 @@ from typing import Any
 
 import httpx
 
-from app import (cache, config, crafty, curseforge, jarmeta, modrinth,
+from app import (blocked, cache, config, crafty, curseforge, jarmeta, modrinth,
                  optimizer, packs, properties, provision, uploads)
 from app import preflight as preflight_mod
 from app import specs
@@ -336,10 +336,16 @@ async def _download_manifest_mods(
     exclude_files: set[str] | None = None,
     disable_files: set[str] | None = None,
     client_reasons: dict[str, list[str]] | None = None,
-) -> tuple[list[PackEntry], list[dict], list[dict], list[str], list[str]]:
+) -> tuple[list[PackEntry], list[dict], list[dict], list[str], list[str],
+           list[dict]]:
     """Resolve and fetch every mod the manifest lists.
 
-    Returns (files, records, problems, matched, disabled).
+    Returns (files, records, problems, matched, disabled, blocked).
+
+    `blocked` is the files whose authors turned off third-party
+    distribution and that Modrinth does not carry either. They are never
+    downloaded -- see app/blocked.py -- and the operator is asked to upload
+    them by hand.
 
     Client-only mods are installed *disabled* rather than dropped. Stripping
     them made the instance a lie: the pack no longer matched what the user
@@ -357,12 +363,24 @@ async def _download_manifest_mods(
     mod_ids = {m.get("mod_id") for m in file_meta.values() if m.get("mod_id")}
     projects = await curseforge.get_mods(mod_ids) if mod_ids else {}
 
+    # Every blocked file is settled up front, in bulk: one hash lookup for
+    # the lot, then a slug lookup only for what that did not find.
+    substitutes, blocked_list = await blocked.substitutes(
+        list(file_meta.values()), projects,
+        mc_version=plan.mc_version or "", loader=plan.loader or "")
+    blocked_ids = {b.get("file_id") for b in blocked_list}
+    if substitutes:
+        job.log_line(
+            f"{len(substitutes)} mod(s) block third-party downloads on "
+            "CurseForge and will be fetched from Modrinth instead")
+
     results: list[PackEntry] = []
     records: list[dict] = []
     problems: list[dict] = []
     matched_names: list[str] = []
     disabled_client: list[str] = []
     wrong_loader_mods: list[str] = []
+    blocked_out: list[dict] = []
     reasons = client_reasons or {}
 
     sem = asyncio.Semaphore(config.DOWNLOAD_CONCURRENCY)
@@ -409,13 +427,28 @@ async def _download_manifest_mods(
                             "flagged as client-only in the pre-install review"
                         ]
 
-                    # Reuses whatever the review step already downloaded, and
-                    # keeps it on disk: holding 300 jars in memory until the
-                    # last batch uploads is what made this app's footprint
-                    # scale with pack size.
-                    cached = await curseforge.cache_jar(meta, client)
-                    blob = None if cached else await curseforge.download_cached(
-                        meta, client)
+                    # The author turned off third-party downloads and Modrinth
+                    # does not have it either: listed, never fetched.
+                    if fid in blocked_ids:
+                        blocked_out.append({
+                            **next(b for b in blocked_list
+                                   if b.get("file_id") == fid),
+                            "required": entry.get("required", True),
+                        })
+                        return
+                    sub = substitutes.get(fid)
+                    disk_name = (sub or {}).get("file_name") or fname
+                    if sub:
+                        cached = None
+                        blob = await modrinth.download(sub)
+                    else:
+                        # Reuses whatever the review step already downloaded,
+                        # and keeps it on disk: holding 300 jars in memory
+                        # until the last batch uploads is what made this
+                        # app's footprint scale with pack size.
+                        cached = await curseforge.cache_jar(meta, client)
+                        blob = None if cached else await curseforge.download_cached(
+                            meta, client)
 
                     # With no review to go on, judge the jar on the same
                     # evidence the review would have used. It used to be a
@@ -445,29 +478,43 @@ async def _download_manifest_mods(
                             why = [f"built for {'/'.join(sorted(markers))}, "
                                    f"but this server runs {plan.loader}"]
 
-                    target = fname + (
+                    target = disk_name + (
                         ".disabled" if client_only or wrong_loader else "")
                     if client_only:
-                        disabled_client.append(fname)
+                        disabled_client.append(disk_name)
                     if wrong_loader:
-                        wrong_loader_mods.append(fname)
+                        wrong_loader_mods.append(disk_name)
                         # Rides the same "installed but disabled" list so the
                         # Mods tab, the manifest and the summary all already
                         # know how to show it.
-                        disabled_client.append(fname)
+                        disabled_client.append(disk_name)
                     results.append(PackEntry(
                         target, path=cached, blob=blob,
                         size=(cached.stat().st_size if cached else len(blob or b"")),
                     ))
-                    records.append({
-                        # Recorded under the enabled name whatever its state
-                        # on disk, so toggling a mod never orphans its record.
-                        "file": f"mods/{fname}",
+                    origin = ({
+                        "source": "modrinth",
+                        "project_id": sub.get("mod_id"),
+                        "file_id": sub.get("file_id"),
+                        "version": sub.get("version_number"),
+                        "substituted_for": {
+                            "source": "curseforge", "project_id": pid,
+                            "file_id": fid, "file_name": fname,
+                            "via": sub.get("substitute_via"),
+                            "why": blocked.substitute_note(sub),
+                        },
+                    } if sub else {
                         "source": "curseforge",
                         "project_id": pid,
                         "file_id": fid,
-                        "name": project.get("name") or fname,
                         "version": meta.get("display_name"),
+                    })
+                    records.append({
+                        # Recorded under the enabled name whatever its state
+                        # on disk, so toggling a mod never orphans its record.
+                        "file": f"mods/{disk_name}",
+                        **origin,
+                        "name": project.get("name") or fname,
                         # The catalogue already told us what this mod looks
                         # like; not recording it meant every row in the Mods
                         # list fell back to two grey initials until someone
@@ -518,7 +565,17 @@ async def _download_manifest_mods(
         job.log_line(f"{len(problems)} mods could not be downloaded", "warn")
         for p in problems[:10]:
             job.log_line(f"  - {p['name']}: {p['reason']}", "warn")
-    return results, records, problems, matched_names, disabled_client
+    if blocked_out:
+        job.log_line(
+            f"{len(blocked_out)} mod(s) were not downloaded because their "
+            "authors do not allow third-party downloads and Modrinth does not "
+            "carry them. Upload them yourself from the Mods tab: "
+            + ", ".join(sorted(b.get("name") or "" for b in blocked_out)[:8])
+            + ("..." if len(blocked_out) > 8 else ""),
+            "warn",
+        )
+    return (results, records, problems, matched_names, disabled_client,
+            blocked_out)
 
 
 def _batch(items: list[PackEntry]) -> list[list[PackEntry]]:
@@ -803,8 +860,10 @@ async def install_modpack(
 
     matched_exclusions: set[str] = set()
     disabled_mods: list[str] = []
+    blocked_by_author: list[dict] = []
     if plan.source == "manifest":
-        mods, records, problems, matched, disabled = await _download_manifest_mods(
+        (mods, records, problems, matched, disabled,
+         blocked_by_author) = await _download_manifest_mods(
             job, plan, skip_client_only, excluded, to_disable, client_reasons
         )
         matched_exclusions.update(matched)
@@ -1030,6 +1089,9 @@ async def install_modpack(
         "disabled_mods": sorted(set(disabled_mods)),
         "mods": records,
         "problems": problems,
+        # Not downloaded, on purpose: their authors turned off third-party
+        # distribution. The Mods tab lists them with an upload prompt.
+        "blocked_by_author": blocked_by_author,
     }
     try:
         await crafty.write_studio_manifest(server_id, manifest)
@@ -1050,6 +1112,7 @@ async def install_modpack(
         "files_uploaded": uploaded_count,
         "port": port,
         "problems": problems,
+        "blocked_by_author": blocked_by_author,
         "note": installed_note,
     }
     job.log_line(

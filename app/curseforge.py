@@ -3,10 +3,13 @@
 Notable behaviours this client works around:
 
 * `downloadUrl` is null for any file whose author disabled third-party
-  distribution. The official `/download-url` endpoint returns empty for
-  those too, but the CDN path is deterministic and still serves the file:
-      https://edge.forgecdn.net/files/<id[:4]>/<id[4:]>/<fileName>
-  (verified returning 200 for a file with a null downloadUrl).
+  distribution. That is the author's decision, and CurseForge's terms say a
+  third-party service must not fetch such a file any other way -- so it is
+  never fetched here. Earlier versions built the CDN path by hand and
+  downloaded it anyway; that is gone. A blocked file raises
+  `DistributionBlocked`, and `app/blocked.py` decides what happens next
+  (the same jar from Modrinth if its author publishes it there, otherwise
+  "upload this jar yourself").
 * Search and file listing are paginated with a hard 10k index ceiling.
 * Bulk endpoints (`POST /v1/mods`, `POST /v1/mods/files`) accept up to a few
   hundred ids per call and are dramatically faster than per-id requests --
@@ -16,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
@@ -45,6 +47,49 @@ _BULK_CHUNK = 200
 
 class CurseForgeError(RuntimeError):
     pass
+
+
+class DistributionBlocked(CurseForgeError):
+    """The author of this file turned off third-party distribution.
+
+    Not a network fault and not something a retry fixes: CurseForge
+    publishes no download address for the file on purpose. The only
+    honest outcomes are the same jar from somewhere its author does
+    publish it, or asking the operator to upload it themselves.
+    """
+
+    def __init__(self, meta: dict, *, name: str | None = None,
+                 slug: str | None = None):
+        self.file_id = meta.get("file_id")
+        self.mod_id = meta.get("mod_id")
+        self.file_name = meta.get("file_name")
+        self.url = page_url(meta, slug)
+        label = name or self.file_name or f"file {self.file_id}"
+        super().__init__(
+            f"{label}: its author does not allow third-party downloads, so "
+            f"BlessForge will not fetch it. Download it from {self.url} and "
+            "upload the jar yourself.")
+
+
+def is_distribution_blocked(meta: dict) -> bool:
+    """True when CurseForge gives this file no download address."""
+    return not (meta or {}).get("download_url")
+
+
+def page_url(meta: dict, slug: str | None = None) -> str:
+    """Where a person can download a file the API will not hand out.
+
+    `/projects/<id>` is CurseForge's own redirect to the project page, so a
+    link still works when the slug is not known.
+    """
+    mod_id = meta.get("mod_id")
+    file_id = meta.get("file_id")
+    if slug:
+        base = f"https://www.curseforge.com/minecraft/mc-mods/{slug}"
+        return f"{base}/files/{file_id}" if file_id else base
+    if mod_id:
+        return f"https://www.curseforge.com/projects/{mod_id}"
+    return "https://www.curseforge.com/minecraft/search"
 
 
 def _headers() -> dict:
@@ -146,6 +191,12 @@ def _slim_file(f: dict) -> dict:
     loaders = [v for v in versions if v.lower() in
                ("forge", "fabric", "neoforge", "quilt", "liteloader")]
     mc = [v for v in versions if v and v[0].isdigit()]
+    hashes = f.get("hashes") or []
+    # algo 1 is SHA-1, 2 is MD5. SHA-1 is what Modrinth indexes by, which is
+    # how a blocked file can still be found, byte for byte, where its author
+    # does publish it.
+    sha1 = next((h.get("value") for h in hashes
+                 if str(h.get("algo")) == "1" and h.get("value")), None)
     return {
         "source": "curseforge",
         "file_id": f.get("id"),
@@ -158,12 +209,14 @@ def _slim_file(f: dict) -> dict:
         "date": f.get("fileDate"),
         "size": f.get("fileLength"),
         "download_url": f.get("downloadUrl"),
+        "distribution_blocked": not f.get("downloadUrl"),
         "server_pack_file_id": f.get("serverPackFileId"),
         "is_server_pack": f.get("isServerPack", False),
         "game_versions": mc,
         "loaders": loaders,
         "dependencies": f.get("dependencies") or [],
-        "hashes": f.get("hashes") or [],
+        "hashes": hashes,
+        "sha1": sha1,
     }
 
 
@@ -318,24 +371,16 @@ async def loader_build_id(mc_version: str, family: str) -> str:
 # --- downloading -------------------------------------------------------
 
 
-def cdn_url(file_id: int, file_name: str) -> str:
-    """Deterministic CDN path, used when downloadUrl is null."""
-    fid = str(file_id)
-    return (
-        f"https://edge.forgecdn.net/files/{fid[:4]}/{fid[4:]}/"
-        f"{urllib.parse.quote(file_name)}"
-    )
+def download_url(file_meta: dict) -> str:
+    """The one address a file may be fetched from, or DistributionBlocked.
 
-
-def resolve_download_url(file_meta: dict) -> str:
-    url = file_meta.get("download_url")
-    if url:
-        return url
-    fid = file_meta.get("file_id")
-    name = file_meta.get("file_name")
-    if not fid or not name:
-        raise CurseForgeError("cannot resolve a download URL for this file")
-    return cdn_url(fid, name)
+    There is deliberately no second address. A null `downloadUrl` is the
+    author saying no, and it is not ours to route around.
+    """
+    url = (file_meta or {}).get("download_url")
+    if not url:
+        raise DistributionBlocked(file_meta or {})
+    return url
 
 
 def _jar_cache_path(file_meta: dict) -> "Path | None":
@@ -360,7 +405,13 @@ async def cache_jar(
 
     Returns None when there is no cache directory to write to, in which case
     the caller falls back to the in-memory path.
+
+    A distribution-blocked file raises before the cache is even looked at:
+    a copy fetched by an older version through the CDN path is still a copy
+    its author did not agree to hand out, and serving it from disk would
+    carry that on.
     """
+    download_url(file_meta)
     path = _jar_cache_path(file_meta)
     if not path:
         return None
@@ -391,6 +442,7 @@ async def download_cached(
     the install then needs those same jars. Caching means the review step
     costs one download instead of two.
     """
+    download_url(file_meta)             # blocked files never reach the cache
     path = _jar_cache_path(file_meta)
     expected = file_meta.get("size") or 0
     if path and path.exists():
@@ -412,25 +464,6 @@ async def download_cached(
     return data
 
 
-def _download_urls(file_meta: dict) -> list[str]:
-    """Where a file can be fetched from, best first.
-
-    `downloadUrl` is null for any project whose author opted out of third-party
-    distribution, so the deterministic CDN path is not a fallback for network
-    trouble -- it is the only address most files have.
-    """
-    urls = []
-    if file_meta.get("download_url"):
-        urls.append(file_meta["download_url"])
-    if file_meta.get("file_id") and file_meta.get("file_name"):
-        fallback = cdn_url(file_meta["file_id"], file_meta["file_name"])
-        if fallback not in urls:
-            urls.append(fallback)
-    if not urls:
-        raise CurseForgeError(f"no download URL for {file_meta.get('file_name')}")
-    return urls
-
-
 async def download_to(file_meta: dict, dest: Path,
                       client: httpx.AsyncClient | None = None,
                       on_progress=None) -> Path:
@@ -445,40 +478,39 @@ async def download_to(file_meta: dict, dest: Path,
     Writes to a sibling `.part` and renames on success, so an interrupted
     download can never be mistaken for a cached archive by a later run.
     """
-    urls = _download_urls(file_meta)
+    url = download_url(file_meta)
     own = client is None
     c = client or httpx.AsyncClient(timeout=600, follow_redirects=True)
     tmp = dest.with_name(dest.name + ".part")
     try:
         last: Exception | None = None
-        for url in urls:
-            for attempt in range(3):
+        for attempt in range(3):
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                got = 0
+                async with c.stream("GET", url) as r:
+                    if r.status_code != 200:
+                        last = CurseForgeError(f"{url} -> {r.status_code}")
+                        await r.aclose()
+                        raise last
+                    with open(tmp, "wb") as fh:
+                        async for chunk in r.aiter_bytes(1 << 20):
+                            fh.write(chunk)
+                            got += len(chunk)
+                            if on_progress:
+                                on_progress(got)
+                if got:
+                    tmp.replace(dest)
+                    return dest
+                last = CurseForgeError(f"{url} -> empty body")
+            except Exception as e:
+                last = e
+            finally:
                 try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    got = 0
-                    async with c.stream("GET", url) as r:
-                        if r.status_code != 200:
-                            last = CurseForgeError(f"{url} -> {r.status_code}")
-                            await r.aclose()
-                            raise last
-                        with open(tmp, "wb") as fh:
-                            async for chunk in r.aiter_bytes(1 << 20):
-                                fh.write(chunk)
-                                got += len(chunk)
-                                if on_progress:
-                                    on_progress(got)
-                    if got:
-                        tmp.replace(dest)
-                        return dest
-                    last = CurseForgeError(f"{url} -> empty body")
-                except Exception as e:
-                    last = e
-                finally:
-                    try:
-                        tmp.unlink()
-                    except OSError:
-                        pass
-                await asyncio.sleep(1.5 * (attempt + 1))
+                    tmp.unlink()
+                except OSError:
+                    pass
+            await asyncio.sleep(1.5 * (attempt + 1))
         raise CurseForgeError(
             f"failed to download {file_meta.get('file_name')}: {last}"
         )
@@ -488,27 +520,26 @@ async def download_to(file_meta: dict, dest: Path,
 
 
 async def download(file_meta: dict, client: httpx.AsyncClient | None = None) -> bytes:
-    """Fetch a file's bytes, falling back to the CDN path when needed.
+    """Fetch a file's bytes from its published download address.
 
     For mod jars, which are megabytes. Anything pack-sized goes through
     download_to() instead.
     """
-    urls = _download_urls(file_meta)
+    url = download_url(file_meta)
 
     own = client is None
     c = client or httpx.AsyncClient(timeout=600, follow_redirects=True)
     try:
         last: Exception | None = None
-        for url in urls:
-            for attempt in range(3):
-                try:
-                    r = await c.get(url)
-                    if r.status_code == 200 and r.content:
-                        return r.content
-                    last = CurseForgeError(f"{url} -> {r.status_code}")
-                except Exception as e:  # network hiccup: retry with backoff
-                    last = e
-                await asyncio.sleep(1.5 * (attempt + 1))
+        for attempt in range(3):
+            try:
+                r = await c.get(url)
+                if r.status_code == 200 and r.content:
+                    return r.content
+                last = CurseForgeError(f"{url} -> {r.status_code}")
+            except Exception as e:  # network hiccup: retry with backoff
+                last = e
+            await asyncio.sleep(1.5 * (attempt + 1))
         raise CurseForgeError(
             f"failed to download {file_meta.get('file_name')}: {last}"
         )

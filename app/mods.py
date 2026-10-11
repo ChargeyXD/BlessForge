@@ -17,7 +17,7 @@ import posixpath
 import re
 import time
 
-from app import config, crafty, curseforge, deps, jarmeta, modrinth, packs
+from app import blocked, config, crafty, curseforge, deps, jarmeta, modrinth, packs
 from app.jobs import Job
 
 DISABLED_SUFFIX = ".disabled"
@@ -67,12 +67,13 @@ def _base_name(name: str) -> str:
 async def list_mods(server_id: str, directory: str = "mods") -> dict:
     """List every jar in an instance, enriched with whatever we know."""
     directory = guard_dir(directory)
+    manifest = await crafty.read_studio_manifest(server_id)
     try:
         entries = await crafty.list_dir(server_id, directory)
     except crafty.CraftyError:
-        return {"directory": directory, "mods": [], "error": "no mods directory"}
+        return {"directory": directory, "mods": [], "error": "no mods directory",
+                "blocked_by_author": manifest.get("blocked_by_author") or []}
 
-    manifest = await crafty.read_studio_manifest(server_id)
     by_file = {
         posixpath.basename(r.get("file", "")): r for r in manifest.get("mods", [])
     }
@@ -119,8 +120,16 @@ async def list_mods(server_id: str, directory: str = "mods") -> dict:
             "identified": bool(record.get("project_id")),
         })
     mods.sort(key=lambda m: (not m["enabled"], (m["name"] or "").lower()))
+    # Mods the install could not fetch because their authors turned off
+    # third-party downloads. Each stays listed until a jar with its name is
+    # in the folder, so uploading it by hand is all it takes to clear one --
+    # there is no separate "mark as done" to forget.
+    present = {_base_name(m["file"]) for m in mods}
+    waiting = [b for b in (manifest.get("blocked_by_author") or [])
+               if b.get("file_name") and b["file_name"] not in present]
     return {
         "directory": directory,
+        "blocked_by_author": waiting,
         "count": len(mods),
         "enabled": sum(1 for m in mods if m["enabled"]),
         "client_only": sum(1 for m in mods if m["client_only"]),
@@ -229,14 +238,41 @@ async def add_mod(
     directory = guard_dir(directory)
     if replace_file:
         replace_file = guard_name(replace_file)
+    substituted_for: dict | None = None
     if source == "curseforge":
         meta = await curseforge.get_file(int(project_id), int(file_id))
-        blob = await curseforge.download(meta)
         project = await curseforge.get_mod(int(project_id))
-        display_name = project.get("name") or meta.get("file_name")
-        version = meta.get("display_name")
-        filename = meta.get("file_name")
-        logo = project.get("logo")
+        if curseforge.is_distribution_blocked(meta):
+            # The author turned off third-party downloads. The same jar from
+            # Modrinth is fine; fetching it from CurseForge anyway is not.
+            manifest = await crafty.read_studio_manifest(server_id)
+            found, _ = await blocked.substitutes(
+                [meta], {meta.get("mod_id"): project},
+                mc_version=manifest.get("minecraft") or "",
+                loader=manifest.get("loader") or "")
+            sub = found.get(meta.get("file_id"))
+            if not sub:
+                raise curseforge.DistributionBlocked(
+                    meta, name=project.get("name"), slug=project.get("slug"))
+            substituted_for = {
+                "source": "curseforge", "project_id": project_id,
+                "file_id": file_id, "file_name": meta.get("file_name"),
+                "via": sub.get("substitute_via"),
+                "why": blocked.substitute_note(sub),
+            }
+            blob = await modrinth.download(sub)
+            source, project_id, file_id = ("modrinth", sub.get("mod_id"),
+                                           sub.get("file_id"))
+            display_name = project.get("name") or sub.get("file_name")
+            version = sub.get("version_number")
+            filename = sub.get("file_name")
+            logo = project.get("logo")
+        else:
+            blob = await curseforge.download(meta)
+            display_name = project.get("name") or meta.get("file_name")
+            version = meta.get("display_name")
+            filename = meta.get("file_name")
+            logo = project.get("logo")
     elif source == "modrinth":
         version_meta = await modrinth.get_version(str(file_id))
         if not version_meta:
@@ -281,6 +317,8 @@ async def add_mod(
         record["server_side"] = project.get("server_side")
         record["client_side"] = project.get("client_side")
         record["sides_from"] = "modrinth"
+    if substituted_for:
+        record["substituted_for"] = substituted_for
     if required_by:
         record["required_by"] = required_by
     if dependency_files:

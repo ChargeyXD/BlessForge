@@ -10,8 +10,11 @@
 # tree, and nothing else needs editing.
 #
 # ---------------------------------------------------------------------------
-# THE CURSEFORGE KEY IS SET AS BASE64, ON PURPOSE
-# CurseForge keys are bcrypt-style and contain '$' (e.g. $2a$10$D3Bo...), and
+# THE CURSEFORGE KEY IS YOURS, AND IT IS NEVER IN THIS FILE
+# Set it in the CasaOS dialog, in .env (a checkout reads it in raw format), or
+# as a Docker secret named by CURSEFORGE_API_KEY_FILE. In the dialog, pass it
+# as base64 (CURSEFORGE_API_KEY_B64), because:
+# CurseForge keys are bcrypt-style and contain '$' (e.g. $2a$10$...), and
 # every layer between this file and the app wants to interpolate that: Compose
 # expands '$name', and CasaOS un-doubles '$$' when it stores an imported
 # compose before handing the file back to Compose, which expands it AGAIN. No
@@ -79,15 +82,18 @@ services:
       # unless you installed a real one.
       CRAFTY_VERIFY_SSL: "false"
 
-      # ---- Mod sources: shared, no need to change -----------------------
-      CURSEFORGE_API_KEY_B64: "JDJhJDEwJEQzQm9OUjFQLkZYNGJ3OEVTeU1XUXVVVHFkZlJaU2ZiZ1p3UUFYOHhyYk5Vd3lZT0FYdnNx"
+      # ---- Mod sources --------------------------------------------------
+      # Your own CurseForge key, base64-encoded: echo -n '<key>' | base64 -w0
+      # Left blank, BlessForge starts and the setup banner says what is
+      # missing. No key ships with this file.
+      CURSEFORGE_API_KEY_B64: ""
       MODRINTH_ENABLED: "true"
 
-      # ---- AI troubleshooting assistant (optional) ----------------------
-      # A shared Ollama endpoint rather than one on this host: the box running
-      # Crafty needs its CPU for the Minecraft servers. Leave OLLAMA_URL blank
-      # to disable the assistant entirely; everything else keeps working.
-      OLLAMA_URL: "https://ai.shadowco.xyz"
+      # ---- AI troubleshooting assistant (optional, off by default) -------
+      # An Ollama YOU run (README: "AI assistant"). Blank turns the assistant
+      # off; everything else keeps working. Never point this at an endpoint
+      # somebody else operates -- crash reports and mod lists are sent to it.
+      OLLAMA_URL: ""
       # Only needed if that endpoint is behind an authenticating proxy.
       OLLAMA_API_KEY: ""
       # The assistant can be switched to a local Ollama from its own panel.
@@ -163,7 +169,8 @@ services:
             localhost, and the port your Crafty tile actually shows (8111 for
             the CasaOS Crafty app, 8443 for big-bear-crafty). Set CRAFTY_TOKEN
             to a token from that Crafty's user profile; a token only works on
-            the Crafty that issued it. The CurseForge key is already filled in.
+            the Crafty that issued it. Paste your own CurseForge key, base64
+            encoded (echo -n KEY | base64 -w0), as CURSEFORGE_API_KEY_B64.
             Leave the /data folder pointing at /DATA/AppData/blessforge/data --
             it is BlessForge's own cache, not Crafty's directory.
       envs:

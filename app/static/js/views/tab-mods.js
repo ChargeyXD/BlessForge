@@ -16,7 +16,7 @@ import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num, compact,
   empty, loadingFox, confirmDialog, modal, close, field, debounce, segmented,
   frag, prefs, qs, copyText, sideTag, spinner, reveal, sourceMark, ago,
-  endlessFeed,
+  endlessFeed, blockedByAuthor,
 } from '../core.js';
 import { run, runAwait } from '../jobs.js';
 
@@ -135,7 +135,7 @@ export async function render(ctx) {
         }, h('span', 'Clear'))));
     }
 
-    if (!all.length) {
+    if (!all.length && !(listing.blocked_by_author || []).length) {
       mount(listHost, empty('fox-mascot.png',
         `Nothing in ${dir}/ yet`,
         ctx.plugins
@@ -149,12 +149,14 @@ export async function render(ctx) {
       return;
     }
     if (!rows.length) {
-      mount(listHost, h('div.note', 'Nothing matches that filter.'));
+      mount(listHost, waitingStrip(),
+        all.length ? h('div.note', 'Nothing matches that filter.') : null);
       return;
     }
 
     const unknownSides = all.filter((m) => !m.server_side && !m.client_side).length;
     mount(listHost,
+      waitingStrip(),
       unknownSides && !ctx.plugins
         ? h('div.note', { style: { marginBottom: '12px' } },
           h('b', `${unknownSides} of ${all.length} jars have no side recorded`),
@@ -166,6 +168,55 @@ export async function render(ctx) {
           }, icon('shieldCheck', 12), h('span', 'Look them up')))
         : null,
       h('div.modlist', ...rows.map(row)));
+  }
+
+  /* The mods the install could not fetch because their authors turned off
+     third-party downloads. Each clears itself once a jar with its name is in
+     the folder, which is exactly what the upload button puts there. */
+  function waitingStrip() {
+    const items = listing?.blocked_by_author || [];
+    return items.length
+      ? h('div', { style: { marginBottom: '12px' } },
+        blockedByAuthor(items, { onUpload: uploadBlocked }))
+      : null;
+  }
+
+  function uploadBlocked(item) {
+    const input = h('input', {
+      type: 'file', accept: '.jar', style: { display: 'none' },
+      onchange: async (e) => {
+        const file = e.target.files?.[0];
+        input.remove();
+        if (!file) return;
+        let name = file.name;
+        if (item.file_name && name !== item.file_name) {
+          // A renamed download is common (browsers add " (1)"); a wrong jar
+          // is not. Ask rather than guess which one this is.
+          const ok = await confirmDialog({
+            title: `Upload as ${item.file_name}?`,
+            message: `You picked ${file.name}, and the pack expects `
+              + `${item.file_name}. If that is the same mod, upload it under `
+              + 'the name the pack expects so it is recognised.',
+            confirmLabel: 'Use the expected name',
+          });
+          if (ok) name = item.file_name;
+        }
+        const form = new FormData();
+        form.append('file', file, name);
+        try {
+          await api.upload(
+            `/api/instances/${ctx.id}/files/upload${qs({ folder: dir })}`, form);
+          toast(`${name} is in ${dir}/.`, 'ok');
+          load(true);
+        } catch (err) {
+          toastError(err, `${name} did not upload`);
+        }
+      },
+    });
+    document.body.append(input);
+    input.click();
+    // A cancelled picker fires no change event; do not leave it behind.
+    setTimeout(() => input.remove(), 60000);
   }
 
   /* Reuses the client-only scan, which already downloads every jar and asks

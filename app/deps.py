@@ -220,6 +220,12 @@ async def resolve(
                     "required_by": required_by,
                     "depth": depth,
                     "already_installed": bool(already),
+                    # Its author turned off third-party downloads. The add
+                    # step looks for the same jar on Modrinth and otherwise
+                    # refuses with a link, so the plan has to say so first.
+                    "distribution_blocked": bool(
+                        file_meta.get("distribution_blocked")),
+                    "url": curseforge.page_url(file_meta, project.get("slug")),
                 }
                 _mark_if_present(entry, installed, required_by)
                 plan.append(entry)

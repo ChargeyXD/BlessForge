@@ -14,7 +14,7 @@
 import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num, compact,
   empty, loadingFox, confirmDialog, modal, close, frag, debounce, segmented,
-  field, toggle, prefs, qs, ago, skeletonGrid, endlessFeed,
+  field, toggle, prefs, qs, ago, skeletonGrid, endlessFeed, blockedByAuthor,
 } from '../core.js';
 import { run, runAwait } from '../jobs.js';
 import { state, go, topActions, refreshInstances, bannerIfUnhealthy } from '../app.js';
@@ -248,6 +248,11 @@ export async function render() {
             ...review.warnings.map((w) => h('li', w))))
         : null,
 
+      (review.review?.blocked_by_author || []).length
+        ? h('div', { style: { marginBottom: '14px' } },
+          blockedByAuthor(review.review.blocked_by_author))
+        : null,
+
       h('div.grid.g2', { style: { marginBottom: '16px' } },
         field('Server name', h('input.inp', {
           value: form.name, maxLength: 60,
@@ -310,6 +315,13 @@ export async function render() {
                 const r = rec.result || {};
                 toast(`${r.mods_installed} mods installed into ${r.name}.`,
                   'ok', { title: 'Installed', timeout: 9000 });
+                const waiting = (r.blocked_by_author || []).length;
+                if (waiting) {
+                  toast(`${waiting} mod${waiting > 1 ? 's' : ''} could not be `
+                    + 'fetched because the author does not allow third-party '
+                    + 'downloads. The Mods tab lists them with an upload button.',
+                  'warn', { title: 'Bring these yourself', timeout: 15000 });
+                }
                 if (r.server_id) go(`/i/${r.server_id}/overview`);
               },
             });

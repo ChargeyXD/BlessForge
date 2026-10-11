@@ -399,10 +399,35 @@ so reading scrollback while the server is chatty is actually possible.
 Crafty has no push channel, so the backend polls it and forwards only the lines
 that are new — the browser is never sent the last five hundred lines a second.
 
-### AI assistant (optional)
+### AI assistant (optional, off by default)
 
-Points at an [Ollama](https://ollama.com/) endpoint — **not** this machine, by
-default. The box running Crafty needs its CPU for the Minecraft servers.
+Points at an [Ollama](https://ollama.com/) endpoint **you** run. There is no
+default: with `OLLAMA_URL` blank the assistant is off, its buttons say so, and
+everything else in BlessForge works without it. (An earlier version defaulted
+to somebody else's endpoint, which meant crash reports and mod lists went to a
+third party nobody had chosen. That default is gone.)
+
+To turn it on, run Ollama somewhere you control — ideally not on the box that
+hosts the Minecraft servers, which needs its CPU for them — and point
+BlessForge at it:
+
+```bash
+# on the Ollama host
+ollama serve                       # listens on :11434
+ollama pull qwen3:4b-instruct      # 2.5 GB
+```
+
+```dotenv
+# BlessForge's .env
+OLLAMA_URL=http://ollama-host.lan:11434
+# OLLAMA_API_KEY=...   only if you put it behind an authenticating proxy
+```
+
+An Ollama on the same machine as BlessForge is the `OLLAMA_LOCAL_URL` option
+in Settings → AI (in a container that has to be `http://host.docker.internal:11434`,
+not localhost). Do not expose a bare Ollama to the internet: it has no
+authentication of its own, so put it on the LAN or behind a proxy that checks
+a token.
 
 Three things it does:
 
@@ -509,7 +534,10 @@ ghcr.io/chargeyxd/blessforge:latest    (amd64 + arm64)
 
 **On CasaOS** — App Store → **Custom Install** → **Import** → paste the
 contents of `docker-compose.yml` → set `CRAFTY_URL` and `CRAFTY_TOKEN` in the
-dialog → install. The CurseForge key is already filled in.
+dialog, and your own CurseForge key (base64-encoded, see below) as
+`CURSEFORGE_API_KEY_B64` → install. No key ships with BlessForge: every
+operator needs their own, and a commercial host needs one issued in the
+business's name for that use.
 
 **On plain Docker:**
 
@@ -536,7 +564,12 @@ automatically from a checkout, swaps in `build: .` against the same image tag,
 and reads `.env` in `raw` format so a CurseForge key containing `$` survives.
 CasaOS never sees the override file — it imports `docker-compose.yml` alone.
 
-> **The CurseForge key is passed as base64, and that is not optional.**
+> **Where the key comes from.** Only from your own environment: `.env` (read
+> in `raw` format from a checkout), a Docker secret named by
+> `CURSEFORGE_API_KEY_FILE`, or `CURSEFORGE_API_KEY_B64` in the CasaOS dialog.
+> It is never in a tracked file.
+>
+> **In the CasaOS dialog, pass the key as base64.**
 > CurseForge keys are bcrypt-style and contain `$`. Compose expands `$name`
 > inside an `environment:` block, and CasaOS un-doubles `$$` when it stores an
 > imported compose before handing it back to Compose, which expands it *again*
@@ -562,9 +595,11 @@ Anything still missing is listed in a banner at the top of the app.
 |---|---|---|
 | `CRAFTY_URL` | — | Crafty base URL with scheme and port, e.g. `https://192.168.1.10:8443` |
 | `CRAFTY_TOKEN` | — | Crafty API token |
-| `CURSEFORGE_API_KEY` | — | CurseForge Core API key |
+| `CURSEFORGE_API_KEY` | — | Your CurseForge Core API key. Never commit it |
+| `CURSEFORGE_API_KEY_FILE` | — | Path to a file holding the key (a Docker secret); wins over the variable |
+| `CURSEFORGE_API_KEY_B64` | — | The key base64-encoded, for dialogs that mangle `$` |
 | `CRAFTY_VERIFY_SSL` | `false` | Verify Crafty's certificate. Crafty is self-signed by default |
-| `OLLAMA_URL` | `https://ai.shadowco.xyz` | Ollama endpoint for the AI assistant (blank disables it) |
+| `OLLAMA_URL` | *(empty — assistant off)* | An Ollama endpoint you run. Blank turns the assistant off; nothing else needs it |
 | `OLLAMA_API_KEY` | *(empty)* | Bearer token, if that endpoint requires one |
 | `AI_MODEL` | `qwen3:4b-instruct` | Model to use |
 | `ROULETTE_POOL_PAGES` | `4` | Catalogue pages per category when building a roulette pool |
@@ -622,9 +657,15 @@ previous version are still read via their old `.modpack-studio.json`.
   fine on a newer one in the same line, and the install log states both.
 - **Quilt** is not in Crafty's catalogue, so Quilt packs cannot be created
   automatically. Fabric, Forge and NeoForge all work.
-- **Mods that block distribution.** Some authors disable third-party downloads
-  and CurseForge returns no download URL. The deterministic CDN path is used as
-  a fallback; anything that still fails is listed in the install report.
+- **Mods that block distribution.** Some authors turn off third-party
+  downloads, and CurseForge then gives the file no download URL. BlessForge
+  respects that and **never fetches such a file**. It looks for the identical
+  jar on Modrinth (by SHA-1), then for the same project on Modrinth (by slug,
+  only when the names agree too, and only a build for your Minecraft version
+  and loader). Anything left is listed as *blocked by author* in the
+  pre-install review, the install report and the Mods tab, with a link to its
+  CurseForge page: download it there and upload the jar yourself. Mod Roulette
+  leaves such mods out of the pool entirely.
 - **Client-only detection is evidence-based, not perfect.** A mod that declares
   `environment=*` while calling client-only code at runtime cannot be caught
   with certainty — that is why the review step exists, and why such mods land
@@ -639,11 +680,11 @@ previous version are still read via their old `.modpack-studio.json`.
 ### Two traps worth knowing about
 
 **Your CurseForge key contains `$`.** Keys are bcrypt-style
-(`$2a$10$D3Bo...`), and Docker Compose expands `$D3Bo...` inside environment
+(`$2a$10$...`), and Docker Compose expands every `$name` inside environment
 values, so the key arrives **truncated** and every call 403s with nothing to
 explain it. This repo uses `env_file` with `format: raw` (Compose v2.24+) to
 avoid it. If you paste the key into an `environment:` block instead — which is
-what the **CasaOS dialog does** — double every `$`: `$$2a$$10$$D3Bo...`.
+what the **CasaOS dialog does** — double every `$`: `$$2a$$10$$...`.
 BlessForge detects a truncated key and says so rather than showing a bare 403.
 
 **Crafty's EULA start-gate.** Crafty compares the *first line* of `eula.txt`
