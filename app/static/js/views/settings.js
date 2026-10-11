@@ -109,6 +109,15 @@ export async function render() {
                   : 'SQLite fallback — fine for trying it, not for real '
                     + 'accounts. Set DATABASE_URL to a Postgres.')
                 : null),
+            checkRow('Job queue', health.checks?.queue,
+              health.checks?.queue?.mode === 'worker' ? 'Redis + worker' : 'in-process',
+              health.checks?.queue?.ok
+                ? (health.checks.queue.mode === 'worker'
+                  ? `${health.checks.queue.workers} worker`
+                    + `${health.checks.queue.workers === 1 ? '' : 's'} · `
+                    + `${health.checks.queue.queued} waiting`
+                  : 'jobs run inside the API; a restart stops an install')
+                : null),
             checkRow('CurseForge', health.checks?.curseforge,
               'api.curseforge.com'),
             checkRow('Modrinth', health.checks?.modrinth, 'api.modrinth.com'),

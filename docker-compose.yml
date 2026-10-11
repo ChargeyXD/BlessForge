@@ -50,6 +50,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
 
     # Reach services on the host: an Ollama for the AI assistant, and a node
     # agent when it runs on this same machine.
@@ -74,6 +76,12 @@ services:
       # before the first start; the database is never published outside
       # this compose project.
       DATABASE_URL: "postgresql+asyncpg://blessforge:CHANGE-ME@postgres:5432/blessforge"
+
+      # ---- The job queue ----------------------------------------------------
+      # Installs, provisioning and the update sweep run in the worker service
+      # below, so restarting this container mid-install does not stop the
+      # install. Remove this line and the worker to run them in-process.
+      REDIS_URL: "redis://redis:6379/0"
 
       # ---- Mod sources --------------------------------------------------
       # Your own CurseForge key, base64-encoded: echo -n '<key>' | base64 -w0
@@ -195,6 +203,52 @@ services:
           mode: rw
           description:
             en_us: "BlessForge's own folder: modpack download cache and imported pack exports. Give it an empty folder of its own -- not Crafty's."
+
+  # The job worker: the same image, running the queue instead of the web
+  # app. It needs the same database, Redis, engine and /data as the API --
+  # an export it writes is downloaded through the API from /data/exports.
+  worker:
+    image: ghcr.io/chargeyxd/blessforge:latest
+    container_name: blessforge-worker
+    restart: unless-stopped
+    command: ["arq", "app.worker.WorkerSettings"]
+    # The heavy one now: it downloads and repacks modpacks. Same ceiling
+    # the API had when it did the work itself.
+    mem_limit: 1g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENGINE: "mock"
+      DATABASE_URL: "postgresql+asyncpg://blessforge:CHANGE-ME@postgres:5432/blessforge"
+      REDIS_URL: "redis://redis:6379/0"
+      CURSEFORGE_API_KEY_B64: ""
+      MODRINTH_ENABLED: "true"
+      OLLAMA_URL: ""
+      WORKER_CONCURRENCY: "3"
+      TZ: "UTC"
+    volumes:
+      - /DATA/AppData/blessforge/data:/data
+    healthcheck:
+      disable: true
+
+  redis:
+    image: redis:7-alpine
+    container_name: blessforge-redis
+    restart: unless-stopped
+    mem_limit: 128m
+    # Append-only, so a queued job and a job's history survive a restart of
+    # Redis itself -- the whole point of the queue.
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - /DATA/AppData/blessforge/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
   postgres:
     image: postgres:16-alpine

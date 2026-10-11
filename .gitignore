@@ -36,3 +36,4 @@ fleet-state.json
 deploy/control-plane/.env
 deploy/control-plane/data/
 deploy/control-plane/postgres/
+deploy/control-plane/redis/

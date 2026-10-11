@@ -58,6 +58,20 @@ GAME_PORT_RANGE = _port_range(os.environ.get("GAME_PORT_RANGE", "") or "25500-25
 # and the offline tests; /api/health says which is in use.
 DATABASE_URL = (os.environ.get("DATABASE_URL", "") or "").strip()
 
+# --- The job queue --------------------------------------------------------
+# redis://host:6379/0. Set, long jobs (installs, provisioning, the update
+# sweep) run in the worker process (`arq app.worker.WorkerSettings`) and
+# survive the API restarting; blank, they run in the API process as they
+# always did. See app/jobs.py.
+REDIS_URL = (os.environ.get("REDIS_URL", "") or "").strip()
+# How many jobs one worker runs at once. Installs are network- and
+# disk-bound, so a few in parallel is fine; past that they only slow each
+# other down.
+WORKER_CONCURRENCY = _int("WORKER_CONCURRENCY", 3)
+# The longest a single job may run before the worker gives up on it. A big
+# pack over a slow line is tens of minutes; six hours is "it has hung".
+JOB_TIMEOUT_SECONDS = _int("JOB_TIMEOUT_SECONDS", 6 * 3600)
+
 # --- CurseForge --------------------------------------------------------
 CURSEFORGE_API_KEY = (os.environ.get("CURSEFORGE_API_KEY", "") or "").strip()
 if len(CURSEFORGE_API_KEY) >= 2 and (

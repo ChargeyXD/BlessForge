@@ -30,7 +30,6 @@ from app import (
     curseforge,
     deps,
     diagnostics,
-    exporter,
     files,
     fleetgroups,
     installer,
@@ -43,15 +42,16 @@ from app import (
     players,
     plugins,
     properties,
-    provision,
     roulette,
-    smoketest,
     specs,
     uploads,
     watcher,
     whitelist,
 )
 from app.db import importer
+from app.jobs import close_redis as jobs_close
+from app.jobs import heartbeat_forever as jobs_heartbeat
+from app.jobs import queue_health as jobs_queue_health
 from app.jobs import registry
 
 @asynccontextmanager
@@ -71,15 +71,21 @@ async def _lifespan(_app: FastAPI):
     await auth.bootstrap()
     await fleetgroups.load()
     await whitelist.load()
-    task = asyncio.create_task(watcher.run_forever())
+    # With Redis the worker owns the scheduled sweep; without it, this
+    # process does, as it always has.
+    background = [asyncio.create_task(jobs_heartbeat())]
+    if not config.REDIS_URL:
+        background.append(asyncio.create_task(watcher.run_forever()))
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for task in background:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await jobs_close()
         await db.dispose()
 
 
@@ -211,13 +217,14 @@ async def health(fresh: bool = False) -> dict:
             return _health_cache[1]
 
         state = config.configured()
-        engine_check, cf_check, mr_check, db_check = await asyncio.gather(
+        engine_check, cf_check, mr_check, db_check, queue_check = await asyncio.gather(
             _check_engine(state), _check_curseforge(state), _check_modrinth(state),
-            db.ping(),
+            db.ping(), jobs_queue_health(),
         )
         checks: dict[str, Any] = {
             "engine": engine_check,
             "database": db_check,
+            "queue": queue_check,
             "curseforge": cf_check,
             "modrinth": mr_check,
             # A /data the app cannot write is invisible until the first install
@@ -735,11 +742,11 @@ async def delete_mods(server_id: str, body: dict = Body(...)) -> dict:
 async def add_mod(server_id: str, body: dict = Body(...)) -> dict:
     """Install a mod. By default its required dependencies come too."""
     if body.get("with_dependencies", True):
-        job = registry.create("add_mod", f"Install {body.get('name') or 'mod'}")
-        registry.start(
-            job,
-            lambda j: modmgr.add_mod_with_dependencies(
-                j, server_id,
+        job = registry.create("add_mod", f"Install {body.get('name') or 'mod'}",
+                              server_id=server_id)
+        await registry.submit(
+            job, "add_mod", server_id=server_id,
+            **dict(
                 source=body.get("source", "curseforge"),
                 project_id=body["project_id"],
                 file_id=body["file_id"],
@@ -795,8 +802,10 @@ async def mod_updates(server_id: str) -> dict:
 
 @app.post("/api/instances/{server_id}/mods/identify")
 async def identify_mods(server_id: str, directory: str = "mods") -> dict:
-    job = registry.create("identify", f"Identify mods in {server_id[:8]}")
-    registry.start(job, lambda j: modmgr.identify_mods(j, server_id, directory))
+    job = registry.create("identify", f"Identify mods in {server_id[:8]}",
+                          server_id=server_id)
+    await registry.submit(job, "identify_mods", server_id=server_id,
+                          directory=directory)
     return {"job_id": job.id}
 
 
@@ -964,7 +973,7 @@ async def diagnose(server_id: str) -> dict:
 @app.post("/api/instances/{server_id}/deep-scan")
 async def deep_scan(server_id: str) -> dict:
     job = await _job_for("deep_scan", "Dependency scan", server_id)
-    registry.start(job, lambda j: diagnostics.deep_scan(j, server_id))
+    await registry.submit(job, "deep_scan", server_id=server_id)
     return {"job_id": job.id}
 
 
@@ -998,8 +1007,8 @@ async def restore_backup(server_id: str, snap_id: str) -> dict:
 async def smoke_test(server_id: str, timeout: int = Body(300, embed=True)) -> dict:
     """Boot once, watch, stop, and report -- for a server with no log yet."""
     job = await _job_for("smoke_test", "Boot test", server_id)
-    registry.start(job, lambda j: smoketest.run(j, server_id,
-                                                timeout=max(60, min(timeout, 900))))
+    await registry.submit(job, "smoke_test", server_id=server_id,
+                          timeout=max(60, min(int(timeout), 900)))
     return {"job_id": job.id}
 
 
@@ -1011,19 +1020,9 @@ async def export_instance(
 ) -> dict:
     """Write this server out as a CurseForge modpack archive."""
     job = await _job_for("export", "Export pack", server_id)
-
-    async def run(j):
-        result = await exporter.export_instance(
-            j, server_id, include_disabled=include_disabled,
-            bundle_others=bundle_others)
-        blob = result.pop("bytes")
-        path = config.DATA_DIR / "exports" / result["filename"]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(blob)
-        result["download"] = f"/api/exports/{result['filename']}"
-        return result
-
-    registry.start(job, run)
+    await registry.submit(job, "export_instance", server_id=server_id,
+                          include_disabled=bool(include_disabled),
+                          bundle_others=bool(bundle_others))
     return {"job_id": job.id}
 
 
@@ -1101,7 +1100,7 @@ async def update_summary() -> dict:
 async def update_check_now() -> dict:
     """Run the sweep now instead of waiting for the schedule."""
     job = registry.create("updates", "Checking every server for mod updates")
-    registry.start(job, lambda j: watcher.check_all())
+    await registry.submit(job, "check_updates")
     return {"job_id": job.id}
 
 
@@ -1401,12 +1400,9 @@ async def install_preflight(body: dict = Body(...)) -> dict:
     """Analyse a pack and list the mods that look client-only, for review."""
     ref = _pack_ref(body)
     job = registry.create("preflight", "Analysing pack")
-    registry.start(
-        job,
-        lambda j: installer.preflight(
-            j, **ref,
-            prefer_server_pack=bool(body.get("prefer_server_pack", True)),
-        ),
+    await registry.submit(
+        job, "preflight", **ref,
+        prefer_server_pack=bool(body.get("prefer_server_pack", True)),
     )
     return {"job_id": job.id}
 
@@ -1577,11 +1573,11 @@ async def roulette_install(body: dict = Body(...)) -> dict:
     name = (body.get("server_name") or f"Roulette {roll_id}").strip()
     job = registry.create("roulette", f"Rolling {name}", server_name=name)
 
-    registry.start(job, lambda j: roulette.install_roll(
-        j, roll_id=roll_id, constraints=c, hand=hand, server_name=name,
-        port=int(body.get("port", 25565)), motd=body.get("motd"),
-        optimize=bool(body.get("optimize", True)),
-    ))
+    await registry.submit(
+        job, "install_roll", roll_id=roll_id, constraints=c, hand=hand,
+        server_name=name, port=int(body.get("port", 25565)),
+        motd=body.get("motd"), optimize=bool(body.get("optimize", True)),
+    )
     return {"job_id": job.id}
 
 
@@ -2331,10 +2327,9 @@ async def install_modpack(body: dict = Body(...)) -> dict:
         "install", f"Install {name}",
         server_id=target, server_name=await _instance_name(target) or name,
     )
-    registry.start(
-        job,
-        lambda j: installer.install_modpack(
-            j,
+    await registry.submit(
+        job, "install_modpack",
+        **dict(
             **ref,
             server_name=name,
             port=int(body.get("port", 25565)),
@@ -2358,10 +2353,9 @@ async def switch_pack_version(server_id: str, body: dict = Body(...)) -> dict:
     ref = _pack_ref(body)
     await backups.snapshot(server_id, "before switching pack version")
     job = await _job_for("switch", "Switch pack version", server_id)
-    registry.start(
-        job,
-        lambda j: installer.switch_pack_version(
-            j,
+    await registry.submit(
+        job, "switch_pack_version",
+        **dict(
             server_id=server_id,
             **ref,
             prefer_server_pack=bool(body.get("prefer_server_pack", True)),
@@ -2414,8 +2408,8 @@ async def provision_server(body: dict = Body(...)) -> dict:
         raise HTTPException(400, "loader and minecraft are both required")
 
     job = registry.create("provision", f"Create {name}", server_name=name)
-    registry.start(job, lambda j: provision.create_empty(
-        j, name=name, loader=loader, mc_version=mc,
+    await registry.submit(job, "create_server", **dict(
+        name=name, loader=loader, mc_version=mc,
         port=int(body.get("port", 25565)),
         mem_min=body.get("mem_min"), mem_max=body.get("mem_max"),
         motd=body.get("motd"), optimize=bool(body.get("optimize", True)),
@@ -2436,7 +2430,7 @@ async def loader_reinstall(server_id: str) -> dict:
     uploaded.
     """
     job = await _job_for("loader", "Reinstall loader", server_id)
-    registry.start(job, lambda j: provision.reinstall_loader(j, server_id))
+    await registry.submit(job, "reinstall_loader", server_id=server_id)
     return {"job_id": job.id}
 
 
@@ -2777,8 +2771,7 @@ async def plugins_add(server_id: str, body: dict = Body(...)) -> dict:
     manifest = await engine.read_manifest(server_id)
     job = await _job_for("plugin", f"Install {body.get('name') or 'plugin'}",
                          server_id)
-    registry.start(job, lambda j: plugins.install(
-        j, server_id,
+    await registry.submit(job, "install_plugin", server_id=server_id, **dict(
         project_id=str(body["project_id"]),
         file_id=body.get("file_id"),
         family=body.get("family") or manifest.get("loader") or "paper",
@@ -2811,8 +2804,8 @@ async def client_scan(server_id: str, directory: str = "mods") -> dict:
     anything installed before these checks existed.
     """
     job = await _job_for("client_scan", "Client-only scan", server_id)
-    registry.start(job, lambda j: clientscan.scan_instance(j, server_id,
-                                                           directory))
+    await registry.submit(job, "client_scan", server_id=server_id,
+                          directory=directory)
     return {"job_id": job.id}
 
 
@@ -2834,46 +2827,41 @@ async def client_scan_apply(server_id: str, body: dict = Body(...)) -> dict:
 
 @app.get("/api/jobs")
 async def list_jobs() -> dict:
-    return {"items": registry.list()}
+    return {"items": await registry.list()}
 
 
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str) -> dict:
-    job = registry.get(job_id)
-    if not job:
+    snap = await registry.snapshot(job_id)
+    if not snap:
         raise HTTPException(404, "job not found")
-    return job.snapshot()
+    return snap
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str) -> dict:
-    job = registry.get(job_id)
-    if not job:
+    if not await registry.snapshot(job_id):
         raise HTTPException(404, "job not found")
-    return {"cancelled": job.cancel()}
+    return {"cancelled": await registry.cancel(job_id)}
 
 
 @app.get("/api/jobs/{job_id}/events")
 async def job_events(job_id: str) -> StreamingResponse:
-    job = registry.get(job_id)
-    if not job:
+    """Every frame of a job: a snapshot, then what happens next.
+
+    Works for a job in this process and for one on the worker alike, and
+    for one that was running before this process started -- which is what
+    lets the browser re-attach after the API restarts mid-install.
+    """
+    if not await registry.snapshot(job_id):
         raise HTTPException(404, "job not found")
 
     async def stream():
-        q = job.subscribe()
-        try:
-            yield f"data: {json.dumps({'event': 'snapshot', **job.snapshot()})}\n\n"
-            while True:
-                if job.status in ("done", "error", "cancelled") and q.empty():
-                    yield f"data: {json.dumps({'event': 'end', **job.snapshot()})}\n\n"
-                    return
-                try:
-                    payload = await asyncio.wait_for(q.get(), timeout=15)
-                    yield f"data: {json.dumps(payload)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-        finally:
-            job.unsubscribe(q)
+        async for payload in registry.follow(job_id):
+            if payload is None:
+                yield ": keepalive\n\n"
+            else:
+                yield f"data: {json.dumps(payload, default=str)}\n\n"
 
     return StreamingResponse(
         stream(),
