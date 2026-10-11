@@ -25,6 +25,8 @@ from typing import Any
 
 import httpx
 
+from app import templates
+
 UA = "BlessForge/2.1 (+https://github.com/ChargeyXD/BlessForge)"
 
 MOJANG_MANIFEST = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
@@ -423,36 +425,8 @@ async def fetch(url: str, attempts: int = 4) -> bytes:
 
 # --- what the UI offers ------------------------------------------------
 
-CATALOGUE = [
-    {"key": "fabric", "title": "Fabric", "kind": "mods",
-     "logo": "/assets/loader-fabric.png",
-     "blurb": "Light, fast, and the quickest to update to a new Minecraft "
-              "release. Takes Fabric mods."},
-    {"key": "forge", "title": "Forge", "kind": "mods",
-     "logo": "/assets/loader-forge.jpg",
-     "blurb": "The oldest and largest mod ecosystem. Almost every big "
-              "modpack is Forge or NeoForge."},
-    {"key": "neoforge", "title": "NeoForge", "kind": "mods",
-     "logo": "/assets/loader-neoforge.png",
-     "blurb": "The Forge fork most 1.20.2+ packs moved to. Takes NeoForge "
-              "mods; 1.20.1 also reads Forge ones."},
-    {"key": "paper", "title": "Paper", "kind": "plugins",
-     "logo": "/assets/loader-paper.png",
-     "blurb": "No mods — Bukkit/Spigot plugins, and no client install for "
-              "your players. The usual choice for a survival server."},
-    {"key": "purpur", "title": "Purpur", "kind": "plugins",
-     "logo": "/assets/loader-purpur.png",
-     "blurb": "Paper with several hundred extra gameplay toggles. Runs "
-              "every Paper plugin."},
-    {"key": "folia", "title": "Folia", "kind": "plugins",
-     # Folia has no mark of its own; it is Paper's fork and wears Paper's.
-     "logo": "/assets/loader-paper.png",
-     "blurb": "Paper's regionised-threading fork, for very large player "
-              "counts. Not every plugin supports it."},
-    {"key": "vanilla", "title": "Vanilla", "kind": "none",
-     "logo": "/assets/loader-vanilla.svg",
-     "blurb": "Mojang's server, unmodified. Datapacks only."},
-]
+# One entry per template in templates/ (app/templates.py), in their order.
+CATALOGUE = templates.catalogue()
 
 
 async def catalogue() -> list[dict]:

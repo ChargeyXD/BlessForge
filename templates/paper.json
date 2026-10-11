@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "key": "paper",
+  "title": "Paper",
+  "kind": "plugins",
+  "order": 3,
+  "logo": "/assets/loader-paper.png",
+  "blurb": "No mods — Bukkit/Spigot plugins, and no client install for your players. The usual choice for a survival server.",
+  "mod_directory": "plugins",
+  "source": "PaperMC",
+  "java": {
+    "from": "minecraft"
+  },
+  "install": {
+    "fetch": "server_jar"
+  },
+  "startup": {
+    "command": "java {jvm} -jar {jar} nogui",
+    "jvm_args_file": null
+  },
+  "boot": {
+    "ready": "Done \\([\\d.]+s\\)!",
+    "timeout": 300
+  }
+}

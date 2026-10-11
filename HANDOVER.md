@@ -9,6 +9,33 @@ you want done."**
 
 ---
 
+## 0A. The commercial rebuild (2026-10-11) — read this before §0
+
+**Most of §0–§8 describes the Crafty era**, which is what the box still runs
+(`v2.1-crafty`, tagged on `main`). Work packages WP-01 to WP-06 of the
+commercial plan replace the hosting layer, on stacked branches that are **not
+merged**:
+
+```
+main (v2.1-crafty) ← wp-01-secrets ← wp-02-engine-interface ← wp-03-postgres
+                   ← wp-04-jobs ← wp-05-agent ← wp-06-templates
+```
+
+| package | what it is now |
+|---|---|
+| WP-01 | No key or AI endpoint ships; a mod whose author blocked third-party downloads is never fetched (Modrinth substitute by SHA-1, else listed as *blocked by author*) |
+| WP-02 | `app/engine/`: one `ServerEngine` interface, an in-memory mock, and no Crafty anywhere under `app/` |
+| WP-03 | Postgres (SQLite when `DATABASE_URL` is blank), Alembic migrations run on start; accounts, audit, racks and decisions live there |
+| WP-04 | Redis + arq job queue: installs run on a worker, survive a panel restart, and a browser re-attaches without a gap |
+| WP-05 | The node agent (`agent/`): one locked-down container per server, a jailed file API, panel-signed browser tokens, crash loops reported; `app/nodes.py`, `app/engine/agent.py`, `/api/agent/*` |
+| WP-06 | `templates/` — one per loader (7) — drive create, install and boot; `dev/tools/import_from_crafty.py` moves servers off Crafty |
+
+The picture is in README "How it fits together"; the agent in
+`dev/agent/README.md`; what is proven and what is not in `NEXT-SESSION.md` §0.
+The test loop for all of it is §9.
+
+---
+
 ## 0. Where this is right now
 
 **The front end is plain ES modules, written from scratch.** The design canvas
@@ -1736,15 +1763,36 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite: 325 offline + 45 HTTP backend, 218 front-end
-#   39, 10, 31, 76, 26, 30, 79, 34 and 218
+# the whole suite (WP-06, 2026-10-12): 767 offline checks in 16 files, the
+# HTTP suite, and 219 front-end checks. `.venv/Scripts/python.exe` on Windows.
+#   46 10 38 76 26 36 86 34 41 50 27 25 50 20 172 30, then 219
 cd ~/blessforge
-for t in test_loader_detection test_job_stream test_install_decisions          test_roulette test_boot_verdict test_fleet_state test_auth test_policy; do
+for t in test_loader_detection test_job_stream test_install_decisions \
+         test_roulette test_boot_verdict test_fleet_state test_auth test_policy \
+         test_blocked_downloads test_engine test_db test_jobs_redis \
+         test_templates test_import_crafty test_agent_security test_agent_api; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
+.venv/bin/python dev/tools/run_http_tests.py      # boots a throwaway server
 .venv/bin/python dev/tools/check_frontend.py | tail -1
 # check_frontend.py wants `node` on PATH for its parse check and skips it
 # cleanly without one -- but that is the check worth having (trap 25).
+
+# the database-backed ones again on a real Postgres. The suites DROP every
+# table in it first: a database that exists only for tests.
+export TEST_DATABASE_URL=postgresql+asyncpg://blessforge@127.0.0.1:55432/blessforge
+for t in test_fleet_state test_auth test_policy test_db; do
+  .venv/bin/python dev/tools/$t.py | tail -1
+done
+.venv/bin/python dev/tools/run_http_tests.py
+unset TEST_DATABASE_URL
+# test_jobs_redis uses a real Redis when REDIS_TEST_URL is set, fakeredis
+# over TCP otherwise. It starts an API and a worker and takes about 25 s;
+# if it ever sits past its last check, something is holding exit (see NEXT-SESSION §0.2).
+
+# not in the quick loop, each for a reason:
+.venv/bin/python dev/tools/test_agent_security.py --live   # Linux + Docker + images
+.venv/bin/python dev/tools/boot_templates.py               # downloads + boots 7 loaders
 
 # what it looks like — screenshots at four widths
 mkdir -p /tmp/shots && chmod 777 /tmp/shots
@@ -1757,8 +1805,9 @@ docker run --rm --network host -v "$PWD":/w:ro -v /tmp/shots:/out -w /home/pptru
 cd ~/blessforge && docker compose build
 docker compose -f /var/lib/casaos/apps/blessforge/docker-compose.yml \
   -p blessforge up -d --force-recreate
-# NEVER redeploy while an install is running -- the job registry is in memory
-# and the container restart kills it mid-flight.
+# v2.1-crafty: NEVER redeploy while an install is running -- the job registry
+# is in memory and the restart kills it mid-flight. From WP-04 on, with
+# REDIS_URL set, installs run on the worker and survive a panel restart.
 
 # JS syntax check without node on the host
 docker run --rm -v "$PWD/app/static/js":/w:ro node:20-alpine sh -c '
@@ -1778,7 +1827,7 @@ PID=$(ss -lptn 'sport = :8719' | grep -oP 'pid=\K[0-9]+' | head -1) && kill "$PI
 cd ~/blessforge && set -a && . ./.env && set +a
 .venv/bin/python dev/tools/sweep_instances.py
 
-# Crafty's side of a failed install
+# Crafty's side of a failed install (the v2.1-crafty deployment)
 docker exec big-bear-crafty sh -c "grep -n '<server-id>' /crafty/logs/commander.log"
 
 # roll a server from the API rather than the screen

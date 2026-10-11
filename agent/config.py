@@ -1,7 +1,7 @@
 """The agent's configuration: one TOML file, written by BlessForge.
 
-BlessForge generates this file when a node is registered (Admin -> Nodes, or
-POST /api/admin/nodes) and the owner copies it to the node:
+BlessForge generates this file when a node is registered (POST
+/api/admin/nodes, as an admin) and the owner copies it to the node:
 
     /etc/blessforge-agent/agent.toml     owner root, mode 600
 

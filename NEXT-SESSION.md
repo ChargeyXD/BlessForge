@@ -1,8 +1,9 @@
 # BlessForge — the state of the code, for the next session
 
-Rewritten 2026-09-10, after the front end was rebuilt from scratch, six
-features were added, and the UI was then reworked a second time for weight
-and speed. Read `HANDOVER.md` first for how the app is put together;
+Updated 2026-10-12 for the commercial rebuild (§0). The rest was written
+2026-09-10/11, after the front end was rebuilt from scratch, and is still
+accurate about the front end — but where it mentions Crafty it describes the
+`v2.1-crafty` deployment, not these branches. Read `HANDOVER.md` §0A first;
 this is the list of what is *incomplete*, separated so you can tell which is
 which.
 
@@ -12,7 +13,180 @@ vendored React, no binding contract. Do not go looking for them.
 
 ---
 
-## 1. What changed in this session
+## 0. The commercial rebuild — WP-01 to WP-06 (2026-10-11/12)
+
+**Read this section first; §1 onwards is the September UI work, and where it
+mentions Crafty it describes the deployment the box still runs.**
+
+### 0.1 Where it is
+
+Six work packages of `COMMERCIAL-PLAN.md` (in the parent folder, never in
+this repo) on six **stacked branches, committed locally, not pushed, not
+merged**:
+
+| branch | commit | package |
+|---|---|---|
+| `main` | `80a413c` | tagged `v2.1-crafty` — the last Crafty release, what the box runs |
+| `wp-01-secrets` | `1bc0ebb` | WP-01 no shipped secrets, blocked downloads respected, no AI default |
+| `wp-02-engine-interface` | `21a9ea1` | WP-02 the engine interface + mock; Crafty removed from `app/` |
+| `wp-03-postgres` | `549b6d3` | WP-03 Postgres + Alembic |
+| `wp-04-jobs` | `1d3a88e` | WP-04 Redis + arq job queue and a worker |
+| `wp-05-agent` | `d048127` | WP-05 the node agent |
+| `wp-06-templates` | the tip | WP-06 loader templates, real boots, the Crafty importer |
+
+`git log --oneline v2.1-crafty..wp-06-templates` shows the lot. The plan's
+rule is "merge only when Done-when passes", and the WP-05 and WP-06
+Done-whens both name things that cannot be done on this machine (a Docker
+node; the real Crafty servers), so **nothing is merged and nothing in
+`COMMERCIAL-PLAN.md` §9 is ticked.** Whether to merge WP-01 to WP-04, whose
+Done-whens are met, is the user's call.
+
+### 0.2 What changed
+
+- **WP-01.** No CurseForge key or AI endpoint ships (`CURSEFORGE_API_KEY_FILE`
+  for a Docker secret; `OLLAMA_URL` blank turns the assistant off). A mod
+  whose author blocked third-party downloads is **never fetched**: Modrinth by
+  SHA-1, then by slug, else listed as *blocked by author* with a link
+  (`app/blocked.py`, the CDN fallback deleted).
+- **WP-02.** `app/engine/`: one `ServerEngine` protocol, an in-memory mock
+  driver, a router by node. `app/crafty.py` is gone and nothing under `app/`
+  mentions Crafty. The loader ladder (node fetches → BlessForge relays,
+  checksum-checked → a plain failure) lives in `provision.py`.
+- **WP-03.** Postgres (SQLite when `DATABASE_URL` is blank), Alembic migrated
+  on start. Accounts, sessions, the audit log, racks and decisions moved
+  there from JSON files. Two admins demoting each other at once could
+  deadlock on Postgres; admin rows are now locked in id order first.
+- **WP-04.** Redis + arq: installs and every long job run on `app/worker.py`,
+  progress is a Redis stream per job with a snapshot, so a browser
+  re-attaches after a panel restart with no gap and no repeat. Cancel, crash
+  detection by heartbeat, and a sweep that marks orphans *interrupted*. Found
+  later, running the full loop for WP-06: `close_redis()` never closed the
+  arq submit pool, and with the test's Redis served from inside the test
+  process that left `test_jobs_redis.py` hanging **at exit, after all 25
+  checks had passed**, on some runs — which read as a stalled suite. Both
+  connections are closed now, and the fake server's threads are daemon.
+- **WP-05.** The node agent (`agent/`, `dev/agent/README.md`): one hardened
+  container per server, a jailed file API, panel-signed Ed25519 browser
+  tokens, crash backoff and crash-loop events, reconcile on start, a disk
+  watchdog; runtime images for Java 8/17/21/25 and a systemd unit. Panel
+  side: node registration (`app/nodes.py`), the agent driver, `/api/agent/*`
+  (node token only), the console tab on the node's websocket. Its own tests
+  found four bugs, all fixed: the Windows jail's identity check could be
+  raced (a swap between check and open read the outside file — it now asks
+  the open handle where it is, and the race test fails without that), search
+  and disk usage walked into Windows junctions, `mkdir` refused a nested
+  folder on Linux, and a planted link could not be deleted on Windows.
+- **WP-06.** `templates/` — one JSON per loader, checked on load — now drives
+  the create screen, the install rung, the startup command, the boot test's
+  timeout, and the Java (Mojang's own `javaVersion`, rounded up to a runtime
+  the nodes have, the offline table as fallback). Two fixes from running it
+  for real: a **pre-1.17 Forge server's heap was never applied** (it went
+  into `user_jvm_args.txt`, which a jar-launched Forge never reads; it now
+  goes on the command line), and **a server pack with no `manifest.json` or
+  `variables.txt` could not be installed at all** ("could not determine the
+  Minecraft version") — it now reads the missing fields from the release's
+  client manifest. `dev/tools/import_from_crafty.py` moves servers off
+  Crafty, read-only towards it; its test caught it copying through a planted
+  junction.
+
+### 0.3 Verified
+
+| what | evidence |
+|---|---|
+| The offline loop | 767 checks in 16 files, all green: 46 10 38 76 26 36 86 34 41 50 27 25 50 20 172 30 (HANDOVER §9) |
+| HTTP suite | `run_http_tests.py` 45/45, on SQLite and on Postgres |
+| Front end | `check_frontend.py` 219/219 |
+| Postgres | `test_fleet_state`, `test_auth`, `test_policy`, `test_db` and the HTTP suite against Postgres 16 (the pgserver binaries, on this Windows box) |
+| Job queue | `test_jobs_redis` 25/25: an API and a worker as processes, the API killed mid-job, re-attach, cancel, orphans |
+| Panel ↔ agent | `test_agent_api` 30/30: two processes; register → create → start → console websocket + command → edit → crash audited → stop → delete; both directions refuse the wrong credential |
+| Agent security (offline) | `test_agent_security` 172/172 on the Windows jail path |
+| Every template, for real | `boot_templates.py`: downloaded from each project and booted through panel + agent, 8/8 — table below |
+| CurseForge pack + its export | `install_on_agent.py` — **both booted**: Just Create SMP 0.5 (NeoForge 1.21.1, its server pack, 54 mods) installed in 76 s and booted in 26 s; exported, uploaded back as an import and installed as a second server (50 mods) in 60 s, booted in 32 s. Why the import has four fewer mods was not checked — most likely the client-only mods the first install left disabled, which an export leaves out by default |
+| Importer | `test_import_crafty` 20/20 against `dev/mock/crafty.py` |
+
+| template | Minecraft | Java | install | boot |
+|---|---|---|---|---|
+| vanilla | 26.1 | 25 | 13 s | 19 s |
+| paper | 1.21.4 | 21 | 10 s | 37 s |
+| purpur | 1.21.1 | 21 | 127 s (slow mirror) | 31 s |
+| folia | 1.21.4 | 21 | 10 s | 27 s |
+| fabric | 1.20.1 | 17 | 8 s | 41 s |
+| forge | 1.20.1 | 17 | 38 s (installer) | 41 s |
+| forge | 1.12.2 | 8 | 25 s (installer, legacy jar) | 18 s |
+| neoforge | 1.21.1 | 21 | 47 s (installer) | 24 s |
+
+### 0.4 Unproven — the honest gaps
+
+This box has **no Docker, no Linux, no Redis server, and no access to the
+CasaOS box.** Everything below follows from that, and each is a named item,
+not a hedge:
+
+1. **Docker has never run a BlessForge container.** `DockerRuntime` (create,
+   the hijacked attach and its demux, start, stop, stats, wait, logs, pull)
+   and the installer container are written against the Engine API and
+   untested. The servers above booted on the agent's **process runtime**,
+   which has no isolation at all.
+2. **The isolation is checked on paper only.** `assert_safe` refuses every
+   rule broken one at a time, but nobody has looked at what Docker actually
+   applied. The `--live` tier of `test_agent_security.py` — memory hog, fork
+   bomb, disk filler, neighbour's folder, read-only root, noexec `/tmp`, no
+   socket, no capabilities — is written and **has never run**.
+3. **The runtime images have never been built**, and `bf-entry` never run.
+4. **The Linux jail has never executed.** The race-free path (openat,
+   `O_NOFOLLOW`, `fwalk`, `renameat`) is what production uses; every jail
+   test here ran the Windows development fallback. Running
+   `test_agent_security.py` on Linux exercises it — do that first.
+5. **Disk quotas are not implemented.** Plan step WP-05.3 asks for XFS/ext4
+   project quotas; there is only the watchdog, which checks every 60 s and
+   stops a server after the fact. A fast filler can fill the disk between
+   checks.
+6. **The systemd unit has never been installed**; its hardening
+   (`ProtectSystem=strict` with the Docker socket writable, the capability
+   set) is unverified.
+7. **No WireGuard, no TLS on the agent.** Panel ↔ agent ran over plain HTTP
+   on localhost.
+8. **Redis has only ever been fakeredis over TCP.** arq's startup `INFO` call
+   is stubbed in the test worker because fakeredis does not answer it.
+9. **The compose files have never been brought up** — neither the root one
+   nor `deploy/control-plane/`. Postgres here was the pgserver binaries, not
+   the `postgres:16-alpine` image.
+10. **The importer has never met the real Crafty.** It speaks the endpoints
+    the old client verified, and is tested against the mock only. No real
+    server has been imported and Crafty has not been uninstalled — the plan
+    says to; that is a manual step after a backup, and the report says when.
+11. **Nothing is deployed.** The CasaOS box still runs `v2.1-crafty`.
+12. **SFTP** (`/api/agent/sftp-auth` exists; the server is WP-11) and
+    **backups on the agent** (501) are not built.
+13. **There is no screen for nodes.** Registration is `POST /api/admin/nodes`;
+    the admin views are WP-08.
+
+### 0.5 Where the build differs from the plan
+
+- The agent has no `console.py` or `stats.py`: the console ring buffer is in
+  `agent/servers.py` and Docker stats in `agent/containers.py`.
+- The Docker Engine API is spoken with `httpx` over the unix socket rather
+  than aiodocker or the Docker SDK — one dependency fewer, and the hijacked
+  attach is twenty lines.
+- Runtime images are Java 8, 17, 21 **and 25**: the plan lists three, but
+  Minecraft 26.x requires Java 25 (checked against Mojang's version files,
+  and 26.1 booted on it above).
+- Templates are JSON data read by `app/templates.py`; the install logic stays
+  in `loaders.py` / `provision.py` as the plan asked.
+
+### 0.6 Where to pick up
+
+1. A Linux box with Docker: build the images (`agent/images/build.sh`), run
+   `test_agent_security.py` (Linux jail) and then `--live`, then point
+   `boot_templates.py` at a Docker-runtime node.
+2. Disk quotas (XFS project quotas), or accept the watchdog as the WP-05
+   answer — a decision for the user.
+3. `import_from_crafty.py --dry-run` against the real Crafty, then for real
+   with `--from-dir`, then the merge decision.
+4. WP-07 (public accounts) is next in the plan.
+
+---
+
+## 1. What changed in the September session
 
 | area | what it is now |
 |---|---|
@@ -192,12 +366,19 @@ If a version list comes back empty, check those two first.
 
 ## 6. How to check your work
 
+The whole loop — sixteen offline files, the HTTP suite, the front end, and
+the database-backed ones again on Postgres — is `HANDOVER.md` §9. The short
+version:
+
 ```bash
 cd /path/to/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions \
-         test_roulette test_boot_verdict test_fleet_state; do
+         test_roulette test_boot_verdict test_fleet_state test_auth test_policy \
+         test_blocked_downloads test_engine test_db test_jobs_redis \
+         test_templates test_import_crafty test_agent_security test_agent_api; do
   python dev/tools/$t.py | tail -1
 done
+python dev/tools/run_http_tests.py
 python dev/tools/check_frontend.py
 ```
 

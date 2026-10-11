@@ -217,6 +217,10 @@ class MockEngine:
             raise EngineError("this server has no startup command yet", 409)
         self._log(server_id, "Starting minecraft server")
         self._log(server_id, 'Done (1.042s)! For help, type "help"')
+        # A real server starts logs/latest.log afresh on every boot, and the
+        # boot test reads that file rather than the console's ring buffer.
+        boot = list(self.console[server_id])[-2:]
+        self._put(server_id, "logs", "latest.log", ("\n".join(boot) + "\n").encode())
         st.update(running=True, crashed=False, started=time.time(), cpu=12.0,
                   mem=1_200_000_000, mem_percent=30.0, online=0)
 
@@ -278,9 +282,10 @@ class MockEngine:
                       b"# Xmx and Xms set the maximum and minimum RAM usage\n")
         return [f"The server installed successfully ({family} {full})"]
 
-    async def set_runtime(self, server_id: str, mc_version: str) -> dict:
+    async def set_runtime(self, server_id: str, mc_version: str,
+                          java_major: int | None = None) -> dict:
         rec = self._record(server_id)
-        want = required_java_major(mc_version)
+        want = int(java_major or required_java_major(mc_version))
         old = rec.get("java_major")
         rec["java_major"] = want
         return {"changed": old != want, "java_major": want,

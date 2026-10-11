@@ -173,8 +173,8 @@ _health_lock = asyncio.Lock()
 async def _check_engine(state: dict) -> dict:
     if engine.kind() == "agent" and not engine.drivers():
         return {"ok": False, "driver": "agent", "nodes": 0, "servers": 0,
-                "error": "no node is registered yet -- register one (Admin, or "
-                         "POST /api/admin/nodes) and start its agent"}
+                "error": "no node is registered yet -- register one (POST "
+                         "/api/admin/nodes, as an admin) and start its agent"}
     try:
         started = time.perf_counter()
         servers = await asyncio.wait_for(engine.list_servers(), timeout=5.0)

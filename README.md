@@ -4,12 +4,12 @@ A Minecraft server panel with a CurseForge-style front end. Search modpacks,
 install one as a real server, then manage the mods, configs, performance and
 startup problems of every server from one place.
 
-> **2.2 is in transition.** BlessForge no longer drives Crafty Controller: it
-> owns its hosting layer (`app/engine/`), and each node runs the BlessForge
-> node agent. The last Crafty-backed release is tagged `v2.1-crafty` and keeps
-> serving the servers it already runs. Sections below that still describe
-> Crafty are being rewritten; `HANDOVER.md` and `NEXT-SESSION.md` describe the
-> current state.
+> **2.2 runs its own servers.** There is no Crafty Controller any more. The
+> panel (this app, with Postgres and a Redis job queue) drives a **BlessForge
+> node agent** on every machine that hosts game servers, and the agent runs
+> each server in its own locked-down container. The last Crafty-backed release
+> is tagged `v2.1-crafty`; `dev/tools/import_from_crafty.py` moves its servers
+> across. [How it fits together](#how-it-fits-together) has the picture.
 
 ![port 8710](https://img.shields.io/badge/port-8710-orange)
 
@@ -24,8 +24,10 @@ startup problems of every server from one place.
 - Uses the official **server pack** when the version has one.
 - When it doesn't — which is common — reads the pack's `manifest.json` and
   downloads every server-side mod individually to assemble a working server.
-- Crafty installs the matching Forge / NeoForge / Fabric loader from its own
-  catalogue, so the launch command is correct by construction.
+- Installs the matching loader from a **template** (`templates/`, one per
+  loader), fetched from the loader's own project. Forge and NeoForge run their
+  installer once on the node, and the launch command is read back from what
+  it left rather than guessed.
 - Picks the Java version the loader actually supports, and re-checks it on
   every start.
 
@@ -77,10 +79,10 @@ consequential one on the whole screen: Fabric, Forge and NeoForge read
 does nothing at all and reports nothing anywhere, so the distinction is made
 loudly rather than left to be discovered.
 
-The version list is not limited to what Crafty has cached. Crafty's own jar
-index is asked first — a version it knows is one it can install with no
-fallback needed — and the loaders' own sites fill in the rest, which on a
-fresh Minecraft release is most of it.
+The version list comes straight from each loader's own project, so a version
+is offered the moment its project publishes a build for it. Each runs on the
+Java its Minecraft version asks for — Mojang's own version file says which,
+from Java 8 for 1.16 and older up to Java 25 for the 26.x releases.
 
 ### Plugins, for the Paper family
 
@@ -129,9 +131,11 @@ destroy a world:
   manifest are **marked**, because deleting one breaks the server in a way
   that only shows up at the next start.
 
-Uploads are spooled to disk and handed to Crafty in chunks, and downloads are
-streamed straight through. Neither ever holds a whole file in memory, which
-matters when the container is capped at 1 GB and a region folder is not.
+Uploads and downloads are streamed between the browser, the panel and the
+node, and never held whole in memory — a region folder is bigger than the
+panel's memory cap. On the node every path is resolved inside the server's
+own folder, one component at a time, and a link is refused rather than
+followed.
 
 A sidebar measures the folders worth measuring — `mods`, `world`, `logs`,
 `backups` — so "where did the disk go" is one glance rather than an
@@ -151,8 +155,7 @@ with a ghost gate rather than a hidden bucket.
 
 The sidebar shows at most five: everything running first, then whatever ran
 most recently, then whatever was installed most recently, and a "+N more" row
-to the rest. "Ran 20 minutes ago" is recorded by BlessForge itself — Crafty
-does not keep it — and an uptime is only claimed when the down→up transition
+to the rest. "Ran 20 minutes ago" is recorded by BlessForge itself, and an uptime is only claimed when the down→up transition
 was actually witnessed, so a server found already running says "up now"
 rather than inventing a start time.
 
@@ -180,28 +183,24 @@ Whitelist enforcement is written to `server.properties` *and* applied to the
 running server together, because writing only one is the classic way to have
 a whitelist that quietly stops applying after a restart.
 
-### When Crafty cannot install the loader
+### When a loader download fails
 
-Crafty fetches loader jars from a single mirror on a daemon thread. When that
-mirror is down — and it goes down — Crafty logs one line, gives up, and still
-answers the create call with 201. The instance then exists with no launcher,
-and nothing in the API ever says so.
-
-There is a ladder instead of a hang:
+Loader projects have bad days, and a node's own network can be the broken
+part. There is a ladder instead of a hang:
 
 ```
-Crafty's own download → Crafty's jar index, fetched by us
-                      → the loader's own project (Mojang, FabricMC,
-                        NeoForged, MinecraftForge, PaperMC, PurpurMC)
-                      → say plainly what is broken, and which mirror
+the node downloads it from the loader's own project
+  → BlessForge downloads it, checks the checksum the project
+    publishes, and hands it to the node
+  → say plainly what is broken, and which project
 ```
 
-Only the last rung is a failure, and it names the mirror rather than blaming
-the user. The instance is left in place either way, so **Finish setup**
+Only the last rung is a failure, and it names the project rather than
+blaming the user. The server is left in place either way, so **Finish setup**
 retries the loader without throwing away the port, the name, or anything
-already uploaded — which used to mean deleting it and starting again.
+already uploaded.
 
-The same ladder serves modpack installs and blank instances, so a fix to
+The same ladder serves modpack installs and blank servers, so a fix to
 either helps both.
 
 ### Review the client-only mods, before it happens
@@ -394,13 +393,15 @@ time.
 
 ### Terminal
 
-A live console per instance: Crafty's output streamed as it arrives, coloured
-by severity, filterable, with a command box that types straight into the
-server. Following pauses when you scroll up and resumes when you scroll back,
-so reading scrollback while the server is chatty is actually possible.
+A live console per instance, coloured by severity, filterable, with a command
+box that types straight into the server. Following pauses when you scroll up
+and resumes when you scroll back, so reading scrollback while the server is
+chatty is actually possible.
 
-Crafty has no push channel, so the backend polls it and forwards only the lines
-that are new — the browser is never sent the last five hundred lines a second.
+The browser talks to the server's node directly, over a websocket opened with
+a five-minute token the panel signs — lines arrive as they are written, with
+no poll and no hop through the panel. A token opens one server's console on
+one node, and only lets you type if your account may send commands.
 
 ### AI assistant (optional, off by default)
 
@@ -502,12 +503,12 @@ Nothing is applied until you pick it. Flags you untick stay untouched.
 
 The same tab also carries:
 
-- **The server port.** Written to `server.properties` *and* Crafty's own
+- **The server port.** Written to `server.properties` *and* the server's own
   record together — setting only one leaves the server running but permanently
-  displayed as offline. It refuses a port another instance already claims
-  (unless you override), and warns when the port falls outside the range
-  Crafty's container publishes, where the server works inside Docker but is
-  unreachable from your network.
+  displayed as offline. It refuses a port another server already claims
+  (unless you override), and warns when the port falls outside
+  `GAME_PORT_RANGE`, the range a node's edge forwards, where the server would
+  run but be unreachable.
 - **The whole of `server.properties`**, every key editable, grouped and typed:
   toggles for booleans, dropdowns for enums, number fields for integers, with
   a short note on what each one does. Keys your mods add are shown too rather
@@ -516,41 +517,77 @@ The same tab also carries:
 
 ---
 
+## How it fits together
+
+```
+  browser ──https──▶ control plane: the panel API + a worker
+                       │   Postgres (accounts, servers, audit)
+                       │   Redis (the job queue)
+                       │
+                       └──node token, over WireGuard──▶ node agent ──▶ Docker
+  browser ──console websocket, file transfers (panel-signed token)──▶ node agent
+```
+
+- **The panel** (`app/`) is the UI and the API. It owns the desired state of
+  every server in Postgres, and signs short-lived tokens that let a browser
+  reach one server's console or one file on its node.
+- **The worker** (`app/worker.py`) runs installs and other long jobs off a
+  Redis queue, so a panel restart does not kill an install half-way.
+- **The node agent** (`agent/`) runs on each machine with game servers. It
+  runs every server in its own container — memory, CPU and process limits,
+  every capability dropped, a read-only root filesystem, only the server's
+  own folder mounted — and refuses to start one that breaks those rules
+  (`agent/containers.py: assert_safe`). It restarts crashed servers itself
+  and reports crash loops. `dev/agent/README.md` has the details.
+- **Templates** (`templates/`) say how each loader installs, starts and boots.
+
 ## Setup
 
-### 1. Get the two credentials
+### 1. Get a CurseForge key
 
-**Crafty API token** — Crafty → your user → API keys → generate. The token's
-user needs **Server Creation**, **Files**, **Commands** and **Config**.
+<https://console.curseforge.com/> → API Keys. No key ships with BlessForge:
+every operator needs their own, and a commercial host needs one issued in the
+business's name for that use.
 
-**CurseForge API key** — <https://console.curseforge.com/> → API Keys.
+### 2. The control plane
 
-### 2. Deploy
+```bash
+cd deploy/control-plane
+cp .env.example .env
+$EDITOR .env        # POSTGRES_PASSWORD, BLESSFORGE_SECRET, PUBLIC_API_URL, the key
+docker compose up -d
+```
 
-One compose file installs BlessForge everywhere — CasaOS or plain Docker. It
-pulls the published multi-arch image, so nothing needs building on the target
-machine:
+That is the panel, a worker, Postgres and Redis, with the panel published on
+`127.0.0.1:8710` only — put a TLS-terminating reverse proxy in front of it.
+`BLESSFORGE_SECRET` encrypts the node tokens and the browser-signing key; keep
+it, because losing it means registering every node again.
+
+### 3. A node
+
+1. `POST /api/admin/nodes`, as an admin, registers it (there is no screen
+   for nodes yet — the admin views are WP-08). The answer holds the node's
+   agent config, **once** — it contains the node's token.
+2. On the node (Linux, Docker, WireGuard to the control plane): save that as
+   `/etc/blessforge-agent/agent.toml` (root, mode 600), install the agent
+   with the steps in `agent/systemd/blessforge-agent.service`, and build or
+   pull the runtime images (`agent/images/build.sh`: Java 8, 17, 21 and 25).
+3. `systemctl enable --now blessforge-agent`. The node reports in and shows
+   as online; servers can now be created on it.
+
+### Trying it on one box
+
+The root `docker-compose.yml` runs the whole control plane on one machine
+with `ENGINE=mock` — servers in memory, nothing real started — which is
+enough to try the interface. It is also what CasaOS imports:
 
 ```
 ghcr.io/chargeyxd/blessforge:latest    (amd64 + arm64)
 ```
 
 **On CasaOS** — App Store → **Custom Install** → **Import** → paste the
-contents of `docker-compose.yml` → set `CRAFTY_URL` and `CRAFTY_TOKEN` in the
-dialog, and your own CurseForge key (base64-encoded, see below) as
-`CURSEFORGE_API_KEY_B64` → install. No key ships with BlessForge: every
-operator needs their own, and a commercial host needs one issued in the
-business's name for that use.
-
-**On plain Docker:**
-
-```bash
-curl -O https://raw.githubusercontent.com/ChargeyXD/BlessForge/main/docker-compose.yml
-$EDITOR docker-compose.yml     # CRAFTY_URL and CRAFTY_TOKEN
-docker compose up -d
-```
-
-Open `http://<host>:8710`.
+contents of `docker-compose.yml` → set your CurseForge key (base64-encoded,
+see below) as `CURSEFORGE_API_KEY_B64` → install.
 
 **From a checkout** (runs your working tree instead of the published image):
 
@@ -558,7 +595,7 @@ Open `http://<host>:8710`.
 git clone https://github.com/ChargeyXD/BlessForge blessforge
 cd blessforge
 cp .env.example .env
-$EDITOR .env                   # CRAFTY_URL, CRAFTY_TOKEN
+$EDITOR .env
 docker compose up -d --build
 ```
 
@@ -590,6 +627,22 @@ CasaOS never sees the override file — it imports `docker-compose.yml` alone.
 
 Anything still missing is listed in a banner at the top of the app.
 
+### Moving servers off Crafty
+
+```bash
+CRAFTY_URL=https://<crafty>:8443 CRAFTY_TOKEN=... \
+  python dev/tools/import_from_crafty.py --dry-run
+CRAFTY_URL=... CRAFTY_TOKEN=... python dev/tools/import_from_crafty.py \
+  --from-dir /DATA/AppData/big-bear-crafty/servers --report import.json
+```
+
+Run with the panel's own environment. For each Crafty server it creates the
+matching server here (name, port, heap, loader, version), copies its folder
+— from Crafty's folder on disk, or through Crafty's API without
+`--from-dir` — points its command at the node's Java, and boots it once.
+Crafty is only ever read. Uninstall it by hand, after a backup, once the
+report says every server booted here.
+
 ---
 
 ## Configuration
@@ -597,6 +650,12 @@ Anything still missing is listed in a banner at the top of the app.
 | Variable | Default | Meaning |
 |---|---|---|
 | `ENGINE` | `mock` | What runs the servers: `agent` (BlessForge node agents) or `mock` (in memory) |
+| `DATABASE_URL` | *(empty — SQLite in the state dir)* | Postgres for anything real: `postgresql+asyncpg://user:pass@host/db`. Migrated on start |
+| `REDIS_URL` | *(empty — jobs run in the panel)* | The job queue. With it set, installs run on the worker and survive a panel restart |
+| `WORKER_CONCURRENCY` | `3` | Jobs one worker runs at once |
+| `JOB_TIMEOUT_SECONDS` | `21600` | The longest one job may run |
+| `BLESSFORGE_SECRET` | *(empty — generated, dev only)* | Encrypts node tokens and the browser-signing key. Required in production; keep it |
+| `PUBLIC_API_URL` | `http://127.0.0.1:<PORT>` | How node agents reach this panel; written into each agent's config |
 | `GAME_PORT_RANGE` | `25500-25600` | Game ports a node's edge forwards; the Port control warns outside it |
 | `CURSEFORGE_API_KEY` | — | Your CurseForge Core API key. Never commit it |
 | `CURSEFORGE_API_KEY_FILE` | — | Path to a file holding the key (a Docker secret); wins over the variable |
@@ -607,7 +666,7 @@ Anything still missing is listed in a banner at the top of the app.
 | `ROULETTE_POOL_PAGES` | `4` | Catalogue pages per category when building a roulette pool |
 | `AI_ENABLED` | `true` | Set false to hide the AI panel |
 | `AI_TIMEOUT` | `180` | Seconds to wait for the model |
-| `HOST_RAM_GB` / `HOST_CPU_COUNT` | auto | Describe the **Crafty** host when it is a different machine |
+| `HOST_RAM_GB` / `HOST_CPU_COUNT` | auto | Describe the machine the servers run on, when it is not this one |
 | `MODRINTH_ENABLED` | `true` | Offer Modrinth as a second mod source. Needs no key |
 | `DOWNLOAD_CONCURRENCY` | `8` | Parallel mod downloads |
 | `SERVER_READY_TIMEOUT` | `900` | Seconds to wait for a loader install |
@@ -616,12 +675,13 @@ Anything still missing is listed in a banner at the top of the app.
 | `MAX_UPLOADS` | `12` | Imported archives kept on disk; the oldest are pruned |
 | `UPLOAD_DIR` | `/data/uploads` | Where imported archives are stored |
 
-> **`CRAFTY_URL` must be reachable from inside the container.** Use the LAN IP.
-> `127.0.0.1` points at the container itself.
+> **`PUBLIC_API_URL` must be reachable from the nodes** — the control plane's
+> WireGuard address, not `127.0.0.1`, which on a node is the node itself.
 
-> **If Crafty runs on another machine**, set `HOST_RAM_GB` and `HOST_CPU_COUNT`.
-> The optimizer measures from inside its own container, and sizing a heap
-> against the wrong machine is worse than not tuning at all.
+> **The servers run on nodes, not here**, so set `HOST_RAM_GB` and
+> `HOST_CPU_COUNT` to describe a node. The optimizer measures the machine it
+> runs on, and sizing a heap against the wrong machine is worse than not
+> tuning at all.
 
 `/data` is mostly a download cache — deleting `/data/cache` costs nothing but
 bandwidth. `/data/uploads` is the exception: an imported pack export exists
@@ -637,14 +697,19 @@ nowhere else unless you still have the zip, so keep that if you keep anything.
 2. Read loader and Minecraft version from whichever manifest the archive ships
    (CurseForge, ServerPackCreator, Modrinth index, or `variables.txt`).
 3. *(Optional)* Inspect every mod jar and present the client-only review.
-4. Create the Crafty instance with the matching loader, so Crafty generates the
-   launch command itself.
-5. Wait for the loader install to finish **and for Crafty's server record to
-   settle** — Crafty rewrites the launch command when its installer thread ends.
-6. Overlay the pack's files in bounded batches: zip → upload → Crafty unzips.
-   Memory stays flat no matter how large the pack is.
+4. Create the server on a node, from the loader's template.
+5. Install the loader: the node fetches it (or BlessForge relays it, checked);
+   for Forge and NeoForge the installer runs once on the node, in a
+   short-lived container as locked down as the server, and the launch command
+   is read back from the files it left.
+6. Overlay the pack's files in bounded batches: zip → upload to the node →
+   the node checks every member and extracts. Memory stays flat no matter how
+   large the pack is.
 7. Accept the EULA, size the heap to the host, write JVM flags, pin Java.
 8. Record everything in `.blessforge.json` inside the instance.
+
+With a job queue configured all of this runs on the worker, so restarting the
+panel mid-install does not stop it; the browser re-attaches and carries on.
 
 That manifest lives in the server directory, so it survives reinstalling this
 app and an instance carries its own history with it. Instances created by the
@@ -654,10 +719,10 @@ previous version are still read via their old `.modpack-studio.json`.
 
 ## Notes and limits
 
-- **Loader builds.** Crafty's catalogue offers one loader build per Minecraft
-  version, usually the newest. A pack pinned to an older build normally runs
-  fine on a newer one in the same line, and the install log states both.
-- **Quilt** is not in Crafty's catalogue, so Quilt packs cannot be created
+- **Loader builds.** The exact Forge, NeoForge or Fabric build a pack names is
+  the one installed while its project still publishes it; otherwise the
+  newest in the same line, and the install log says so.
+- **Quilt** has no template yet, so Quilt packs cannot be created
   automatically. Fabric, Forge and NeoForge all work.
 - **Mods that block distribution.** Some authors turn off third-party
   downloads, and CurseForge then gives the file no download URL. BlessForge
@@ -689,12 +754,10 @@ avoid it. If you paste the key into an `environment:` block instead — which is
 what the **CasaOS dialog does** — double every `$`: `$$2a$$10$$...`.
 BlessForge detects a truncated key and says so rather than showing a bare 403.
 
-**Crafty's EULA start-gate.** Crafty compares the *first line* of `eula.txt`
-against an exact list (`eula=true`, `eula = true`, …) using `readline()`, which
-keeps the trailing newline — so a file written as `"eula=true\n"` never matches.
-Crafty then refuses to launch, writes **no log and no error**, and only pushes
-an EULA prompt to its own web UI. BlessForge writes the byte-exact form, flags
-the broken form on the Troubleshoot page, and normalises it on every start.
+**`BLESSFORGE_SECRET` is not optional in production.** Without it a dev box
+generates one beside its state and warns. That is fine on a laptop, and a
+trap anywhere else: the node tokens and the browser-signing key are encrypted
+with it, so a lost secret means registering every node again.
 
 ---
 
@@ -831,9 +894,20 @@ The three install endpoints take **either** CurseForge ids **or** an
 `upload_id` from a previous import — never a mix.
 
 Everything under `files/` refuses an absolute path, a drive letter, a NUL, or
-any `..` segment before the request reaches Crafty. Crafty does reject a
-traversal, but it does it with a 500 and a traceback, and "the component
-downstream happens to refuse" is not a guard.
+any `..` segment before the request leaves the panel — and the node checks
+again, component by component, refusing links. Two guards, because "the
+component downstream happens to refuse" is not one.
+
+The node agents have their own routes, which never accept a browser session:
+
+```
+GET  /api/agent/servers                desired state, for the agent (node token)
+POST /api/agent/events                 status, crashes, stats (node token)
+GET  /api/admin/nodes                  POST registers one: its config, once
+GET  /api/admin/nodes/{node_id}/system
+GET  /api/instances/{id}/console/socket    a signed websocket URL on the node
+POST /api/instances/{id}/files/transfer    a signed link for one file
+```
 
 ## Development
 
@@ -921,18 +995,28 @@ immediately rather than waiting out a DNS timeout on a font.
 
 ```bash
 for t in test_loader_detection test_job_stream test_install_decisions \
-         test_roulette test_boot_verdict test_fleet_state; do
+         test_roulette test_boot_verdict test_fleet_state test_auth test_policy \
+         test_blocked_downloads test_engine test_db test_jobs_redis \
+         test_templates test_import_crafty test_agent_security test_agent_api; do
   python dev/tools/$t.py | tail -1
 done
+python dev/tools/run_http_tests.py
 python dev/tools/check_frontend.py
 ```
+
+`TEST_DATABASE_URL=postgresql+asyncpg://...` runs the database-backed ones
+(`test_auth`, `test_fleet_state`, `test_policy`, `test_db`, `run_http_tests`)
+against a real Postgres — one that exists only for tests, because they empty
+it. `test_agent_security.py --live` adds real containers trying to get out
+(Linux and Docker only), and `boot_templates.py` downloads and boots every
+loader for real; neither is part of the quick loop.
 
 `check_frontend.py` is the one that catches this front end's own failure
 modes: a module that only parses as a script (`node --check` accepts a broken
 string literal in one — only `--input-type=module` is a real check), an
 import or an asset that does not resolve, an API path no route serves, an
 icon name that is not in the set, and any change that breaks the polygon's
-layering contract. 125 checks.
+layering contract.
 
 ## Licence
 

@@ -3,7 +3,7 @@
 None of this ships in the image (the Dockerfile only copies `app/`). It exists
 because the front end has no build step and therefore no test runner, and
 because the nastiest bugs in this project have all been invisible from the
-outside — a `/data` nobody could write to, a Crafty instance with no launcher,
+outside — a `/data` nobody could write to, a server with no launcher,
 a confirmation dialog that resolved `false` before it resolved `true`. These
 are the checks that catch that kind of thing.
 
@@ -32,7 +32,8 @@ skips the parse check rather than failing if node is absent.
 
 ## tools/ — offline Python tests
 
-No Crafty, no network, no filesystem writes.
+No network and nothing outside a temp directory. The engine is the in-memory
+mock unless a file says otherwise.
 
 | file | what it covers |
 |---|---|
@@ -49,11 +50,40 @@ for t in test_loader_detection test_job_stream test_install_decisions \
 done
 ```
 
-## tools/ — the ones that need a real Crafty
+## tools/ — the commercial rebuild (WP-01 to WP-06)
+
+Offline, in the quick loop:
+
+| file | what it covers |
+|---|---|
+| `test_blocked_downloads.py` | a mod whose author blocked third-party downloads is never fetched: a Modrinth substitute by SHA-1 or by slug, else *blocked by author*. 41 checks. |
+| `test_engine.py` | the engine router, the mock driver's refusals, and the loader ladder (node fetches → BlessForge relays → a plain failure). 50 checks. |
+| `test_db.py` | the schema, the migrations, and the SQLite / Postgres paths (`TEST_DATABASE_URL`). 27 checks. |
+| `test_jobs_redis.py` | the job queue: an API and a worker as separate processes, the API killed mid-job, a browser re-attaching with no gap and no repeat, cancel, orphaned jobs. fakeredis over TCP unless `REDIS_TEST_URL` is set. 25 checks, about 25 s. |
+| `test_templates.py` | the seven loader templates: well formed, the Java each version runs on, and each one created, tuned and boot-tested through the engine. 50 checks. |
+| `test_import_crafty.py` | `import_from_crafty.py` against the Crafty mock: through the API and from disk, re-runs, port clashes, a planted link, Crafty only ever read. 20 checks. |
+| `test_agent_security.py` | the node agent: the file jail (paths, links, junctions, a swap race, hard links), archives (zip slip, link members, bombs), browser and node tokens, one server's token against another, every container rule, the disk watchdog. 172 checks. `--live` adds real containers trying to get out — Linux and Docker only, **not yet run**. |
+| `test_agent_api.py` | the panel and an agent as two processes: register a node, create → start → console websocket and a command → edit a file → crash → stop → delete, and both directions refusing the wrong credential. 30 checks. |
+
+Live, not in the quick loop (network, minutes, real servers):
 
 | file | what it does |
 |---|---|
-| `sweep_instances.py` | lists every Crafty instance and flags any whose `executable` is missing from disk — the "empty server, no launcher" state. Since 2.1 the app has **Finish setup** for exactly this, so treat a hit here as something to click rather than something to fix by hand. |
+| `boot_templates.py` | downloads every loader from its own project and boots a real server for each, through a panel and a process-runtime agent with local JREs. |
+| `install_on_agent.py` | installs a CurseForge modpack on the agent, boots it, exports it, imports the export back as a second server, and boots that. Needs your key (environment or `.env`; never printed). |
+| `_agentstack.py` | the disposable panel + agent both of the above stand up. |
+
+The importer itself:
+
+| file | what it does |
+|---|---|
+| `import_from_crafty.py` | moves every server off the old Crafty deployment (README, "Moving servers off Crafty"). Read-only towards Crafty. |
+
+## tools/ — operations
+
+| file | what it does |
+|---|---|
+| `sweep_instances.py` | lists every server and flags any whose `executable` is missing from its folder — the "empty server, no launcher" state. The app has **Finish setup** for exactly this, so treat a hit here as something to click rather than something to fix by hand. |
 | `repair_export_loaders.py` | rewrites the loader id in a pack export that named a family without a build. |
 | `make_icon.py` | regenerates `app/static/icon.png` (pure stdlib, no Pillow on this host). Run from the repo root. |
 

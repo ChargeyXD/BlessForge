@@ -24,6 +24,7 @@ services:
       ENGINE: "agent"
       DATABASE_URL: "postgresql+asyncpg://blessforge:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/blessforge"
       REDIS_URL: "redis://redis:6379/0"
+      BLESSFORGE_SECRET: "${BLESSFORGE_SECRET:?set BLESSFORGE_SECRET in .env}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +54,7 @@ services:
       ENGINE: "agent"
       DATABASE_URL: "postgresql+asyncpg://blessforge:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/blessforge"
       REDIS_URL: "redis://redis:6379/0"
+      BLESSFORGE_SECRET: "${BLESSFORGE_SECRET:?set BLESSFORGE_SECRET in .env}"
     depends_on:
       postgres:
         condition: service_healthy

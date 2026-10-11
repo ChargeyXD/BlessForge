@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "key": "purpur",
+  "title": "Purpur",
+  "kind": "plugins",
+  "order": 4,
+  "logo": "/assets/loader-purpur.png",
+  "blurb": "Paper with several hundred extra gameplay toggles. Runs every Paper plugin.",
+  "mod_directory": "plugins",
+  "source": "PurpurMC",
+  "java": {
+    "from": "minecraft"
+  },
+  "install": {
+    "fetch": "server_jar"
+  },
+  "startup": {
+    "command": "java {jvm} -jar {jar} nogui",
+    "jvm_args_file": null
+  },
+  "boot": {
+    "ready": "Done \\([\\d.]+s\\)!",
+    "timeout": 300
+  }
+}

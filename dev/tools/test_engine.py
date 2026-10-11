@@ -76,6 +76,12 @@ SOURCES = {
 
 
 async def main():
+    # Offline: the templates ask Mojang which Java a version needs, and fall
+    # back to the table when it does not answer -- which is what this is.
+    async def offline(url, timeout=30.0):
+        raise RuntimeError("offline test")
+    loaders._json = offline
+
     # --- the router ---------------------------------------------------------
     a, b = MockEngine(seed=False, node="a"), MockEngine(seed=False, node="b")
     check("the mock implements the whole ServerEngine protocol",

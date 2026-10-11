@@ -348,9 +348,65 @@ async def main():
           whitelist.blocks("somemod-3.0.jar"))
     whitelist._reset_for_tests()
 
+    await server_pack_without_metadata()
+
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return 0 if passed == len(results) else 1
+
+
+async def server_pack_without_metadata():
+    """A server pack that is just the folder: the version comes from the
+    client file's manifest. Found installing Just Create SMP on the agent
+    (WP-06): 131 files, mods and all, and nothing naming the loader."""
+    from app import curseforge
+
+    def zipped(members: dict) -> io.BytesIO:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for name, data in members.items():
+                z.writestr(name, data)
+        buf.seek(0)
+        return buf
+
+    client = {"manifest.json": (
+        '{"minecraft": {"version": "1.21.1", "modLoaders": '
+        '[{"id": "neoforge-21.1.172", "primary": true}]}, '
+        '"manifestType": "minecraftModpack", "name": "Bare", "version": "0.5", '
+        '"files": [], "overrides": "overrides"}')}
+    bare = {"mods/create-6.0.jar": b"PK", "config/create.toml": "x",
+            "start.sh": "java -jar x.jar"}
+    labelled = {**bare, "variables.txt": "MINECRAFT_VERSION=1.20.1\n"
+                "MODLOADER=Forge\nMODLOADER_VERSION=47.4.0\n"}
+    fetched = []
+    packs_by_id = {1: client, 2: bare, 3: labelled}
+
+    async def fake_get_file(mod_id, file_id):
+        return {"server_pack_file_id": 2 if file_id == 1 else 3,
+                "display_name": "Bare 0.5"}
+
+    async def fake_fetch(job, mod_id, file_id):
+        fetched.append(file_id)
+        return zipped(packs_by_id[file_id]), {}
+
+    saved = curseforge.get_file, installer.fetch_pack_archive
+    curseforge.get_file, installer.fetch_pack_archive = fake_get_file, fake_fetch
+    try:
+        plan, _zf, _meta = await installer._load_plan(Job("t", "t"), mod_id=9, file_id=1)
+        check("a server pack that names no version takes it from the pack's manifest",
+              (plan.mc_version, plan.server_loader, plan.loader_version)
+              == ("1.21.1", "neoforge", "21.1.172"), (plan.mc_version, plan.loader))
+        check("...while still installing the server pack's own files",
+              any(m["target"] == "mods/create-6.0.jar" for m in plan.overlay_members)
+              and fetched == [2, 1], fetched)
+        fetched.clear()
+        packs_by_id[1] = {"manifest.json": client["manifest.json"].replace("1.21.1", "9.9")}
+        plan, _zf, _meta = await installer._load_plan(Job("t", "t"), mod_id=9, file_id=4)
+        check("a server pack that says what it is is believed, and the client "
+              "file is not fetched", plan.mc_version == "1.20.1" and fetched == [3],
+              (plan.mc_version, fetched))
+    finally:
+        curseforge.get_file, installer.fetch_pack_archive = saved
 
 
 sys.exit(asyncio.run(main()))

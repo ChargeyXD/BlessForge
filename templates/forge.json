@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "key": "forge",
+  "title": "Forge",
+  "kind": "mods",
+  "order": 1,
+  "logo": "/assets/loader-forge.jpg",
+  "blurb": "The oldest and largest mod ecosystem. Almost every big modpack is Forge or NeoForge.",
+  "mod_directory": "mods",
+  "source": "MinecraftForge",
+  "java": {
+    "from": "minecraft"
+  },
+  "install": {
+    "fetch": "installer",
+    "run": [
+      "java",
+      "-jar",
+      "{installer}",
+      "--installServer"
+    ],
+    "remove_after": [
+      "{installer}",
+      "{installer}.log"
+    ],
+    "timeout": 900
+  },
+  "startup": {
+    "command": "java @user_jvm_args.txt @{args_file} nogui",
+    "jvm_args_file": "user_jvm_args.txt",
+    "legacy_command": "java {jvm} -jar {jar} nogui"
+  },
+  "boot": {
+    "ready": "Done \\([\\d.]+s\\)!",
+    "timeout": 600
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "key": "folia",
+  "title": "Folia",
+  "kind": "plugins",
+  "order": 5,
+  "logo": "/assets/loader-paper.png",
+  "blurb": "Paper's regionised-threading fork, for very large player counts. Not every plugin supports it.",
+  "mod_directory": "plugins",
+  "source": "PaperMC",
+  "java": {
+    "from": "minecraft"
+  },
+  "install": {
+    "fetch": "server_jar"
+  },
+  "startup": {
+    "command": "java {jvm} -jar {jar} nogui",
+    "jvm_args_file": null
+  },
+  "boot": {
+    "ready": "Done \\([\\d.]+s\\)!",
+    "timeout": 300
+  }
+}

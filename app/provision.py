@@ -31,7 +31,7 @@ import hashlib
 import re
 import time
 
-from app import config, engine, loaders, optimizer, properties, specs
+from app import config, engine, loaders, optimizer, properties, specs, templates
 from app.jobs import Job
 
 # A Forge/NeoForge command that still runs the installer. Its presence means
@@ -70,7 +70,7 @@ def _verify(payload: bytes, src: dict) -> None:
 
 
 async def _fetch_loader(job: Job, server_id: str, family: str, mc_version: str,
-                        src: dict) -> list[str]:
+                        src: dict, java: int) -> list[str]:
     """Get the loader jar into the server folder. Returns the rungs used."""
     fetch = {k: src.get(k) for k in ("url", "filename", "sha1", "sha256")
              if src.get(k)}
@@ -79,7 +79,7 @@ async def _fetch_loader(job: Job, server_id: str, family: str, mc_version: str,
         await engine.install(server_id, {
             "family": family, "mc_version": mc_version,
             "loader_version": src.get("loader_version"),
-            "java_major": engine.required_java_major(mc_version),
+            "java_major": java,
             "fetch": fetch,
         })
         job.log_line(f"The node fetched {src['filename']} from "
@@ -122,6 +122,7 @@ async def install_loader(job: Job, server_id: str, *, family: str,
     than being silent about a repair.
     """
     family = loaders.family_of(family)
+    tpl = templates.get(family)
     job.set_step(f"Resolving {family} for Minecraft {mc_version}", 58)
     src = await loaders.resolve(family, mc_version, build=loader_version or None)
     if not src and loader_version:
@@ -133,19 +134,21 @@ async def install_loader(job: Job, server_id: str, *, family: str,
             f"No {family} build for Minecraft {mc_version} was found. The "
             f"{family} project does not publish one, or did not answer.")
 
+    java = await templates.java_major(family, mc_version)
     job.set_step(f"Installing {family} {src.get('loader_version') or ''}".strip(), 60)
-    rungs = await _fetch_loader(job, server_id, family, mc_version, src)
+    rungs = await _fetch_loader(job, server_id, family, mc_version, src, java)
 
-    if src.get("kind") == "installer":
+    if tpl["install"]["fetch"] == "installer":
         job.set_step("Running the loader installer", 63)
+        steps = templates.installer_steps(family, src["filename"])
         try:
             result = await engine.install(server_id, {
                 "family": family, "mc_version": mc_version,
                 "loader_version": src.get("loader_version"),
-                "java_major": engine.required_java_major(mc_version),
-                "run": ["java", "-jar", src["filename"], "--installServer"],
-                "remove_after": [src["filename"], src["filename"] + ".log"],
-                "timeout": config.SERVER_READY_TIMEOUT,
+                "java_major": java,
+                "run": steps["run"],
+                "remove_after": steps["remove_after"],
+                "timeout": max(steps["timeout"], config.SERVER_READY_TIMEOUT),
             })
         except engine.EngineError as e:
             tail = ((e.body or {}).get("output") or [])[-8:] if isinstance(
@@ -163,7 +166,7 @@ async def install_loader(job: Job, server_id: str, *, family: str,
     await engine.update_server(server_id, {"executable": executable,
                                            "execution_command": command})
     job.log_line(f"Startup command: {command}")
-    runtime = await engine.set_runtime(server_id, mc_version)
+    runtime = await engine.set_runtime(server_id, mc_version, java)
     job.log_line(f"Runs on Java {runtime.get('java_major')}")
     return {"ok": True, "source": rungs[-1], "repairs": rungs[1:],
             "loader_version": src.get("loader_version"),
@@ -190,9 +193,9 @@ async def startup_command(server_id: str, family: str, mc_version: str,
     never starts.
     """
     family = loaders.family_of(family)
-    if src.get("kind") != "installer":
+    if templates.get(family)["install"]["fetch"] != "installer":
         jar = src["filename"]
-        return f"java {_DEFAULT_HEAP} -jar {jar} nogui", jar
+        return templates.startup(family, jar=jar, jvm=_DEFAULT_HEAP), jar
 
     script = ""
     for candidate in ("run.sh", "run.bat"):
@@ -207,8 +210,11 @@ async def startup_command(server_id: str, family: str, mc_version: str,
         args_file, lib_path, version, txt = match.groups()
         exec_path = f"{lib_path}{version}/"
         loader = "neoforge" if family == "neoforge" else "forge"
-        return (f"java @{args_file} @{exec_path}{txt} nogui",
-                f"{exec_path}{loader}-{version}-server.jar")
+        command = templates.startup(family, args_file=f"{exec_path}{txt}")
+        wanted = templates.jvm_args_file(family)
+        if wanted and args_file != wanted:
+            command = command.replace(f"@{wanted}", f"@{args_file}")
+        return command, f"{exec_path}{loader}-{version}-server.jar"
 
     # Before 1.17 the installer leaves a runnable jar instead of a script.
     names = [n for n in await engine.list_dir(server_id, ".")
@@ -216,10 +222,23 @@ async def startup_command(server_id: str, family: str, mc_version: str,
              and "installer" not in n]
     if names:
         jar = sorted(names, key=len)[0]
-        return f"java {_DEFAULT_HEAP} -jar {jar} nogui", jar
+        return templates.startup(family, jar=jar, jvm=_DEFAULT_HEAP), jar
     raise RuntimeError(
         f"The {family} installer ran, but left neither a run script nor a "
         "server jar. Its output is on the Console tab.")
+
+
+async def _has_args_command(server_id: str, args_file: str) -> bool:
+    """Does the startup command read its flags from `args_file`?
+
+    A modern Forge/NeoForge does; a pre-1.17 Forge runs a jar with the flags
+    on the command line, and an args file would be written and ignored.
+    """
+    try:
+        server = await engine.get_server(server_id)
+    except Exception:       # noqa: BLE001
+        return True
+    return f"@{args_file}" in (server.get("execution_command") or "")
 
 
 # The modpack installer's old name for the ladder. Kept so its call reads the
@@ -253,11 +272,7 @@ async def create_empty(
 ) -> dict:
     """Create a bare server: a loader, a version, and an empty mod folder."""
     family = loaders.family_of(loader)
-    if family not in {e["key"] for e in loaders.CATALOGUE}:
-        raise ValueError(
-            f"'{loader}' is not a loader this can create. Choose one of: "
-            + ", ".join(e["key"] for e in loaders.CATALOGUE)
-        )
+    tpl = templates.get(family)          # ValueError for a loader with no template
     if not re.match(r"^\d+\.\d+(\.\d+)?$", (mc_version or "").strip()):
         raise ValueError(f"'{mc_version}' is not a Minecraft version")
 
@@ -279,7 +294,7 @@ async def create_empty(
     # Stamp it immediately, marked unfinished: if the loader never arrives the
     # fleet list should say "half-finished" rather than showing a healthy
     # server with nothing in it.
-    mod_dir = loaders.mod_directory(family)
+    mod_dir = tpl["mod_directory"]
     try:
         await engine.write_manifest(server_id, {
             "schema": 1, "complete": False, "started_at": time.time(),
@@ -339,8 +354,9 @@ async def create_empty(
             flags = [f["flag"] for f in specs.build_flag_plan(
                 heap_gb=ram_max, host=host, mc_version=mc_version,
                 loader=family) if f["enabled"]]
-            if family in ("forge", "neoforge"):
-                await engine.write_file(server_id, "user_jvm_args.txt",
+            args_file = templates.jvm_args_file(family)
+            if args_file and await _has_args_command(server_id, args_file):
+                await engine.write_file(server_id, args_file,
                                         specs.render_jvm_args(flags, ram_max))
             else:
                 await optimizer.set_command_memory(server_id, ram_max, flags)

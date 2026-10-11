@@ -329,13 +329,21 @@ async def get_redis():
 
 
 async def close_redis() -> None:
-    global _redis
-    if _redis is not None:
-        try:
-            await _redis.aclose()
-        except Exception:       # noqa: BLE001
-            pass
+    """Close both connections: the stream client and the arq submit pool.
+
+    The pool used to be left open, which no real Redis minds at exit -- but a
+    Redis served from inside the same process (the test's fakeredis) then
+    waits on it, and the process cannot exit.
+    """
+    global _redis, _arq
+    for conn in (_redis, _arq):
+        if conn is not None:
+            try:
+                await conn.aclose()
+            except Exception:       # noqa: BLE001
+                pass
     _redis = None
+    _arq = None
 
 
 def _dump(obj: Any) -> str:

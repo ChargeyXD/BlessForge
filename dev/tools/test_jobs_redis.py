@@ -54,6 +54,10 @@ else:
     from fakeredis import TcpFakeServer
     rport = free_port()
     _server = TcpFakeServer(("127.0.0.1", rport), server_type="redis")
+    # One thread per connection, non-daemon by default: a connection still
+    # open at the end (a killed subprocess's, say) would keep this process
+    # from ever exiting -- after every check had passed.
+    _server.daemon_threads = True
     threading.Thread(target=_server.serve_forever, daemon=True).start()
     REDIS_URL = f"redis://127.0.0.1:{rport}/0"
 

@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "key": "fabric",
+  "title": "Fabric",
+  "kind": "mods",
+  "order": 0,
+  "logo": "/assets/loader-fabric.png",
+  "blurb": "Light, fast, and the quickest to update to a new Minecraft release. Takes Fabric mods.",
+  "mod_directory": "mods",
+  "source": "FabricMC",
+  "java": {
+    "from": "minecraft"
+  },
+  "install": {
+    "fetch": "server_jar"
+  },
+  "startup": {
+    "command": "java {jvm} -jar {jar} nogui",
+    "jvm_args_file": null
+  },
+  "boot": {
+    "ready": "Done \\([\\d.]+s\\)!",
+    "timeout": 300
+  }
+}

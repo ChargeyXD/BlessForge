@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "key": "vanilla",
+  "title": "Vanilla",
+  "kind": "none",
+  "order": 6,
+  "logo": "/assets/loader-vanilla.svg",
+  "blurb": "Mojang's server, unmodified. Datapacks only.",
+  "mod_directory": "mods",
+  "source": "Mojang",
+  "java": {
+    "from": "minecraft"
+  },
+  "install": {
+    "fetch": "server_jar"
+  },
+  "startup": {
+    "command": "java {jvm} -jar {jar} nogui",
+    "jvm_args_file": null
+  },
+  "boot": {
+    "ready": "Done \\([\\d.]+s\\)!",
+    "timeout": 300
+  }
+}

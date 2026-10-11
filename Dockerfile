@@ -38,6 +38,8 @@ COPY app/ ./app/
 # start, so an image without these would boot against an empty database.
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
+# One template per loader (app/templates.py): without them nothing can be created.
+COPY templates/ ./templates/
 
 # The app runs unprivileged as uid 1000. The container still STARTS as root so
 # the entrypoint can hand it a writable /data -- CasaOS creates bind-mount

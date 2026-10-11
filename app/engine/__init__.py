@@ -228,8 +228,12 @@ async def install(server_id: str, spec: dict) -> dict:
     return await (await _driver(server_id)).install(server_id, spec)
 
 
-async def set_runtime(server_id: str, mc_version: str) -> dict:
-    return await (await _driver(server_id)).set_runtime(server_id, mc_version)
+async def set_runtime(server_id: str, mc_version: str,
+                      java_major: int | None = None) -> dict:
+    """Put a server on the right Java. `java_major` from a template (which
+    asked Mojang); without one, the offline table decides."""
+    return await (await _driver(server_id)).set_runtime(server_id, mc_version,
+                                                        java_major)
 
 
 # --- files --------------------------------------------------------------------

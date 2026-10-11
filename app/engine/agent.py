@@ -201,8 +201,9 @@ class AgentEngine:
             await asyncio.sleep(1.0)
         raise EngineError("the install did not finish in time", 504)
 
-    async def set_runtime(self, server_id: str, mc_version: str) -> dict:
-        want = required_java_major(mc_version)
+    async def set_runtime(self, server_id: str, mc_version: str,
+                          java_major: int | None = None) -> dict:
+        want = int(java_major or required_java_major(mc_version))
         async with db.session() as s:
             row = await self._row(s, server_id)
             old = row.java_major

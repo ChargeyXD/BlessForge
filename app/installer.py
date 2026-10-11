@@ -260,6 +260,8 @@ async def _load_plan(
             # A server pack with no mods is a downloader-script pack; the
             # manifest route is the only way to get real content.
             if any(m["target"].startswith("mods/") for m in plan.overlay_members):
+                if not (plan.mc_version and plan.server_loader):
+                    await _fill_from_client_manifest(job, plan, mod_id, file_id)
                 return plan, zf, file_meta
             job.log_line(
                 "Server pack contains no mods (installer-script pack) -- "
@@ -280,6 +282,36 @@ async def _load_plan(
         f"loader={plan.loader} {plan.loader_version}"
     )
     return plan, zf, file_meta
+
+
+async def _fill_from_client_manifest(job: Job, plan: PackPlan, mod_id: int,
+                                     file_id: int) -> None:
+    """Complete a server pack's plan from its client file's manifest.json.
+
+    Plenty of server packs are just the folder -- mods, config, a start
+    script -- with nothing that names the loader or the Minecraft version.
+    The client file of the same release always says both (CurseForge cannot
+    import it otherwise), and it is a few hundred KB, so it is read for
+    exactly the fields the server pack left blank. The server pack's own
+    files are still what gets installed.
+    """
+    try:
+        archive, _ = await fetch_pack_archive(job, mod_id, file_id)
+        client = packs.analyse_client_pack(zipfile.ZipFile(archive))
+    except Exception as e:      # noqa: BLE001 -- the caller reports a plan still blank
+        job.log_line(f"Could not read the pack's own manifest either ({e})", "warn")
+        return
+    filled = []
+    for name in ("mc_version", "loader", "loader_version", "server_loader",
+                 "recommended_ram", "java_version"):
+        if not getattr(plan, name) and getattr(client, name):
+            setattr(plan, name, getattr(client, name))
+            filled.append(name)
+    if filled:
+        job.log_line(
+            "The server pack does not say which loader or version it is for; "
+            f"read {', '.join(filled)} from the pack's manifest "
+            f"({plan.loader} {plan.loader_version}, Minecraft {plan.mc_version})")
 
 
 def _load_upload_plan(job: Job, upload_id: str
