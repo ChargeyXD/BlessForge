@@ -105,6 +105,31 @@ MIXIN_DEBUG = """[12Oct2026 07:30:12.160] [main/DEBUG] [mixin/]: Mixing MixinFor
 """
 
 
+# Beyond Depth's next death: GML (the Groovy language provider) loading a
+# Groovy mod pulls a client class; no mod's own frame is in the trace.
+GML_CRASH = """[12Oct2026 08:23:56.169] [main/ERROR] [net.minecraft.server.Main/FATAL]: Failed to start the minecraft server
+java.lang.RuntimeException: Attempted to load class com/mojang/blaze3d/vertex/PoseStack for invalid dist DEDICATED_SERVER
+\tat net.minecraftforge.fml.loading.RuntimeDistCleaner.processClassWithFlags(RuntimeDistCleaner.java:56) ~[fmlloader-1.20.1-47.4.22.jar%2369!/:1.0]
+\tat cpw.mods.cl.ModuleClassLoader.loadClass(ModuleClassLoader.java:135) ~[securejarhandler-2.1.10.jar:?]
+\tat org.codehaus.groovy.reflection.stdclasses.CachedSAMClass.getDeclaredMethods(CachedSAMClass.java:113) ~[groovy-4.0.13.jar%231324!/:4.0.13]
+\tat org.groovymc.gml.internal.ModExtensionLoader$_setup_closure1.doCall(ModExtensionLoader.groovy:36) ~[gml-4.0.11-all.jar%23755!/:4.0.11]
+\tat org.groovymc.gml.internal.GMLLangLoader.loadMod(GMLLangLoader.groovy:34) ~[gml-4.0.11-all.jar%23755!/:4.0.11]
+\tat net.minecraftforge.fml.ModLoader.buildModContainerFromTOML(ModLoader.java:291) ~[fmlcore-1.20.1-47.4.22.jar%231015!/:?]
+\tat net.minecraft.server.Main.main(Main.java:125) ~[server-1.20.1-20230612.114412-srg.jar%231014!/:?]
+"""
+
+
+def groovy_jar(mod_id: str, depends_on_gml: bool = True) -> bytes:
+    buf = io.BytesIO()
+    dep = (f'[[dependencies.{mod_id}]]\nmodId="gml"\nmandatory=true\n'
+           f'versionRange="[4,)"\nside="BOTH"\n') if depends_on_gml else ""
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("META-INF/mods.toml",
+                   'modLoader="gml"\nloaderVersion="[4,)"\n[[mods]]\n'
+                   f'modId="{mod_id}"\nversion="1.0.0"\n' + dep)
+    return buf.getvalue()
+
+
 def jar_with(mod_id: str, *entries: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
@@ -261,6 +286,26 @@ async def main():
     check("a jar matched by name that does not hold the config is left alone",
           actions == [] and any("dynamiccrosshair.mixins.json" in w for w in why),
           (actions, why))
+
+    # --- a crash inside a language provider ------------------------------------------------------
+    culprits = diagnostics.attribute_crash(GML_CRASH, ["gml-4.0.11-all.jar",
+                                                       "eatinganimation-1.20.1-5.1.0.jar"])
+    check("Groovy and its mod loader are never blamed for a mod they were loading",
+          culprits == [], culprits)
+    actions, _ = await decide_for({
+        "gml-4.0.11-all.jar": forge_jar("gml"),
+        "eatinganimation-1.20.1-5.1.0.jar": groovy_jar("eatinganimation"),
+        "oculus-mc1.20.1-1.8.0.jar": forge_jar("oculus"),
+        "create-1.20.1-0.5.1.jar": forge_jar("create")}, GML_CRASH, loader="forge")
+    check("the client-side mod GML was loading is disabled -- not GML, not other client mods",
+          [(a["do"], a.get("file")) for a in actions]
+          == [("disable", "eatinganimation-1.20.1-5.1.0.jar")], actions)
+    actions, why = await decide_for({
+        "gml-4.0.11-all.jar": forge_jar("gml"),
+        "somegroovycontent-1.0.jar": groovy_jar("somegroovycontent")}, GML_CRASH,
+        loader="forge")
+    check("...and with no client-side Groovy mod, nothing is disabled on a guess",
+          actions == [] and any("gml-4.0.11-all.jar" in w for w in why), (actions, why))
 
     # --- a boot that dies without a recognised failure line ------------------------------------
     class DiesOnBoot(MockEngine):

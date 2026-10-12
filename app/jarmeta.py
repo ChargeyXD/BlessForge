@@ -41,6 +41,7 @@ def _toml_mods(text: str) -> dict:
     """
     mods: list[dict] = []
     deps: dict[str, list[dict]] = {}
+    top: dict[str, str] = {}
     current: dict | None = None
     dep_owner: str | None = None
     dep_current: dict | None = None
@@ -85,8 +86,10 @@ def _toml_mods(text: str) -> dict:
             dep_current[key] = val
         elif current is not None:
             current[key] = val
+        else:
+            top[key] = val
 
-    return {"mods": mods, "dependencies": deps}
+    return {"mods": mods, "dependencies": deps, "top": top}
 
 
 # Where each loader puts the jars it embeds.
@@ -215,6 +218,9 @@ def parse(data: bytes, filename: str = "") -> dict:
         "provides": [],
         "nested": 0,
         "fml_type": None,      # NeoForge: LIBRARY / GAMELIBRARY / MOD
+        # Forge/NeoForge: the language provider that loads it (`modLoader`):
+        # javafml for most, kotlinforforge, gml, scorge... for the rest.
+        "language": None,
         # Every loader this jar carries metadata for, not just the one the
         # parse below settles on. A tenth of real jars are multi-loader, and
         # the parse returns at the first marker it recognises -- so `loader`
@@ -328,6 +334,7 @@ def parse(data: bytes, filename: str = "") -> dict:
             version=version,
             loader=loader,
             description=first.get("description"),
+            language=parsed.get("top", {}).get("modLoader"),
         )
         for dep in parsed["dependencies"].get(mod_id or "", []):
             did = dep.get("modId")

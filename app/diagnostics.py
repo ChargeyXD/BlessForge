@@ -1181,9 +1181,18 @@ _MIXIN_CONFIG = re.compile(r"([\w\-.]+)\.mixins\.json", re.I)
 # attribution saw no mod at all on modern Forge.
 _TRACE_JAR = re.compile(r"\[([\w.\-+ ]+\.jar)(?:%23\d+!?/?)?(?::[^\]]*)?\]")
 # A client class failing to load on a dedicated server, and the frame under it.
+# Forge's own refusal ("RuntimeException: Attempted to load class X for
+# invalid dist") is the same fault in other words -- Beyond Depth died on it.
 _CLIENT_CLASS_FAIL = re.compile(
-    r"(?:NoClassDefFoundError|ClassNotFoundException)[:\s]+((?:net[/.]minecraft[/.]client|"
-    r"com[/.]mojang[/.]blaze3d)[\w/.$]*)")
+    r"(?:(?:NoClassDefFoundError|ClassNotFoundException)[:\s]+"
+    r"|RuntimeException: Attempted to load class )"
+    r"((?:net[/.]minecraft[/.]client|com[/.]mojang[/.]blaze3d)[\w/.$]*)")
+
+# Language providers: the jar a mod written in that language is loaded
+# through. A crash inside one belongs to a mod it was loading.
+_LANGUAGE_JARS = {"gml": "gml", "kotlinforforge": "kotlinforforge",
+                  "kotlin-for-forge": "kotlinforforge", "kffmod": "kotlinforforge",
+                  "kotlinlangforge": "kotlinlangforge", "scalable": "scorge"}
 
 # Frames belonging to the platform rather than to any mod. Counting these
 # would rank the loader as the top culprit on every single crash.
@@ -1197,7 +1206,11 @@ _PLATFORM_JARS = re.compile(
     # Blaming Kotlin for Forge's frames broke every Kotlin mod in BMC4.
     r"kotlinforforge|kotlin-for-forge|kotlinlangforge|fabric-language-kotlin|"
     r"fabric-language-scala|scalable|kffmod|mixinextras|mixinsquared|connector|"
-    r"sinytra|fmlloader|fmlcore|javafmllanguage|lowcodelanguage|mclanguage)",
+    r"sinytra|fmlloader|fmlcore|javafmllanguage|lowcodelanguage|mclanguage|"
+    # Groovy and its mod loader, for the same reason as Kotlin.
+    r"groovy|gml|"
+    # Forge's own patched game jars ("server-1.20.1-20230612.114412-srg.jar").
+    r"server-\d|client-\d)",
     re.I,
 )
 
@@ -1240,6 +1253,51 @@ def _resolve_jar(name: str, mod_files: list[str]) -> str | None:
 
 def _base(name: str) -> str:
     return name[: -len(".disabled")] if name.endswith(".disabled") else name
+
+
+def _fatal_client_class_failures(lines: list[str]):
+    """(line index, match) for each client class that failed to load at
+    ERROR or FATAL. Mods probe for client classes and catch the miss --
+    logged at WARN or DEBUG, and survived (net.minecraft.client.ParticleStatus
+    is the usual one) -- and a probe is not a culprit."""
+    for idx, line in enumerate(lines):
+        match = _CLIENT_CLASS_FAIL.search(line)
+        if not match:
+            continue
+        header = next((lines[j] for j in range(idx, max(-1, idx - 60), -1)
+                       if lines[j].startswith("[")), "")
+        if header and not re.search(r"/(?:ERROR|FATAL)\]|\bERROR\b|\bFATAL\b", header):
+            continue
+        yield idx, match
+
+
+def language_loader_failure(text: str) -> dict | None:
+    """A fatal client-class failure raised while a language provider (GML,
+    Kotlin for Forge...) was loading a mod, with no mod's own frame under it.
+    The mod is one that loads through that provider; the caller finds it.
+
+    {"language": "gml", "class": "com/mojang/blaze3d/vertex/PoseStack",
+     "jar": "gml-4.0.11-all.jar", "line": ...} or None.
+    """
+    lines = text.splitlines()
+    for idx, match in _fatal_client_class_failures(lines):
+        language = jar_seen = None
+        for frame in lines[idx + 1: idx + 120]:
+            for jar in _TRACE_JAR.findall(frame):
+                if not _PLATFORM_JARS.match(jar):
+                    language = None         # a mod's own frame: not this rule
+                    jar_seen = "mod"
+                    break
+                key = next((v for k, v in _LANGUAGE_JARS.items()
+                            if jar.lower().startswith(k)), None)
+                if key and language is None:
+                    language, jar_seen = key, jar
+            if jar_seen == "mod":
+                break
+        if language:
+            return {"language": language, "class": match.group(1), "jar": jar_seen,
+                    "line": lines[idx].strip()[:300]}
+    return None
 
 
 def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
@@ -1336,24 +1394,13 @@ def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
     #     "Synchronous work queue completed exceptionally" with the real cause
     #     only in the suppressed traces, so the mod is otherwise never named.
     lines = text.splitlines()
-    for idx, line in enumerate(lines):
-        match = _CLIENT_CLASS_FAIL.search(line)
-        if not match:
-            continue
-        # Only a failure the log reports at ERROR or FATAL. Mods probe for
-        # client classes and catch the miss -- logged at WARN or DEBUG, and
-        # survived (net.minecraft.client.ParticleStatus is the usual one) --
-        # and a probe is not a culprit.
-        header = next((lines[j] for j in range(idx, max(-1, idx - 60), -1)
-                       if lines[j].startswith("[")), "")
-        if header and not re.search(r"/(?:ERROR|FATAL)\]|\bERROR\b|\bFATAL\b", header):
-            continue
+    for idx, match in _fatal_client_class_failures(lines):
         for frame in lines[idx + 1: idx + 40]:
             jars = [j for j in _TRACE_JAR.findall(frame) if not _PLATFORM_JARS.match(j)]
             if jars:
                 add(_resolve_jar(jars[0], mod_files), 75,
                     f"it loaded the client-only class {match.group(1)} on a dedicated "
-                    "server", line.strip()[:300])
+                    "server", lines[idx].strip()[:300])
                 break
 
     # 4c. A mixin that dragged a client class onto the server. The error

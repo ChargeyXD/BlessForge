@@ -323,6 +323,31 @@ async def decide(server_id: str, text: str, *, mc: str, loader: str, disk: Disk,
                          "client-side mod"})
         elif c["score"] >= 90:
             unresolved.append(f"{jar}: {c['why'][:200]}")
+    # 4. A crash inside a language provider (GML, Kotlin for Forge) while it
+    #    was loading some mod: the mod is not named, the provider is. The
+    #    client-side mods that load through it are the suspects -- found by
+    #    name first (no download), then confirmed by their metadata.
+    failure = diagnostics.language_loader_failure(text) if not actions else None
+    if failure:
+        lang = failure["language"]
+        suspects = []
+        for jar in disk.enabled:
+            if not packs.is_client_only_jar(jar):
+                continue
+            meta = await disk.meta(jar)
+            uses = (meta.get("language") == lang
+                    or any(d.get("id") == lang for d in meta.get("dependencies") or []))
+            if uses:
+                suspects.append(jar)
+        for jar in suspects:
+            plan({"do": "disable", "file": jar,
+                  "why": f"{failure['jar']} crashed loading it on a dedicated server "
+                         f"(the client-only class {failure['class']}), and it is a "
+                         "client-side mod"})
+        if not suspects:
+            unresolved.append(f"{failure['jar']} crashed loading a mod on the server "
+                              f"(the client-only class {failure['class']}); no client-side "
+                              "mod that loads through it was found")
     if not actions:
         for f in diagnostics.scan_text(text):
             if f["severity"] == "critical" and f["title"] not in unresolved:
