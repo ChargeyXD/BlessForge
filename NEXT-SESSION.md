@@ -88,8 +88,9 @@ Round 6 (the last three on the final code): see §00.4.
 
 ### 00.3 Unproven or not built
 
-- **Blocked-mods helper** (a list of author-blocked files with links and a
-  drop zone matched by fingerprint): planned, not built.
+- **Blocked-mods helper**: the backend matches a hand-downloaded jar by its
+  fingerprint (`POST .../mods/blocked`); the Mods tab's per-row upload uses it.
+  A proper drop zone is left to the redesign.
 - **Nodes UI**: `GET/POST /api/admin/nodes` have no screen.
 - spark's **upload** path was never exercised (it publishes the profile);
   only save-to-file was.

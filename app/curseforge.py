@@ -219,6 +219,7 @@ def _slim_file(f: dict) -> dict:
         "dependencies": f.get("dependencies") or [],
         "hashes": hashes,
         "sha1": sha1,
+        "fingerprint": f.get("fileFingerprint"),
     }
 
 

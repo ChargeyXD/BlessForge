@@ -410,6 +410,47 @@ async def main():
           not any("shadowco" in p.read_text(encoding="utf-8")
                   for p in (ROOT / "app").rglob("*.py")))
 
+    # --- bringing a blocked jar by hand --------------------------------------------------------
+    import hashlib
+    from app import mods as modmgr
+
+    def jar(mod_id):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("fabric.mod.json", '{"schemaVersion":1,"id":"%s","version":"1"}' % mod_id)
+        return buf.getvalue()
+
+    wanted, other = jar("waystones"), jar("somethingelse")
+    hand = MockEngine(seed=False)
+    engine.configure("mock", drivers={"local": hand})
+    sid = await engine.create_server(name="Blocked", port=25705, memory_mb=4096,
+                                     mc_version="1.20.1", loader="fabric")
+    await engine.ensure_dir(sid, "mods")
+    await engine.write_manifest(sid, {"schema": 1, "mods": [], "blocked_by_author": [
+        {"name": "Waystones", "file_name": "waystones-fabric-1.20-14.1.3.jar",
+         "project_id": 245755, "file_id": 5005, "required": True,
+         "fingerprint": curseforge.fingerprint(wanted),
+         "sha1": hashlib.sha1(wanted).hexdigest()},
+        {"name": "Balm", "file_name": "balm-fabric-1.20.1-7.2.2.jar",
+         "project_id": 531761, "file_id": 5006, "required": True,
+         "fingerprint": 1, "sha1": "00"}]})
+    result = await modmgr.accept_blocked(sid, "waystones-fabric-1.20-14.1.3 (1).jar", wanted)
+    files = set(await engine.list_dir(sid, "mods"))
+    check("a hand-downloaded jar is recognised by its content, whatever the browser "
+          "named it, and filed under the name the pack expects",
+          result["matched"] == "waystones-fabric-1.20-14.1.3.jar"
+          and "waystones-fabric-1.20-14.1.3.jar" in files, (result, files))
+    listing = await modmgr.list_mods(sid, "mods")
+    check("...which takes it off the waiting list",
+          [b["name"] for b in listing["blocked_by_author"]] == ["Balm"],
+          listing["blocked_by_author"])
+    try:
+        await modmgr.accept_blocked(sid, "balm-fabric-1.20.1-7.2.2.jar", other)
+        refused = False
+    except modmgr.NotBlockedFile as e:
+        refused = "not one of the files" in str(e)
+    check("a jar with the right name and the wrong content is refused", refused)
+
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)

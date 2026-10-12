@@ -50,6 +50,10 @@ def record(meta: dict, project: dict | None = None, *,
         "project_id": meta.get("mod_id") or project.get("id"),
         "file_id": meta.get("file_id"),
         "url": curseforge.page_url(meta, project.get("slug")),
+        # How the jar is recognised when someone brings it, whatever the
+        # browser named the download.
+        "sha1": meta.get("sha1"),
+        "fingerprint": meta.get("fingerprint"),
         "reason": ("its author does not allow third-party downloads -- "
                    "upload this jar yourself"),
     }

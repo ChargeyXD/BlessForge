@@ -207,6 +207,57 @@ async def _forget_mods(server_id: str, filenames: list[str]) -> None:
         pass
 
 
+class NotBlockedFile(ValueError):
+    """An uploaded jar is not one of the files this server is waiting for."""
+
+
+MAX_BLOCKED_JAR = 256 * 1024 * 1024
+
+
+async def accept_blocked(server_id: str, filename: str, data: bytes) -> dict:
+    """A jar someone downloaded by hand for a mod its author blocks.
+
+    It is matched to the file the pack is waiting for by its content -- the
+    CurseForge fingerprint, else SHA-1, else CurseForge's own fingerprint
+    lookup for an entry recorded before hashes were kept -- never by its
+    name, which a browser happily changes. It goes into mods/ under the name
+    the pack expects, which is what takes it off the waiting list.
+    """
+    import hashlib
+    if not data or len(data) > MAX_BLOCKED_JAR:
+        raise NotBlockedFile("that is not a jar BlessForge can take (empty, or over 256 MB)")
+    manifest = await engine.read_manifest(server_id)
+    waiting = [b for b in manifest.get("blocked_by_author") or [] if b.get("file_name")]
+    if not waiting:
+        raise NotBlockedFile("this server is not waiting for any blocked file")
+    sha1 = hashlib.sha1(data).hexdigest()
+    fingerprint = await curseforge.fingerprint_async(data)
+    entry = next((b for b in waiting if (b.get("fingerprint") and
+                                         int(b["fingerprint"]) == fingerprint)
+                  or (b.get("sha1") and b["sha1"].lower() == sha1)), None)
+    if entry is None and any(not b.get("fingerprint") and not b.get("sha1") for b in waiting):
+        try:
+            found = await curseforge.match_fingerprints([fingerprint])
+        except Exception:       # noqa: BLE001 -- no key, or CurseForge down
+            found = {}
+        fid = ((found.get(fingerprint) or {}).get("file") or {}).get("file_id")
+        entry = next((b for b in waiting if fid and b.get("file_id") == fid), None)
+    if entry is None:
+        raise NotBlockedFile(
+            f"{filename} is not one of the files this server is waiting for: "
+            + ", ".join(b["file_name"] for b in waiting[:6]))
+    name = entry["file_name"]
+    await engine.upload_file(server_id, "mods", name, data)
+    await _remember_mod(server_id, {
+        "file": f"mods/{name}", "source": "curseforge",
+        "project_id": entry.get("project_id"), "file_id": entry.get("file_id"),
+        "name": entry.get("name") or name, "brought_by_hand": True,
+        "required": entry.get("required", True), "identified_at": time.time(),
+    })
+    return {"matched": name, "name": entry.get("name"), "uploaded_as": filename,
+            "waiting": len(waiting) - 1}
+
+
 async def _remember_mod(server_id: str, record: dict) -> None:
     manifest = await engine.read_manifest(server_id)
     manifest.setdefault("mods", [])

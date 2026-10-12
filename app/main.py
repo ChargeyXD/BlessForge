@@ -750,6 +750,25 @@ async def delete_mods(server_id: str, body: dict = Body(...)) -> dict:
         raise _err(e)
 
 
+@app.post("/api/instances/{server_id}/mods/blocked")
+async def bring_blocked(server_id: str, request: Request,
+                        file: UploadFile = File(...)) -> dict:
+    """A jar for a mod whose author blocks third-party downloads, matched to
+    the file the pack waits for by its content, not its name."""
+    try:
+        data = await file.read(modmgr.MAX_BLOCKED_JAR + 1)
+        result = await modmgr.accept_blocked(server_id, file.filename or "upload.jar", data)
+    except modmgr.NotBlockedFile as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        raise _err(e)
+    finally:
+        await file.close()
+    await auth.audit(actor=request.state.user["username"], action="mods.bring_blocked",
+                     server_id=server_id, detail=result["matched"], ip=_client_ip(request))
+    return result
+
+
 @app.post("/api/instances/{server_id}/mods/add")
 async def add_mod(server_id: str, body: dict = Body(...)) -> dict:
     """Install a mod. By default its required dependencies come too."""

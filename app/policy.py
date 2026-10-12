@@ -172,6 +172,7 @@ RULES: list[Rule] = [
     _r("POST", "/api/instances/{server_id}/repair", "mods.manage", True),
     _r("GET", "/api/instances/{server_id}/spark", "server.view", True),
     _r("GET", "/api/instances/{server_id}/perf", "server.view", True),
+    _r("POST", "/api/instances/{server_id}/mods/blocked", "mods.manage", True),
     _r("POST", "/api/instances/{server_id}/perf/apply", "tune.apply", True),
     _r("POST", "/api/instances/{server_id}/perf/install", "mods.manage", True),
     _r("POST", "/api/instances/{server_id}/pregen", "console.command", True),

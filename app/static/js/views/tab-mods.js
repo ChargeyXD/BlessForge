@@ -181,36 +181,30 @@ export async function render(ctx) {
       : null;
   }
 
-  function uploadBlocked(item) {
+  /* The server recognises each jar by its content (the CurseForge
+     fingerprint) and files it under the name the pack expects, so a
+     download the browser renamed " (1)" still counts, a wrong jar is
+     refused, and several can go at once whichever row was clicked. */
+  function uploadBlocked() {
     const input = h('input', {
-      type: 'file', accept: '.jar', style: { display: 'none' },
+      type: 'file', accept: '.jar', multiple: true, style: { display: 'none' },
       onchange: async (e) => {
-        const file = e.target.files?.[0];
+        const picked = [...(e.target.files || [])];
         input.remove();
-        if (!file) return;
-        let name = file.name;
-        if (item.file_name && name !== item.file_name) {
-          // A renamed download is common (browsers add " (1)"); a wrong jar
-          // is not. Ask rather than guess which one this is.
-          const ok = await confirmDialog({
-            title: `Upload as ${item.file_name}?`,
-            message: `You picked ${file.name}, and the pack expects `
-              + `${item.file_name}. If that is the same mod, upload it under `
-              + 'the name the pack expects so it is recognised.',
-            confirmLabel: 'Use the expected name',
-          });
-          if (ok) name = item.file_name;
+        let brought = 0;
+        for (const file of picked) {
+          const form = new FormData();
+          form.append('file', file, file.name);
+          try {
+            const r = await api.upload(`/api/instances/${ctx.id}/mods/blocked`, form);
+            brought += 1;
+            toast(`${r.name || r.matched} is in mods/`
+              + (r.uploaded_as !== r.matched ? ` (as ${r.matched})` : '') + '.', 'ok');
+          } catch (err) {
+            toastError(err, `${file.name} was not taken`);
+          }
         }
-        const form = new FormData();
-        form.append('file', file, name);
-        try {
-          await api.upload(
-            `/api/instances/${ctx.id}/files/upload${qs({ folder: dir })}`, form);
-          toast(`${name} is in ${dir}/.`, 'ok');
-          load(true);
-        } catch (err) {
-          toastError(err, `${name} did not upload`);
-        }
+        if (brought) load(true);
       },
     });
     document.body.append(input);

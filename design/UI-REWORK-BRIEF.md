@@ -442,10 +442,14 @@ Snapshots taken before destructive changes, "Take one now", Restore.
 | `GET /api/instances/{id}/roll-export`, `GET /api/exports/{filename}` | downloads | Overview / Roulette |
 | `GET /api/diagnose/dependency/{mod_id}` | look up a dependency | Diagnose |
 
-Planned and not built: a **blocked-mods helper** (Prism-style list of the
-files an author blocks, each with a link to its page and a drop zone that
-matches an uploaded jar by fingerprint). The redesign should leave room for
-it in the install finish card and Diagnose.
+**Blocked-mods helper.** The Mods tab lists the files an author blocks (each
+with its CurseForge page) and takes the jars: `POST .../mods/blocked`
+(multipart, one jar per request) matches each jar to the waiting file **by
+content** (CurseForge fingerprint, SHA-1), files it under the name the pack
+expects, and answers `{matched, name, uploaded_as, waiting}` — or 409 with
+the list of what it is waiting for. The redesign should make this a real
+**drop zone** (drop several jars at once, whichever row) on the Mods tab, the
+install finish card and Diagnose.
 
 ---
 
