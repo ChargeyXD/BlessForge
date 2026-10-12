@@ -106,6 +106,11 @@ async def main():
           st["online"] == 2 and sorted(st["players"]) == ["Kitsune", "Sakura"], st)
     check("...keeping the slots and version the ping knew", st["max"] == 20
           and st["version"] == "1.20.1", st)
+    srv.pinged_at = 0       # thirty seconds on
+    pings.append({"online": 2, "max": 20, "sample": ["Kitsune", "Sakura"], "version": "1.20.1"})
+    st = await sup.stats(UUID)
+    check("...and when the next ping agrees, the list is confirmed by the server",
+          st["online"] == 2 and st["player_source"] == "ping", st)
 
     sup, srv = supervisor()
     pings.append({"online": 3, "max": 20, "sample": [], "version": "1.20.1"})

@@ -387,10 +387,15 @@ class Supervisor:
         if result["online"] == 0:
             if srv.players:
                 srv.set_players(set(), "ping")
+            srv.player_source = "ping"
         elif len(result["sample"]) == result["online"]:
             if set(result["sample"]) != srv.players:
                 srv.set_players(set(result["sample"]), "ping")
-        elif result["online"] != len(srv.players) and now - srv.listed_at > LIST_EVERY:
+            # The server agrees with what the log said: confirmed, either way.
+            srv.player_source = "ping"
+        elif result["online"] == len(srv.players):
+            srv.player_source = "ping"      # the count agrees; the names are the log's
+        elif now - srv.listed_at > LIST_EVERY:
             # The ping names only some (a dozen at most, or none where the
             # owner hides them); `list` names everyone. Sent straight to the
             # server, not echoed as a command, and at most every two minutes.
