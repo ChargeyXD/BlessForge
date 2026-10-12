@@ -320,6 +320,13 @@ class MockEngine:
         except UnicodeDecodeError:
             raise EngineError(f"{path} is not a readable text file", 415)
 
+    async def read_tail(self, server_id: str, path: str, nbytes: int) -> str:
+        text = await self.read_file(server_id, path)
+        data = text.encode("utf-8")
+        if len(data) <= nbytes:
+            return text
+        return data[-nbytes:].decode("utf-8", "replace").split("\n", 1)[-1]
+
     async def write_file(self, server_id: str, path: str, contents: str) -> None:
         parent, name, node = self._get(server_id, path)
         if isinstance(node, _Dir):

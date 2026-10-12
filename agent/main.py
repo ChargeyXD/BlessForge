@@ -184,7 +184,9 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         return {"entries": files.list_dir(folder(uuid), path)}
 
     @app.get("/v1/servers/{uuid}/files/content")
-    async def read_content(uuid: str, path: str):
+    async def read_content(uuid: str, path: str, tail: int = 0):
+        if tail > 0:
+            return {"content": files.read_tail(folder(uuid), path, tail)}
         return {"content": files.read_text(folder(uuid), path)}
 
     @app.put("/v1/servers/{uuid}/files/content")

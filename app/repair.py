@@ -34,9 +34,11 @@ What it will and will not do:
 """
 from __future__ import annotations
 
+import io
 import posixpath
 import re
 import time
+import zipfile
 
 from app import curseforge, diagnostics, engine, jarmeta, loaders, modrinth, packs, smoketest
 from app import mods as modmgr
@@ -74,6 +76,7 @@ class Disk:
         self.server_id = server_id
         self.files: list[str] = []
         self._meta: dict[str, dict] = {}
+        self._names: dict[str, set[str]] = {}
 
     async def refresh(self) -> None:
         try:
@@ -98,9 +101,17 @@ class Disk:
             try:
                 blob = await engine.download_file(self.server_id, f"{MOD_DIR}/{file}")
                 self._meta[file] = jarmeta.parse(blob, file.removesuffix(".disabled"))
+                with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                    self._names[file] = set(z.namelist())
             except Exception:       # noqa: BLE001
-                self._meta[file] = {}
+                self._meta.setdefault(file, {})
         return self._meta[file]
+
+    async def holds(self, file: str, entry: str) -> bool:
+        """Whether the jar carries `entry` (a mixin config, say) at its root."""
+        await self.meta(file)
+        names = self._names.get(file, set())
+        return entry in names or any(n.endswith("/" + entry) for n in names)
 
     async def provides(self, file: str, mod_id: str) -> bool:
         info = await self.meta(file)
@@ -225,6 +236,9 @@ async def _crash_text(server_id: str, since: float) -> str:
             modified = 0
         if modified >= since - 5:
             text = ctx["crash_text"] + "\n" + text
+    trail = await diagnostics.mixin_context(server_id, text)
+    if trail:
+        text += "\n" + trail
     return text
 
 
@@ -295,6 +309,11 @@ async def decide(server_id: str, text: str, *, mc: str, loader: str, disk: Disk,
         if c["score"] < 70:
             continue
         jar = c["file"]
+        # Named from a mixin config's name: act only if the jar holds it.
+        if c.get("mixin_config") and not await disk.holds(jar, c["mixin_config"]):
+            unresolved.append(f"a mixin from {c['mixin_config']} pulls a client class onto "
+                              "the server, and no installed jar could be matched to it")
+            continue
         evidence = (c.get("evidence") or "") + " " + " ".join(c.get("reasons") or [])
         client = (c["score"] == 70 or bool(_CLIENT_HINT.search(evidence))
                   or await disk.is_client_side(jar))

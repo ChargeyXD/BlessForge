@@ -340,6 +340,21 @@ def read_bytes(root: Path, rel: str, limit: int | None = None) -> bytes:
     return data
 
 
+def read_tail(root: Path, rel: str, nbytes: int) -> str:
+    """The last `nbytes` of a text file, from a whole line on. A log can be far
+    past the read limit while the part that matters is at its end."""
+    nbytes = max(1, min(int(nbytes), MAX_TEXT_BYTES))
+    with open_file(root, rel, "rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - nbytes))
+        data = fh.read(nbytes)
+    text = data.decode("utf-8", "replace")
+    if size > nbytes:
+        text = text.split("\n", 1)[-1]
+    return text
+
+
 def read_text(root: Path, rel: str) -> str:
     data = read_bytes(root, rel, MAX_TEXT_BYTES)
     try:

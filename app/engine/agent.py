@@ -226,6 +226,15 @@ class AgentEngine:
                                params={"path": path})
         return out["content"]
 
+    async def read_tail(self, server_id: str, path: str, nbytes: int) -> str:
+        out = await self._call("GET", f"/v1/servers/{server_id}/files/content",
+                               params={"path": path, "tail": int(nbytes)})
+        text = out["content"]
+        # An agent from before `tail` returns the whole file: trim it here.
+        if len(text) > nbytes:
+            text = text[-nbytes:].split("\n", 1)[-1]
+        return text
+
     async def write_file(self, server_id: str, path: str, contents: str) -> None:
         await self._call("PUT", f"/v1/servers/{server_id}/files/content",
                          params={"path": path}, json={"content": contents})

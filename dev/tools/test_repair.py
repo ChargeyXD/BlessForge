@@ -20,6 +20,7 @@ loader would.
 Offline: the in-memory engine; the catalogue lookups are stubbed.
 """
 import asyncio
+import time
 import io
 import json
 import pathlib
@@ -29,7 +30,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app import engine, repair, smoketest  # noqa: E402
+from app import diagnostics, engine, repair, smoketest  # noqa: E402
 from app.engine.mock import MockEngine  # noqa: E402
 from app.jobs import Job  # noqa: E402
 
@@ -90,6 +91,29 @@ Details:
 JAVA = """Cobblemon (cobblemon) is missing a feature it requires to run
 It requires javaVersion 21 or above and below 22, but 17 is available
 """
+
+
+# Beyond Depth, as it really died: the error names no mod; only Mixin's
+# debug trail says whose mixin was being applied.
+MIXIN_LATEST = """[12Oct2026 07:30:12.168] [main/ERROR] [net.minecraftforge.fml.loading.RuntimeDistCleaner/DISTXFORM]: Attempted to load class net/minecraft/client/player/LocalPlayer for invalid dist DEDICATED_SERVER
+[12Oct2026 07:30:12.172] [main/INFO] [STDERR/]: [java.lang.Throwable:printStackTrace:-1]: Caused by: org.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError: An unexpected critical error was encountered
+[12Oct2026 07:30:12.174] [main/INFO] [STDERR/]: [java.lang.Throwable:printStackTrace:-1]: Caused by: org.spongepowered.asm.mixin.throwables.ClassMetadataNotFoundException: net.minecraft.client.player.LocalPlayer
+"""
+MIXIN_DEBUG = """[12Oct2026 07:30:12.160] [main/DEBUG] [mixin/]: Mixing MixinForgeBlock from openpartiesandclaims.forge.mixins.json into net.minecraft.world.level.block.Block
+[12Oct2026 07:30:12.163] [main/DEBUG] [mixin/]: Mixing DynamicCrosshairBaseBlock from dynamiccrosshair.mixins.json into net.minecraft.world.level.block.Block
+[12Oct2026 07:30:12.168] [main/ERROR] [net.minecraftforge.fml.loading.RuntimeDistCleaner/DISTXFORM]: Attempted to load class net/minecraft/client/player/LocalPlayer for invalid dist DEDICATED_SERVER
+"""
+
+
+def jar_with(mod_id: str, *entries: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("META-INF/mods.toml",
+                   f'modLoader="javafml"\nloaderVersion="[47,)"\n[[mods]]\n'
+                   f'modId="{mod_id}"\nversion="1.0.0"\ndisplayName="{mod_id}"\n')
+        for e in entries:
+            z.writestr(e, "{}")
+    return buf.getvalue()
 
 
 async def server_with(files: dict[str, bytes]) -> tuple[MockEngine, str]:
@@ -210,6 +234,54 @@ async def main():
         tried={("disable", "kotlinforforge-4.12.0-all.jar")}, loader="forge")
     check("a jar this session disabled is not re-enabled (no flip-flop)",
           not any(a["do"] == "enable" for a in actions), actions)
+
+    # --- a client mod's mixin, named only by Mixin's debug trail --------------------------------
+    async def mixin_case(files):
+        _, sid = await server_with(files)
+        await engine.ensure_dir(sid, "logs")
+        await engine.write_file(sid, "logs/debug.log", MIXIN_DEBUG)
+        trail = await diagnostics.mixin_context(sid, MIXIN_LATEST)
+        disk = repair.Disk(sid)
+        await disk.refresh()
+        acts, why = await repair.decide(sid, MIXIN_LATEST + "\n" + trail, mc="1.20.1",
+                                        loader="forge", disk=disk, tried=set())
+        return trail, acts, why
+
+    trail, actions, _ = await mixin_case({
+        "dynamiccrosshair-7.8+1.20.1-forge.jar": jar_with("dynamiccrosshair",
+                                                          "dynamiccrosshair.mixins.json"),
+        "openpartiesandclaims-forge-1.20.1.jar": jar_with("openpartiesandclaims")})
+    check("a mixin crash that names no mod is traced through debug.log to its config",
+          "dynamiccrosshair.mixins.json" in trail and "LocalPlayer" in trail, trail)
+    check("...and the client mod owning that config is disabled",
+          [(a["do"], a.get("file")) for a in actions]
+          == [("disable", "dynamiccrosshair-7.8+1.20.1-forge.jar")], actions)
+    trail, actions, why = await mixin_case({
+        "dynamiccrosshair-7.8+1.20.1-forge.jar": jar_with("dynamiccrosshair")})
+    check("a jar matched by name that does not hold the config is left alone",
+          actions == [] and any("dynamiccrosshair.mixins.json" in w for w in why),
+          (actions, why))
+
+    # --- a boot that dies without a recognised failure line ------------------------------------
+    class DiesOnBoot(MockEngine):
+        async def power(self, server_id, action):
+            await super().power(server_id, action)
+            if action == "start":
+                self._put(server_id, "logs", "latest.log", MIXIN_LATEST.encode())
+                self.stats[server_id].update(running=False, crashed=True)
+
+    dies = DiesOnBoot(seed=False)
+    engine.configure("mock", drivers={"local": dies})
+    sid = await engine.create_server(name="Dies", port=25701, memory_mb=4096,
+                                     mc_version="1.20.1", loader="forge")
+    await engine.update_server(sid, {"execution_command": "java -jar server.jar nogui"})
+    t0 = time.time()
+    result = await smoketest.run(Job("t", "t"), sid, timeout=120)
+    check("a server that exits is a failed boot at the next look, not after the timeout",
+          result["outcome"] == "failed" and time.time() - t0 < 20, result["outcome"])
+    check("...quoting the error it died on",
+          "ClassMetadataNotFoundException" in (result["failure_line"] or ""),
+          result["failure_line"])
 
     # --- the loop -------------------------------------------------------------------------------
     mock, sid = await server_with({

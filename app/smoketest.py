@@ -47,6 +47,17 @@ _FAILED = re.compile(
 )
 
 
+def _last_error(text: str) -> str | None:
+    """The most telling line of a boot that died without a recognised failure
+    line: its last "Caused by", else its last ERROR."""
+    lines = text.splitlines()
+    for pattern in (r"Caused by: ", r"/(?:ERROR|FATAL)\]|Exception in thread"):
+        for line in reversed(lines):
+            if re.search(pattern, line):
+                return line.strip()[:400]
+    return None
+
+
 async def run(job: Job, server_id: str, *, timeout: int = 300,
               stop_when_done: bool = True) -> dict:
     """Boot once and report. Never leaves the server running by accident."""
@@ -125,20 +136,25 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
                 failure_at = time.time()
                 job.log_line(f"A failure-looking line after {elapsed}s: "
                              f"{failure_line[:200]}", "warn")
+            # A server that has exited has failed its boot, whatever its log
+            # said. This was only asked after a recognised failure line, and
+            # a crash without one went unnoticed: Beyond Depth died 30 seconds
+            # in on a mixin error and was watched for 36 minutes.
+            running = True
+            try:
+                stats = await engine.get_stats(server_id)
+                running = bool(stats.get("running")) and not stats.get("crashed")
+            except Exception:
+                pass
+            if not running:
+                outcome = "failed"
+                failure_line = failure_line or _last_error(text)
+                job.log_line(f"The server exited after {elapsed}s", "warn")
+                break
             # A line is only a failed boot if the server then actually dies.
             # The pattern alone stopped healthy boots: a 1.12 pack logs FATAL
             # lines it survives, and was killed mid-load by this test.
             if failure_line:
-                running = True
-                try:
-                    stats = await engine.get_stats(server_id)
-                    running = bool(stats.get("running")) and not stats.get("crashed")
-                except Exception:
-                    pass
-                if not running:
-                    outcome = "failed"
-                    job.log_line(f"The server exited after {elapsed}s", "warn")
-                    break
                 if failure_at and time.time() - failure_at > 120:
                     outcome = "failed"
                     job.log_line("Still not up two minutes after that line -- "

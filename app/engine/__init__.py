@@ -27,7 +27,7 @@ __all__ = [
     "uptime_seconds", "configure", "kind", "drivers", "remember", "for_server",
     "default_node", "load_nodes", "list_servers", "get_server", "get_stats", "create_server",
     "delete_server", "update_server", "power", "install", "set_runtime",
-    "list_dir", "dir_exists", "read_file", "write_file", "delete_paths",
+    "list_dir", "dir_exists", "read_file", "read_tail", "write_file", "delete_paths",
     "rename_path", "move_path", "create_entry", "ensure_dir", "upload_file",
     "upload_path", "extract", "download_file", "stream_file", "wait_for_path",
     "walk", "console_lines", "send_command", "read_manifest", "write_manifest",
@@ -253,6 +253,12 @@ async def dir_exists(server_id: str, path: str) -> bool:
 
 async def read_file(server_id: str, path: str) -> str:
     return await (await _driver(server_id)).read_file(server_id, path)
+
+
+async def read_tail(server_id: str, path: str, nbytes: int = 2 * 1024 * 1024) -> str:
+    """The end of a text file, from a whole line on -- for logs past the
+    size a whole read allows."""
+    return await (await _driver(server_id)).read_tail(server_id, path, nbytes)
 
 
 async def write_file(server_id: str, path: str, contents: str) -> None:

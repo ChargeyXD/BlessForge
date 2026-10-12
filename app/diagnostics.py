@@ -389,9 +389,83 @@ async def _read_first_available(server_id: str, paths: list[str]) -> tuple[str, 
     for p in paths:
         try:
             return p, await engine.read_file(server_id, p)
-        except engine.EngineError:
+        except engine.EngineError as e:
+            # A log past the whole-read limit (a big pack's latest.log can
+            # be) is read from its end, where a crash is, rather than
+            # skipped for a different log.
+            if e.status == 413:
+                try:
+                    return p, await engine.read_tail(server_id, p, LOG_TAIL_BYTES)
+                except engine.EngineError:
+                    pass
             continue
     return "", ""
+
+
+LOG_TAIL_BYTES = 3 * 1024 * 1024
+
+# Mixin's own words when a mixin drags a class into the game that this side
+# does not have -- a client mod's mixin on a dedicated server. The error does
+# not name the mixin; only Mixin's debug trail does ("Mixing X from
+# config.json into target"), in debug.log.
+_MIXIN_MISSING_CLIENT = re.compile(
+    r"ClassMetadataNotFoundException:\s*((?:net\.minecraft\.client|com\.mojang\.blaze3d)"
+    r"[\w.$]*)")
+_MIXING = re.compile(r"Mixing (\S+) from (\S+\.json) into (\S+)")
+MIXIN_CONTEXT = "BlessForge mixin trail:"
+
+
+async def mixin_context(server_id: str, text: str) -> str:
+    """For a crash in which a mixin pulled a client class onto a server: the
+    mixin that was being applied when it happened, read out of debug.log.
+
+    Returns a line to append to the crash text ("BlessForge mixin trail:
+    Mixing X from cfg.json into target -> client class"), or "".
+    """
+    m = None
+    for m in _MIXIN_MISSING_CLIENT.finditer(text):
+        pass
+    if m is None:
+        return ""
+    client_class = m.group(1)
+    try:
+        debug = await engine.read_tail(server_id, "logs/debug.log", LOG_TAIL_BYTES)
+    except engine.EngineError:
+        return ""
+    slash = client_class.replace(".", "/")
+    # The failure in the debug log: the last time this class was refused.
+    at = max(debug.rfind(f"ClassMetadataNotFoundException: {client_class}"),
+             debug.rfind(f"load class {slash} for invalid dist"))
+    if at < 0:
+        return ""
+    trail = list(_MIXING.finditer(debug, 0, at))
+    if not trail:
+        return ""
+    last = trail[-1]
+    return (f"{MIXIN_CONTEXT} Mixing {last.group(1)} from {last.group(2)} into "
+            f"{last.group(3)} -> needs {client_class}")
+
+
+_CONFIG_NOISE = {"mixins", "mixin", "forge", "fabric", "neoforge", "quilt", "common",
+                 "json", "refmap"}
+
+
+def mixin_config_owner(config: str, mod_files: list[str]) -> str | None:
+    """The jar a mixin config most likely belongs to, by its name:
+    "dynamiccrosshair.mixins.json", "mixins.dynamiccrosshair.json" and
+    "modernfix-modernfix.mixins.json" all name their mod. A guess -- the
+    caller checks the jar really holds the config before acting on it."""
+    stem = re.sub(r"\.json$", "", config.rsplit("/", 1)[-1], flags=re.I)
+    tokens = [t for t in re.split(r"[.\-_]", stem) if t and t.lower() not in _CONFIG_NOISE]
+    if not tokens or stem.lower().startswith("fabric-"):
+        return None
+    for cand in dict.fromkeys(("".join(tokens), tokens[0])):
+        if len(cand) < 4:
+            continue
+        jar = _mod_id_to_file(cand, mod_files)
+        if jar and not _PLATFORM_JARS.match(jar):
+            return jar
+    return None
 
 
 async def _latest_crash_report(server_id: str) -> tuple[str, str]:
@@ -1175,6 +1249,8 @@ def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
       100  the loader wrote a "-- MOD x --" block naming the jar
        90  the loader listed it under "Suspected Mods"
        80  a mixin owned by the mod failed to apply
+       75  a client-only class failed to load under its frames, or its
+           mixin pulled one in (by Mixin's trail in debug.log)
        70  a client-only class was loaded from it on a dedicated server
        40  its classes appear in the stack trace
     """
@@ -1280,6 +1356,24 @@ def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
                     "server", line.strip()[:300])
                 break
 
+    # 4c. A mixin that dragged a client class onto the server. The error
+    #     names no mod; the mixin trail (mixin_context) names the config
+    #     that was being applied, and the config names its mod.
+    for line in lines:
+        if not line.startswith(MIXIN_CONTEXT):
+            continue
+        trail = _MIXING.search(line)
+        if not trail:
+            continue
+        jar = mixin_config_owner(trail.group(2), mod_files)
+        if jar:
+            needs = line.rsplit("needs ", 1)[-1]
+            add(jar, 75,
+                f"its mixin {trail.group(1)} ({trail.group(2)}) pulls the client-only "
+                f"class {needs} onto the server, which stops the boot",
+                line[len(MIXIN_CONTEXT):].strip())
+            hits[jar]["mixin_config"] = trail.group(2)
+
     # 5. Stack-trace attribution, counted rather than taken at face value:
     #    one frame proves nothing, a jar owning most of the trace does.
     counts: dict[str, int] = defaultdict(int)
@@ -1333,6 +1427,9 @@ async def crash_review(server_id: str) -> dict:
         mod_files = []
 
     combined = "\n".join(t for t in (context["crash_text"], context["log_text"]) if t)
+    trail = await mixin_context(server_id, combined) if combined else ""
+    if trail:
+        combined += "\n" + trail
     culprits = attribute_crash(combined, mod_files) if combined else []
     findings = scan_text(combined) if combined else []
 
