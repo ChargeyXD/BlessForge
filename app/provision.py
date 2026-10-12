@@ -276,7 +276,7 @@ async def create_empty(
     if not re.match(r"^\d+\.\d+(\.\d+)?$", (mc_version or "").strip()):
         raise ValueError(f"'{mc_version}' is not a Minecraft version")
 
-    host = specs.effective_host()
+    host = await specs.host_for()
     ram_max = int(mem_max or min(6, max(2, int(host.get("total_ram_gb") or 8) // 2)))
     ram_min = int(mem_min or max(1, ram_max // 2))
     if ram_min > ram_max:

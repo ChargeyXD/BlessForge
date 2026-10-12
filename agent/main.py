@@ -114,11 +114,14 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     @app.get("/v1/system")
     async def system():
         c: AgentConfig = state["cfg"]
+        mem = available = load = None
         try:
             import psutil
-            mem = psutil.virtual_memory().total
+            vm = psutil.virtual_memory()
+            mem, available = vm.total, vm.available
+            load = psutil.getloadavg()[0]
         except Exception:       # noqa: BLE001
-            mem = None
+            pass
         disk = shutil.disk_usage(c.servers_root)
         try:
             rt = await sup().runtime.info()
@@ -126,6 +129,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             rt = {"error": str(e)}
         return {"node": c.node_id, "agent_version": VERSION,
                 "cpu_threads": os.cpu_count(), "ram_bytes": mem,
+                "ram_available_bytes": available, "load_1m": load,
                 "disk_total": disk.total, "disk_free": disk.free,
                 "os": platform.platform(), "runtime": c.runtime, **rt,
                 "servers": len(sup().servers),

@@ -32,7 +32,7 @@ async def build_plan(server_id: str) -> dict:
     the assistant is fast, slow, or on fire. The model is reached only from
     `advise()`, which the front end calls *after* its first paint.
     """
-    host = specs.effective_host()
+    host = await specs.host_for(server_id)
     manifest = await engine.read_manifest(server_id)
     server = await engine.get_server(server_id)
 

@@ -1811,7 +1811,8 @@ async def roulette_preview_export(body: dict = Body(...)) -> dict:
 
 @app.get("/api/host/specs")
 async def host_specs() -> dict:
-    return specs.effective_host()
+    """The machine a new server would run on: the default node's own numbers."""
+    return await specs.host_for()
 
 
 @app.get("/api/cache")

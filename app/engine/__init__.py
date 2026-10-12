@@ -30,7 +30,7 @@ __all__ = [
     "list_dir", "dir_exists", "read_file", "read_tail", "write_file", "delete_paths",
     "rename_path", "move_path", "create_entry", "ensure_dir", "upload_file",
     "upload_path", "extract", "download_file", "stream_file", "wait_for_path",
-    "walk", "search_files", "folder_usage", "console_lines", "send_command",
+    "walk", "search_files", "folder_usage", "node_system", "console_lines", "send_command",
     "read_manifest",
     "write_manifest",
 ]
@@ -352,6 +352,18 @@ async def search_files(server_id: str, query: str, root: str = ".",
     q = query.lower()
     return [e for e in await walk(server_id, root, max_entries=8000)
             if q in e["name"].lower()][:limit]
+
+
+async def node_system(server_id: str | None = None) -> dict | None:
+    """What the node a server runs on (or the default node) has: RAM, CPUs,
+    load. None where the driver cannot say -- the mock, or a node down."""
+    drv = await _driver(server_id) if server_id else _drivers.get(default_node())
+    if drv is None or not hasattr(drv, "_call"):
+        return None
+    try:
+        return await drv._call("GET", "/v1/system", timeout=10)
+    except EngineError:
+        return None
 
 
 async def folder_usage(server_id: str) -> dict | None:

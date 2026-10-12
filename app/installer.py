@@ -178,7 +178,7 @@ async def preflight(
     ram_min, ram_max = packs.mem_from_ram_hint(
         plan.recommended_ram, config.DEFAULT_MEM_MIN, config.DEFAULT_MEM_MAX
     )
-    host = specs.effective_host()
+    host = await specs.host_for()
     memory = specs.recommend_memory(
         pack_recommended_mb=plan.recommended_ram,
         mod_count=review["total_mods"],
@@ -1032,7 +1032,7 @@ async def install_modpack(
     pending_heap: tuple | None = None
     if optimize:
         try:
-            host = specs.effective_host()
+            host = await specs.host_for(server_id)
             memory = specs.recommend_memory(
                 pack_recommended_mb=plan.recommended_ram,
                 mod_count=len([r for r in records

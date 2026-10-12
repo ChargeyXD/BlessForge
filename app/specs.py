@@ -198,6 +198,42 @@ def host_specs() -> dict:
     }
 
 
+async def host_for(server_id: str | None = None) -> dict:
+    """The machine that runs this server (or would run a new one).
+
+    Sizing a heap against the panel's own host was right only while the
+    panel and the servers shared a machine. With a node agent the node says
+    what it has (`/v1/system`); `HOST_RAM_GB` still wins when set, and the
+    local measurement stays the answer when the node cannot be asked.
+    """
+    specs = effective_host()
+    if os.environ.get("HOST_RAM_GB"):
+        return specs
+    try:
+        from app import engine
+        node = await engine.node_system(server_id)
+    except Exception:       # noqa: BLE001 -- no node configured, a mock, a node down
+        node = None
+    if not node or not node.get("ram_bytes"):
+        return specs
+    gib = 1024 ** 3
+    specs = dict(specs)
+    specs["total_ram_gb"] = round(node["ram_bytes"] / gib, 1)
+    if node.get("ram_available_bytes"):
+        specs["available_ram_gb"] = round(node["ram_available_bytes"] / gib, 1)
+    else:
+        specs["available_ram_gb"] = specs["total_ram_gb"]
+    if node.get("cpu_threads") and not os.environ.get("HOST_CPU_COUNT"):
+        specs["cpu_count"] = int(node["cpu_threads"])
+    if node.get("load_1m") is not None:
+        specs["load_1m"] = round(float(node["load_1m"]), 2)
+        specs["load_per_core"] = round(float(node["load_1m"]) / (specs.get("cpu_count") or 1), 2)
+    specs["source"] = f"node {node.get('node') or ''}".strip()
+    specs["note"] = "Measured by the node that runs the servers."
+    specs["unmeasured"] = False
+    return specs
+
+
 def effective_host() -> dict:
     """Host specs, with env overrides for when the node is another machine."""
     specs = host_specs()

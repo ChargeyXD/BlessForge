@@ -196,6 +196,21 @@ async def main():
           and n.get("mspt_1m", {}).get("max") == 215.0 and n.get("cpu_process") == 1.0
           and n.get("memory_mb") == {"used": 1229, "max": 4096, "percent": 30.0}, n)
 
+    # --- the node, not the panel, is what a heap is sized against ------------------------
+    from app import specs as _specs
+
+    class NodeMock(MockEngine):
+        async def _call(self, method, path, timeout=10, **kw):
+            return {"node": "n1", "ram_bytes": 8 * 1024 ** 3,
+                    "ram_available_bytes": 5 * 1024 ** 3, "cpu_threads": 4, "load_1m": 2.0}
+
+    engine.configure("mock", drivers={"n1": NodeMock(seed=False)})
+    host = await _specs.host_for()
+    check("heap sizing reads the node's own memory and cores",
+          host["total_ram_gb"] == 8.0 and host["available_ram_gb"] == 5.0
+          and host["cpu_count"] == 4 and host["load_per_core"] == 0.5
+          and host["source"] == "node n1", host)
+
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)
