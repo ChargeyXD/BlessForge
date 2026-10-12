@@ -38,6 +38,7 @@ import {
   h, hl, mount, icon, api, toast, toastError, pill, bytes, num, empty,
   loadingFox, debounce, segmented, frag, confirmDialog, field, toggle,
 } from '../core.js';
+import { runAwait } from '../jobs.js';
 
 export async function render(ctx) {
   const node = h('div');
@@ -61,6 +62,12 @@ export async function render(ctx) {
   let adviceError = '';
   let slider = null;
   const ofudaHost = h('div');
+  // "How it is running": its own host, loaded after the first paint so the
+  // reading (which reads files off the node) never holds the tab up.
+  const perfHost = h('div');
+  let perf = null;
+  const perfPick = new Set();
+  let pregenRadius = 2000;
   // Live echoes of the heap number, updated by the slider without a
   // repaint: the Proposed tile and the Apply summary both used to go stale
   // the moment the slider moved.
@@ -158,6 +165,7 @@ export async function render(ctx) {
     mount(host,
       h('div.split.wide-aside',
         h('div', { style: { display: 'grid', gap: '18px' } },
+          perfHost,
           /* --- memory ------------------------------------------ */
           h('div.panel',
             h('header', icon('cpu', 15), h('h3', 'Memory'),
@@ -327,6 +335,155 @@ export async function render(ctx) {
   /* A text node that follows the heap without a repaint. `fmt` uses %
      as the placeholder so the same mechanism serves "6 GB" and
      "6 GB heap". */
+  /* --- how it is running ------------------------------------- */
+
+  /* The reading of what is in place (app/perf.py): JVM settings that stop
+     the server or slow it, the pack's optimisation mods and what they
+     change, the Paper/Spigot settings worth having, and spark's numbers.
+     Faults are ticked for fixing by default; taste is not. */
+  async function loadPerf() {
+    mount(perfHost, h('div.panel', h('div.pad', h('div.skel', { style: { height: '64px' } }))));
+    try {
+      perf = await api.get(`/api/instances/${ctx.id}/perf`);
+    } catch (e) {
+      mount(perfHost, h('div.note.warn', `Could not read how it is running: ${e.message}`));
+      return;
+    }
+    perfPick.clear();
+    for (const i of perf.jvm.issues) if (i.fix && i.level === 'bad') perfPick.add(issueKey(i));
+    paintPerf();
+  }
+
+  function issueKey(i) { return `jvm:${i.title}`; }
+
+  function paintPerf() {
+    const issues = perf.jvm.issues || [];
+    const tone = (l) => ({ bad: 'bad', warn: 'warn', info: 'ghost', ok: 'ok' }[l] || 'ghost');
+    const fixable = issues.filter((i) => i.fix);
+    const paper = perf.paper || [];
+    const s = perf.spark;
+    mount(perfHost, h('div.panel',
+      h('header', icon('activity', 15), h('h3', 'How it is running'),
+        h('span.sp', perf.counts.bad ? `${perf.counts.bad} fault(s)`
+          : perf.counts.warn ? `${perf.counts.warn} to look at` : 'nothing holding it back')),
+      h('div.pad', { style: { display: 'grid', gap: '12px' } },
+        s ? h('div.chiprow',
+          s.tps ? pill(`${s.tps['1m'] ?? s.tps['10s']} TPS`,
+            (s.tps['1m'] ?? 20) >= 19.5 ? 'ok' : 'warn') : null,
+          s.mspt ? pill(`${s.mspt.p95} ms per tick (p95)`,
+            s.mspt.p95 <= 40 ? 'ok' : s.mspt.p95 <= 50 ? 'warn' : 'bad') : null,
+          s.memory_mb ? pill(`heap ${s.memory_mb.percent}% used`, 'ghost') : null,
+          h('span.muted', { style: { fontSize: '12px' } },
+            'measured by spark \u2014 Diagnose \u203a Profiler'))
+          : null,
+        issues.length
+          ? h('div.modlist',
+            ...issues.map((i) => h('div.modrow',
+              i.fix ? h('input', {
+                type: 'checkbox', checked: perfPick.has(issueKey(i)),
+                'aria-label': `Fix: ${i.title}`,
+                onchange: (e) => {
+                  if (e.target.checked) perfPick.add(issueKey(i));
+                  else perfPick.delete(issueKey(i));
+                },
+              }) : h('span', { style: { width: '16px' } }),
+              h('div.who',
+                h('div.nm', i.title),
+                h('div.fn', i.detail),
+                h('div.tags', pill(i.level === 'bad' ? 'fault' : i.level, tone(i.level)),
+                  i.arg ? pill(i.arg, 'ghost') : null)))))
+          : h('div.note.ok', h('b', 'The JVM settings are sound'),
+            `Read from the ${perf.jvm.source}: nothing removed, conflicting or `
+            + 'oversized for this server.'),
+        (perf.mods || []).length
+          ? h('div',
+            h('div.muted', { style: { fontSize: '12px', marginBottom: '6px' } },
+              'Optimisation mods in this pack'),
+            h('div', { style: { display: 'grid', gap: '6px' } },
+              ...perf.mods.map((m) => h('div', { style: { fontSize: '13px' } },
+                h('b', m.name), ' \u2014 ', h('span.muted', m.what)))))
+          : null,
+        ...(perf.notes || []).map((n) => h('div.note', n)),
+        paper.length
+          ? h('div',
+            h('div.muted', { style: { fontSize: '12px', margin: '4px 0 6px' } },
+              'Paper and Spigot settings'),
+            h('div.modlist', ...paper.map((x) => h('div.modrow',
+              h('input', {
+                type: 'checkbox', checked: perfPick.has(x.id) || false,
+                disabled: x.applied, 'aria-label': `Set ${x.key}`,
+                onchange: (e) => {
+                  if (e.target.checked) perfPick.add(x.id); else perfPick.delete(x.id);
+                },
+              }),
+              h('div.who',
+                h('div.nm', `${x.key}: ${x.current} \u2192 ${x.value}`),
+                h('div.fn', x.why),
+                h('div.tags', pill(x.file.split('/').pop(), 'ghost'),
+                  x.applied ? pill('already set', 'ok') : null,
+                  x.gameplay ? pill('changes gameplay a little', 'warn') : null))))))
+          : null,
+        (fixable.length || paper.some((x) => !x.applied))
+          ? h('div.btnrow', h('button.btn.sm.primary', { onclick: applyPerf },
+            hl(), icon('check', 13), h('span', 'Apply the ticked fixes')),
+          h('span.muted', { style: { fontSize: '12px' } }, 'Takes effect at the next start.'))
+          : null,
+        ...(perf.actions || []).map((a) => h('div.card', { style: { padding: '10px 12px' } },
+          h('div', h('b', a.title), h('div.muted', { style: { fontSize: '12.5px' } }, a.detail)),
+          a.id === 'pregen'
+            ? h('div.btnrow',
+              segmented([
+                { value: 1000, label: '1k' }, { value: 2000, label: '2k' },
+                { value: 4000, label: '4k' }, { value: 8000, label: '8k' },
+              ], pregenRadius, (v) => { pregenRadius = v; paintPerf(); }, 'Radius in blocks'),
+              h('button.btn.sm', { disabled: !ctx.running, onclick: pregen },
+                icon('compass', 13), h('span', `Pre-generate ${pregenRadius} blocks`)))
+            : h('div.btnrow', h('button.btn.sm', {
+              onclick: () => installTool(a.id === 'install_chunky' ? 'chunky' : 'spark'),
+            }, icon('download', 13), h('span', a.id === 'install_chunky'
+              ? 'Install Chunky' : 'Install spark'))))),
+      )));
+  }
+
+  async function applyPerf() {
+    const jvm = (perf.jvm.issues || []).filter((i) => i.fix && perfPick.has(issueKey(i)))
+      .map((i) => i.fix);
+    const yaml = (perf.paper || []).filter((x) => perfPick.has(x.id)).map((x) => x.id);
+    if (!jvm.length && !yaml.length) { toast('Nothing is ticked.', 'warn'); return; }
+    try {
+      const r = await api.post(`/api/instances/${ctx.id}/perf/apply`,
+        { jvm_fixes: jvm, yaml_ids: yaml });
+      toast(r.applied.length ? `${r.applied.length} change(s) written. They take effect `
+        + 'at the next start.' : 'Nothing needed changing.', 'ok', { timeout: 8000 });
+    } catch (e) { toastError(e); }
+    loadPerf();
+  }
+
+  async function installTool(tool) {
+    try {
+      await runAwait(`/api/instances/${ctx.id}/perf/install`, { tool },
+        { title: `Install ${tool}` });
+      toast(`${tool} installed. It loads at the next start.`, 'ok', { timeout: 7000 });
+    } catch (e) { toastError(e); }
+    loadPerf();
+  }
+
+  async function pregen() {
+    const ok = await confirmDialog({
+      title: `Pre-generate ${pregenRadius} blocks around spawn?`,
+      message: 'Chunky generates the terrain now, while nobody is exploring it. '
+        + 'It uses CPU and disk while it runs; players can stay on. Cancelling '
+        + 'the job pauses it, and running it again carries on.',
+      confirmLabel: 'Pre-generate',
+    });
+    if (!ok) return;
+    try {
+      await runAwait(`/api/instances/${ctx.id}/pregen`, { radius: pregenRadius },
+        { title: `Pre-generating ${pregenRadius} blocks` });
+      toast('Pre-generation finished.', 'ok');
+    } catch (e) { toastError(e); }
+  }
+
   function echo(fmt) {
     const span = h('span', { dataset: { fmt } }, fmt.replace('%', String(heap)));
     echoes.push(span);
@@ -517,6 +674,7 @@ export async function render(ctx) {
       touchedHeap = false;
       touchedFlags = false;
       await load();
+  loadPerf();
       askAdvice();
     } catch (e) { toastError(e, 'Could not apply'); }
   }

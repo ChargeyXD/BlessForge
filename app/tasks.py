@@ -135,6 +135,19 @@ async def fix_dependency(job: Job, server_id: str, mod_id: str,
     return await repair.fix_dependency(job, server_id, mod_id, required_by)
 
 
+@task("perf_install")
+async def perf_install(job: Job, server_id: str, tool: str) -> dict:
+    from app import perf
+    return await perf.install_tool(job, server_id, tool)
+
+
+@task("pregen")
+async def pregen(job: Job, server_id: str, radius: int = 2000,
+                 world: str = "minecraft:overworld") -> dict:
+    from app import perf
+    return await perf.pregenerate(job, server_id, radius=radius, world=world)
+
+
 @task("spark_install")
 async def spark_install(job: Job, server_id: str) -> dict:
     from app import spark

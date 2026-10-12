@@ -1044,6 +1044,57 @@ async def boot_repair(server_id: str) -> dict:
     return {"job_id": job.id}
 
 
+@app.get("/api/instances/{server_id}/perf")
+async def perf_reading(server_id: str) -> dict:
+    """What is holding this server back: JVM faults, optimisation mods,
+    Paper/Spigot settings and spark's numbers (app/perf.py)."""
+    from app import perf
+    try:
+        return await perf.analyse(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/perf/apply")
+async def perf_apply(server_id: str, request: Request, body: dict = Body(...)) -> dict:
+    from app import perf
+    jvm_fixes = [f for f in body.get("jvm_fixes") or [] if isinstance(f, dict)][:40]
+    yaml_ids = [str(i) for i in body.get("yaml_ids") or []][:40]
+    try:
+        result = await perf.apply(server_id, jvm_fixes=jvm_fixes, yaml_ids=yaml_ids)
+    except Exception as e:
+        raise _err(e)
+    await auth.audit(actor=request.state.user["username"], action="perf.apply",
+                     server_id=server_id, detail="; ".join(result["applied"])[:400],
+                     ip=_client_ip(request))
+    return result
+
+
+@app.post("/api/instances/{server_id}/perf/install")
+async def perf_install(server_id: str, body: dict = Body(...)) -> dict:
+    tool = str(body.get("tool") or "")
+    if tool not in ("chunky", "spark"):
+        raise HTTPException(400, "tool must be chunky or spark")
+    job = await _job_for("perf_install", f"Install {tool}", server_id)
+    await registry.submit(job, "perf_install", server_id=server_id, tool=tool)
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/pregen")
+async def pregen(server_id: str, body: dict = Body(...)) -> dict:
+    """Pre-generate the world with Chunky. Cancelling pauses it."""
+    try:
+        radius = int(body.get("radius") or 2000)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "radius must be a number of blocks")
+    world = str(body.get("world") or "minecraft:overworld")
+    if not re.fullmatch(r"[a-z0-9_.\-]+:[a-z0-9_./\-]+", world):
+        raise HTTPException(400, "world must be a dimension id like minecraft:overworld")
+    job = await _job_for("pregen", "Pre-generate the world", server_id)
+    await registry.submit(job, "pregen", server_id=server_id, radius=radius, world=world)
+    return {"job_id": job.id}
+
+
 @app.get("/api/instances/{server_id}/spark")
 async def spark_status(server_id: str) -> dict:
     """Whether spark is on this server, and the reports recorded with it."""
