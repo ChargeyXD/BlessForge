@@ -235,7 +235,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
 
     @app.get("/v1/servers/{uuid}/files/usage")
     async def usage(uuid: str, path: str = "."):
-        return files.usage(folder(uuid), path)
+        return await asyncio.to_thread(files.usage, folder(uuid), path)
 
     @app.get("/v1/servers/{uuid}/files/search")
     async def search(uuid: str, q: str, path: str = ".", limit: int = 300):

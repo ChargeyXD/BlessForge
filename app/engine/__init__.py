@@ -30,7 +30,8 @@ __all__ = [
     "list_dir", "dir_exists", "read_file", "read_tail", "write_file", "delete_paths",
     "rename_path", "move_path", "create_entry", "ensure_dir", "upload_file",
     "upload_path", "extract", "download_file", "stream_file", "wait_for_path",
-    "walk", "search_files", "console_lines", "send_command", "read_manifest",
+    "walk", "search_files", "folder_usage", "console_lines", "send_command",
+    "read_manifest",
     "write_manifest",
 ]
 
@@ -351,6 +352,14 @@ async def search_files(server_id: str, query: str, root: str = ".",
     q = query.lower()
     return [e for e in await walk(server_id, root, max_entries=8000)
             if q in e["name"].lower()][:limit]
+
+
+async def folder_usage(server_id: str) -> dict | None:
+    """Bytes and files per top-level folder, measured on the node in one
+    request -- or None where the driver cannot, and the caller walks."""
+    drv = await _driver(server_id)
+    own = getattr(drv, "folder_usage", None)
+    return await own(server_id) if own is not None else None
 
 
 async def walk(server_id: str, root: str = ".", max_entries: int = 20000) -> list[dict]:

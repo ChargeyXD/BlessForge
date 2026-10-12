@@ -265,6 +265,10 @@ async def main():
         check("a file search finds a file deep in the tree, through the node's own search",
               [h["path"] for h in hits] == ["libraries/a/b/c/needle-1.0.jar"]
               and hits[0]["bytes"] == 1, r.text[:200])
+        r = await c.get(f"/api/instances/{sid}/files/usage")
+        libs = next((f for f in (r.json().get("folders") or []) if f["name"] == "libraries"), None)
+        check("folder sizes are measured on the node too", libs is not None
+              and libs["files"] >= 1 and libs["bytes"] >= 1, r.text[:200])
 
         # --- a crash is noticed and recorded ------------------------------------------------
         await c.post(f"/api/instances/{sid}/command", json={"command": "crash"})

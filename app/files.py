@@ -503,6 +503,23 @@ async def usage(server_id: str) -> dict:
         raise FileError(str(e))
     present = {n for n, m in (root or {}).items()
                if n != "root_path" and isinstance(m, dict) and m.get("dir")}
+    # Measured on the node in one request. Walked from here, a directory
+    # listing per request, the folder column sat empty for minutes on a
+    # server whose libraries/ is hundreds of folders deep.
+    try:
+        node = await engine.folder_usage(server_id)
+    except Exception:       # noqa: BLE001 -- an older node: walk instead
+        node = None
+    if node is not None:
+        for d in node.get("folders") or []:
+            if d.get("name") not in measured or d.get("name") not in present:
+                continue
+            out.append({"name": d["name"], "files": int(d.get("files") or 0),
+                        "bytes": int(d.get("bytes") or 0),
+                        "size": human_size(int(d.get("bytes") or 0)),
+                        "protected": d["name"] in PROTECTED_ROOTS})
+        out.sort(key=lambda d: -d["bytes"])
+        return {"folders": out, "total_bytes": sum(d["bytes"] for d in out)}
     for name in measured:
         if name not in present:
             continue

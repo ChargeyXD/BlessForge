@@ -354,6 +354,20 @@
 .fmrow .sz,.fmrow .md{font-family:var(--mono);font-size:11px;color:var(--faint);
   text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fmrow .ac{display:flex;gap:5px;justify-content:flex-end}
+/* The list's width is what is left beside the rail and the folder column,
+   not the viewport's: at a 1024px window the fixed columns left the name
+   24px and file names broke a letter a line. Sized by its own box. */
+.fm-main{container-type:inline-size}
+@container (max-width:620px){
+  /* Fixed, not auto: every row is its own grid, and the header has no
+     buttons -- an auto column would put its labels somewhere else. */
+  .fmrow{grid-template-columns:22px 22px minmax(0,1fr) 64px 96px;gap:8px;padding:7px 10px}
+  .fmrow > :nth-child(5){display:none}
+}
+@container (max-width:380px){
+  .fmrow{grid-template-columns:22px minmax(0,1fr) 96px}
+  .fmrow > :nth-child(2),.fmrow > :nth-child(4){display:none}
+}
 .fmrow svg{width:17px;height:17px;flex:none}
 .fmrow .kind-folder svg{color:var(--gold)}
 .fmrow .kind-mod svg{color:var(--rose)}
