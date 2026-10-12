@@ -160,7 +160,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("packs", nargs="+", help="CurseForge modpack ids, or export .zip paths")
     p.add_argument("--docker", action="store_true")
-    p.add_argument("--mem", type=int, default=5, help="max heap, GB")
+    p.add_argument("--mem", type=int, default=5,
+                   help="max heap, GB; 0 lets BlessForge size it from the node")
     p.add_argument("--boot-timeout", type=int, default=2400)
     p.add_argument("--keep", action="store_true")
     p.add_argument("--reboot", action="store_true", help="boot again from cold after install")

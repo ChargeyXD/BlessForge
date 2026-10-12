@@ -13,6 +13,97 @@ vendored React, no binding contract. Do not go looking for them.
 
 ---
 
+## 00. Setup hardening on a real node (2026-10-12) — read this first
+
+Branch **`setup-hardening`**, stacked on `wp-06-templates`, 27+ commits,
+committed locally, **not pushed, not merged**
+(`git log --oneline wp-06-templates..setup-hardening`). The UI handover for
+the coming redesign is `design/UI-REWORK-BRIEF.md`.
+
+### 00.1 How it was tested
+
+On the CasaOS box (8 threads, 11.8 GB, other services running) with the
+Docker runtime and the real CurseForge API, `dev/tools/pack_matrix.py`
+installed and booted eight packs end to end, keeping every failed server
+folder for inspection. ZOMBIEMANIA was skipped at the owner's request (its
+pack file is distribution-blocked). A local stack drove the UI in the
+browser with two offline test clients (`mcbot.py`, scratch only) joined.
+
+| pack | baseline | round 5 (`--mem 0`, BlessForge sizes the heap) |
+|---|---|---|
+| Prominence II (450 Fabric) | failed | **ready**, 3 automatic repairs |
+| SkyFactory 4 (202, 1.12.2) | false "failed" | **ready** |
+| Integrated MC (266) | ReadTimeout | **ready** |
+| ATM10 (464, NeoForge) | ReadTimeout | **ready** |
+| DeceasedCraft (235) | ready | **ready** |
+| Beyond Depth (466) | failed | failed — GML itself crashes servers (fixed after, see round 6) |
+| BMC4 (373) | failed | hung — Connector's Fabric mods were disabled (fixed after) |
+| 2BROKE4LORE export (307) | failed | killed by the boot check mid-spawn (fixed after) |
+
+Round 6 (the last three on the final code): see §00.4.
+
+### 00.2 What changed
+
+- **Boot and repair** (`app/repair.py`): after an install, and from Diagnose,
+  boot → read this boot's crash → apply only what it proves → boot again (≤ 8).
+  Actions: disable a client-side mod, enable a disabled provider, install a
+  missing library (CurseForge first, never a blocked file), set Java, fit the
+  heap. Never undoes its own change; never blames a library. Recorded in the
+  manifest (`repairs`, per-mod `repair`), undoable from Diagnose.
+- **Crash attribution** (`app/diagnostics.py`): modern Forge frames
+  (`%23`), Forge's "Attempted to load class … for invalid dist", the mod
+  behind a client class, Mixin's debug trail (debug.log tail) for a mixin that
+  names no mod, language providers (GML, Kotlin) never blamed and their
+  client mods found, client-only mixins ("cannot be cast to its own
+  interface"), probes at WARN ignored.
+- **The boot check** (`app/smoketest.py`): notices a dead server on every
+  poll; an OOM kill is named; a fatal-looking line is fatal only once the log
+  is quiet for two minutes; five quiet minutes after an exception is a hang.
+- **Memory**: container room beyond the heap grows with the mod count
+  (768 MB + 2.5 MB/mod, plus a fifth of the heap); heap sizing reads the
+  node's own RAM and load (`/v1/system`); an OOM kill is recorded by the node
+  (`last_exit`) and repaired by fitting the heap.
+- **Installs**: server packs installed as shipped (review status `shipped`);
+  `required:false` mods installed disabled; Sinytra Connector's Fabric mods
+  stay enabled on Forge/NeoForge; fingerprinting off the event loop in
+  spawned workers (ATM10 no longer times the API out).
+- **Containers**: the JVM's temp folder is `/server/.blessforge-tmp` (JNA and
+  Netty load natives; `/tmp` stays noexec); default CPU is the node's cores.
+- **Players**: join/leave lines, `list` (both shapes) and server-list ping,
+  reconciled; sessions, last seen, playtime, deaths and kills from the world.
+- **spark** (GPL-3.0, driven by console commands only): install, health
+  snapshots, recorded profiles (upload off by default), a Diagnose view.
+- **Tune › How it is running** (`app/perf.py`): JVM faults (removed flags,
+  two collectors, heap vs container, debugger, GC threads, Log4Shell),
+  optimisation mods and their switches (ServerCore, Chunky — keys read from
+  their real config files), Paper/Spigot settings, Chunky pre-generation,
+  install Chunky/spark. Vanilla and plugin servers get the same checks.
+- **Files**: search and folder sizes run on the node in one request (they
+  walked the tree a request per folder); tail reads for logs past 4 MB; a
+  `.jar` upload never offers to extract.
+- **UI** (browser-verified): true CPU share and memory limit; zoned times;
+  loading lines that stayed forever; Tune's reading that never loaded; the
+  file list at 1024 px; player counts that lagged their names. The full list
+  is in `design/UI-REWORK-BRIEF.md` §6.
+
+### 00.3 Unproven or not built
+
+- **Blocked-mods helper** (a list of author-blocked files with links and a
+  drop zone matched by fingerprint): planned, not built.
+- **Nodes UI**: `GET/POST /api/admin/nodes` have no screen.
+- spark's **upload** path was never exercised (it publishes the profile);
+  only save-to-file was.
+- Chunky pre-generation, spark and Tune's reading were driven on the process
+  runtime locally, not inside a Docker container on the box.
+- Paper/Purpur with spark bundled (1.21+) was not booted in this session.
+- Not merged. Merging is the owner's call.
+
+### 00.4 Round 6
+
+(filled in below when it finished)
+
+---
+
 ## 0. The commercial rebuild — WP-01 to WP-06 (2026-10-11/12)
 
 **Read this section first; §1 onwards is the September UI work, and where it

@@ -34,6 +34,14 @@ The picture is in README "How it fits together"; the agent in
 `dev/agent/README.md`; what is proven and what is not in `NEXT-SESSION.md` §0.
 The test loop for all of it is §9.
 
+**Then `setup-hardening` (2026-10-12)**, stacked on `wp-06-templates`: boot and
+repair after every install, crash attribution that reads modern Forge, Mixin
+and language providers, OOM detection and heap fitting, Sinytra Connector,
+players from log + `list` + ping, spark, Tune's "How it is running", node-side
+file search, and the UI fixes found by driving it in a browser. Tested on the
+CasaOS box against eight real packs — `NEXT-SESSION.md` §00. The UI handover
+for the redesign is `design/UI-REWORK-BRIEF.md`.
+
 ---
 
 ## 0. Where this is right now
@@ -1763,14 +1771,17 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite (WP-06, 2026-10-12): 771 offline checks in 16 files, the
-# HTTP suite, and 219 front-end checks. `.venv/Scripts/python.exe` on Windows.
-#   46 10 38 76 26 36 86 34 41 50 27 25 50 20 176 30, then 219
+# the whole suite (setup-hardening, 2026-10-12): 856 offline checks in 19
+# files, the HTTP suite (45), and 230 front-end checks.
+# `.venv/Scripts/python.exe` on Windows.
+#   53 10 39 76 26 36 86 34 41 50 27 25 50 20 179 32 33 27 12, then 230
+# (test_agent_security is 181 on Linux, where the openat jail runs)
 cd ~/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions \
          test_roulette test_boot_verdict test_fleet_state test_auth test_policy \
          test_blocked_downloads test_engine test_db test_jobs_redis \
-         test_templates test_import_crafty test_agent_security test_agent_api; do
+         test_templates test_import_crafty test_agent_security test_agent_api \
+         test_repair test_perf test_players_live; do
   .venv/bin/python dev/tools/$t.py | tail -1
 done
 .venv/bin/python dev/tools/run_http_tests.py      # boots a throwaway server
@@ -1793,6 +1804,11 @@ unset TEST_DATABASE_URL
 # not in the quick loop, each for a reason:
 .venv/bin/python dev/tools/test_agent_security.py --live   # Linux + Docker + images
 .venv/bin/python dev/tools/boot_templates.py               # downloads + boots 7 loaders
+# real packs end to end on a Docker node: install, first boot, repairs; keeps
+# each failed server folder for reading. Needs CURSEFORGE_API_KEY in .env.
+# --mem 0 lets BlessForge size the heap from the node, as a user's install does.
+.venv/bin/python dev/tools/pack_matrix.py --docker --mem 0 --report out.json \
+  925200 296062 ./an-export.zip
 
 # what it looks like — screenshots at four widths
 mkdir -p /tmp/shots && chmod 777 /tmp/shots
