@@ -27,7 +27,8 @@ skipped, so a run that stopped half-way can simply be run again.
 Uninstalling Crafty is a separate, manual step: the report says when every
 server has booted here and it is safe.
 
-    --only ID      one Crafty server
+    --only IDS     only these Crafty servers (comma-separated ids); the rest
+                   stay on Crafty
     --no-boot      copy, but do not run the boot test
     --dry-run      say what would happen, change nothing
     --report FILE  also write the report as JSON
@@ -320,7 +321,9 @@ async def run(args, *, setup: bool = True, transport=None) -> dict:
     try:
         servers = await crafty.servers()
         if args.only:
-            servers = [s for s in servers if str(s.get("server_id")) == args.only]
+            # A comma-separated list: move a chosen few, keep the rest on Crafty.
+            wanted = {i.strip() for i in args.only.split(",") if i.strip()}
+            servers = [s for s in servers if str(s.get("server_id")) in wanted]
         existing = await engine.list_servers() if use_engine else []
         results = []
         for server in servers:
@@ -362,7 +365,7 @@ async def run(args, *, setup: bool = True, transport=None) -> dict:
 def parse(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--from-dir", help="Crafty's servers folder, as this machine sees it")
-    p.add_argument("--only", help="import one Crafty server id")
+    p.add_argument("--only", help="import only these Crafty server ids (comma-separated)")
     p.add_argument("--no-boot", action="store_true", help="skip the boot test")
     p.add_argument("--dry-run", action="store_true", help="change nothing")
     p.add_argument("--connect-engine", action="store_true",

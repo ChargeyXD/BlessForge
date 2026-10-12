@@ -36,9 +36,9 @@ browser with two offline test clients (`mcbot.py`, scratch only) joined.
 | Integrated MC (266) | ReadTimeout | **ready** |
 | ATM10 (464, NeoForge) | ReadTimeout | **ready** |
 | DeceasedCraft (235) | ready | **ready** |
-| Beyond Depth (466) | failed | failed — GML itself crashes servers (fixed after, see round 6) |
-| BMC4 (373) | failed | hung — Connector's Fabric mods were disabled (fixed after) |
-| 2BROKE4LORE export (307) | failed | killed by the boot check mid-spawn (fixed after) |
+| Beyond Depth (466) | failed | failed — GML itself crashes servers (see §00.4) |
+| BMC4 (373) | failed | hung — Connector's Fabric mods were disabled (fixed: ready in round 6) |
+| 2BROKE4LORE export (307) | failed | killed by the boot check mid-spawn (fixed: ready in round 7) |
 
 Round 6 (the last three on the final code): see §00.4.
 
@@ -99,9 +99,29 @@ Round 6 (the last three on the final code): see §00.4.
 - Paper/Purpur with spark bundled (1.21+) was not booted in this session.
 - Not merged. Merging is the owner's call.
 
-### 00.4 Round 6
+### 00.4 Rounds 6 and 7 — the last three, on the final code
 
-(filled in below when it finished)
+| pack | result |
+|---|---|
+| BMC4 | **ready** after 5 repairs (all client-only); Connector's Fabric mods kept |
+| 2BROKE4LORE | **ready** after 3 repairs, on the 2nd boot (its 4 MB log no longer reads as silence) |
+| Beyond Depth | **still fails** — see below |
+
+**7 of 8 packs now boot with no manual setup** (ZOMBIEMANIA skipped).
+
+Beyond Depth, as far as it got: GML (crashes servers itself), Eating
+Animation, Dynamic Crosshair, Oculus, Colorwheel, ExtraSounds and Sodium
+Extras are disabled automatically, and Create is now *protected* (round 6
+wrongly disabled it). It still fails because Create and The Undergarden fail
+"registering automatic subscribers" on `PoseStack`. A scan of the jars'
+*common* mixins found two client-only mods reaching client rendering code —
+`createbetterfps` (patches Create's render classes with Sodium buffers) and
+`watut` (patches `Player` with client animation state). A boot with those two
+off was started and **stopped at the owner's request before it finished**, so
+the cause is a strong suspicion, not proven. Next step if anyone resumes:
+boot the kept layout with both off; if it comes up, teach the repair to look
+for common mixins that reference client classes (`scan_mixins2.py`'s idea)
+when a content mod fails that way.
 
 ---
 

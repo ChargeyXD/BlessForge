@@ -627,6 +627,35 @@ CasaOS never sees the override file — it imports `docker-compose.yml` alone.
 
 Anything still missing is listed in a banner at the top of the app.
 
+### Updating from 2.1 (Crafty)
+
+2.2 no longer drives Crafty: it runs servers through its own node agent. An
+existing install can update and move **some** of its servers across while
+Crafty keeps running the rest — nothing on Crafty's side is touched.
+
+1. **Back up** the BlessForge state volume (`/data`) and Crafty's servers
+   folder. To stay on the Crafty version, pin `ghcr.io/chargeyxd/blessforge:v2.1-crafty`
+   (or check out the `v2.1-crafty` tag) instead of `latest`.
+2. **Update the panel** to `latest` and set `ENGINE: "agent"` (the one-box
+   `docker-compose.yml` ships `ENGINE: "mock"`, which shows an empty, in-memory
+   fleet — your Crafty servers are not gone, BlessForge is just not looking at
+   them). Add `PUBLIC_API_URL` (the address nodes reach the panel at) and
+   `BLESSFORGE_SECRET` — without it one is generated and kept in `/data`;
+   back it up, because node tokens are encrypted with it. Accounts, racks and
+   decisions from 2.1 are imported on the first start.
+3. **Add a node** on the same machine (or another): [3. A node](#3-a-node).
+4. **Move the servers you choose**, a few at a time, with `--only`:
+
+```bash
+CRAFTY_URL=https://<crafty>:8443 CRAFTY_TOKEN=... \
+  python dev/tools/import_from_crafty.py --dry-run
+CRAFTY_URL=... CRAFTY_TOKEN=... python dev/tools/import_from_crafty.py \
+  --from-dir /DATA/AppData/big-bear-crafty/servers --only 3,7 --report import.json
+```
+
+Stop a server in Crafty before moving it, so both never run the same world.
+Each imported server is booted once here; the report says whether it came up.
+
 ### Moving servers off Crafty
 
 ```bash
