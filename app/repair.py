@@ -55,6 +55,11 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
+def _jar_key(file: str | None) -> str | None:
+    """A jar's identity whatever its state on disk."""
+    return file.removesuffix(".disabled") if file else None
+
+
 def missing_dependencies(text: str) -> list[dict]:
     return diagnostics.missing_dependencies(text)
 
@@ -203,8 +208,11 @@ async def decide(server_id: str, text: str, *, mc: str, loader: str, disk: Disk,
     planned: set[str] = set()
 
     def plan(action: dict) -> None:
-        key = (action["do"], action.get("file") or str(action.get("project_id")))
-        if key in tried or key in planned:
+        key = (action["do"], _jar_key(action.get("file")) or str(action.get("project_id")))
+        # Never undo this session's own repair: a jar disabled is not
+        # re-enabled, and one enabled is not disabled, or the loop flip-flops.
+        undo = ({"disable": "enable", "enable": "disable"}.get(action["do"]), key[1])
+        if key in tried or key in planned or undo in tried:
             return
         planned.add(key)
         actions.append(action)
@@ -337,7 +345,8 @@ async def boot_and_repair(job: Job, server_id: str, *, rounds: int = MAX_ROUNDS,
                            "the boot failed for a reason BlessForge cannot fix by itself "
                            "-- the Diagnose tab has the log")
         for action in actions:
-            tried.add((action["do"], action.get("file") or str(action.get("project_id"))))
+            tried.add((action["do"], _jar_key(action.get("file"))
+                       or str(action.get("project_id"))))
             if await apply(job, server_id, action, mc=mc):
                 done.append({k: v for k, v in action.items() if k != "project_id"}
                             | {"round": n})

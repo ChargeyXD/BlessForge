@@ -188,6 +188,29 @@ async def main():
         tried={("disable", "oculus-mc1.20.1-1.8.0.jar")}, loader="forge")
     check("an action already tried is not planned again", actions == [], actions)
 
+    # --- found on BMC4 in round three -------------------------------------------------------
+    probe = ("[12Oct2026 06:20:01.000] [modloading-worker-0/WARN] [some.Mod/]: probe\n"
+             "java.lang.NoClassDefFoundError: net/minecraft/client/ParticleStatus\n"
+             "\tat thedarkcolour.kotlinforforge.K.x(K.java:1) ~[kotlinforforge-4.12.0-all.jar%2390!/:?]\n"
+             "\tat com.example.coolmod.Cool.init(Cool.java:2) ~[coolmod-1.0.jar%2391!/:?]\n")
+    files = {"kotlinforforge-4.12.0-all.jar": forge_jar("kotlinforforge"),
+             "coolmod-1.0.jar": forge_jar("coolmod")}
+    actions, _ = await decide_for(files, probe, loader="forge")
+    check("a client class a mod probed for and survived (logged at WARN) blames nobody",
+          actions == [], actions)
+    actions, _ = await decide_for(files, probe.replace("/WARN]", "/FATAL]"), loader="forge")
+    check("a fatal one blames the mod under the Kotlin library, never the library",
+          [(a["do"], a.get("file")) for a in actions] == [("disable", "coolmod-1.0.jar")],
+          actions)
+    actions, _ = await decide_for({
+        "fzzy_config-1.0.jar": forge_jar("fzzy_config"),
+        "kotlinforforge-4.12.0-all.jar.disabled": forge_jar("kotlinforforge")},
+        "Mod fzzy_config requires kotlinforforge 4.0 or above\n"
+        "Currently, kotlinforforge is not installed\n",
+        tried={("disable", "kotlinforforge-4.12.0-all.jar")}, loader="forge")
+    check("a jar this session disabled is not re-enabled (no flip-flop)",
+          not any(a["do"] == "enable" for a in actions), actions)
+
     # --- the loop -------------------------------------------------------------------------------
     mock, sid = await server_with({
         "simplybows-forge-neoforge-0.1.4.jar": forge_jar("simplybows"),

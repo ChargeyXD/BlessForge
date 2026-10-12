@@ -121,8 +121,14 @@ async def one(c, spec: str, mem: int, boot_timeout: int, keep: bool,
     diag = (await c.get(f"/api/instances/{sid}/diagnose")).json()
     row["health"] = [{k: f.get(k) for k in ("severity", "title")}
                      for f in diag.get("findings") or []][:12]
-    if not keep:
+    # A pack that booted is removed to free the disk; one that did not is
+    # kept, folder and all, because its full log and crash report are the
+    # evidence for the next fix.
+    if not keep and row.get("boot") == "ready":
         await c.request("DELETE", f"/api/instances/{sid}")
+    elif row.get("boot") != "ready":
+        row["kept_folder"] = sid
+        log(f"   kept for inspection: {sid}")
     return row
 
 

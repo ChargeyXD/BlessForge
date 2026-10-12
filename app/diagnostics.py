@@ -1117,7 +1117,13 @@ _PLATFORM_JARS = re.compile(
     r"^(fabric-loader|fabric-api|fabric[-_]|quilt|forge|neoforge|minecraft|"
     r"server-intermediary|client-intermediary|mixin|asm|guava|gson|log4j|"
     r"netty|authlib|brigadier|datafixerupper|sponge-mixin|bootstraplauncher|"
-    r"securejarhandler|modlauncher|eventbus|coremods|accesstransformers)",
+    r"securejarhandler|modlauncher|eventbus|coremods|accesstransformers|"
+    # Language providers and loader shims: their frames sit under an error
+    # because they load classes FOR a mod, not because they caused it.
+    # Blaming Kotlin for Forge's frames broke every Kotlin mod in BMC4.
+    r"kotlinforforge|kotlin-for-forge|kotlinlangforge|fabric-language-kotlin|"
+    r"fabric-language-scala|scalable|kffmod|mixinextras|mixinsquared|connector|"
+    r"sinytra|fmlloader|fmlcore|javafmllanguage|lowcodelanguage|mclanguage)",
     re.I,
 )
 
@@ -1257,6 +1263,14 @@ def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
     for idx, line in enumerate(lines):
         match = _CLIENT_CLASS_FAIL.search(line)
         if not match:
+            continue
+        # Only a failure the log reports at ERROR or FATAL. Mods probe for
+        # client classes and catch the miss -- logged at WARN or DEBUG, and
+        # survived (net.minecraft.client.ParticleStatus is the usual one) --
+        # and a probe is not a culprit.
+        header = next((lines[j] for j in range(idx, max(-1, idx - 60), -1)
+                       if lines[j].startswith("[")), "")
+        if header and not re.search(r"/(?:ERROR|FATAL)\]|\bERROR\b|\bFATAL\b", header):
             continue
         for frame in lines[idx + 1: idx + 40]:
             jars = [j for j in _TRACE_JAR.findall(frame) if not _PLATFORM_JARS.match(j)]
