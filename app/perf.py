@@ -24,6 +24,7 @@ are not modpacks, and nothing here pretends they are.
 """
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from typing import Any
@@ -282,8 +283,8 @@ OPTIMIZATION_MODS: dict[str, dict[str, Any]] = {
                     "what": "Raises the network packet size limits big packs hit (\"packet "
                             "too large\" kicks)."},
     "servercore": {"match": [r"^servercore"], "name": "ServerCore",
-                   "what": "Adjusts view and simulation distance and mob caps on the fly "
-                           "from tick times. BlessForge leaves those distances to it."},
+                   "what": "Server-side optimisations; in its dynamic mode it moves view "
+                           "and simulation distance and mob caps with tick times."},
     "aiimprovements": {"match": [r"^ai[-_]?improvements", r"^aiimprovements"],
                        "name": "AI Improvements",
                        "what": "Cheaper mob AI goals; fewer milliseconds per tick with many "
@@ -380,11 +381,72 @@ PAPER_TUNING = [
 ]
 
 
-async def paper_tuning(server_id: str) -> list[dict]:
-    """The curated settings, for keys that exist in this server's files."""
+# The optimisation mods' own switches that are off by default and worth
+# having on a small server -- (mod key, file, key path, value, why, changes
+# gameplay). Every key here was read out of the file the mod itself writes;
+# one that is not in this server's file (another version of the mod) is
+# simply not offered.
+MOD_TUNING = [
+    ("servercore", "config/servercore/config.yml", ("dynamic", "enabled"), "true",
+     "ServerCore lowers view and simulation distance and mob caps a step at a time "
+     "while ticks run over 35 ms, and raises them again when the server catches up. "
+     "On a small server it holds 20 TPS through a busy evening.", True),
+    ("servercore", "config/servercore/config.yml",
+     ("features", "lobotomize-villagers", "enabled"), "true",
+     "Villagers locked in a trading cell think once a second instead of every tick; "
+     "a trading hall stops costing milliseconds. They still trade and restock.", True),
+    ("servercore", "config/servercore/config.yml", ("activation-range", "enabled"), "true",
+     "Mobs far from every player tick less often, as on Paper.", True),
+    ("servercore", "config/servercore/optimizations.yml", ("fast-biome-lookups",), "true",
+     "Much cheaper mob spawning; a mob may spawn a few blocks across a biome border.",
+     True),
+    ("chunky", "config/chunky/config.json", ("continueOnRestart",), "true",
+     "A pre-generation cut short by a restart carries on by itself.", False),
+    ("chunky", "plugins/Chunky/config.yml", ("continue-on-restart",), "true",
+     "A pre-generation cut short by a restart carries on by itself.", False),
+]
+
+
+def json_get(text: str, path: tuple[str, ...]) -> str | None:
+    """The scalar at a key path in a JSON file, as text ("true", "8")."""
+    try:
+        node: Any = json.loads(text)
+        for k in path:
+            node = node[k]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if isinstance(node, (dict, list)):
+        return None
+    return json.dumps(node).strip('"')
+
+
+def json_set(text: str, path: tuple[str, ...], value: str) -> str | None:
+    """Set an existing scalar at a key path; None if it is not there. The
+    value keeps the type the file had (a boolean stays a boolean)."""
+    try:
+        data = json.loads(text)
+        node = data
+        for k in path[:-1]:
+            node = node[k]
+        old = node[path[-1]]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if isinstance(old, bool):
+        new: Any = value.lower() == "true"
+    elif isinstance(old, int):
+        new = int(value)
+    elif isinstance(old, float):
+        new = float(value)
+    else:
+        new = value
+    node[path[-1]] = new
+    return json.dumps(data, indent=2) + "\n"
+
+
+async def _tuning(server_id: str, table, kind: str) -> list[dict]:
     out = []
     cache: dict[str, str | None] = {}
-    for path, keys, value, why, gameplay in PAPER_TUNING:
+    for path, keys, value, why, gameplay in table:
         if path not in cache:
             try:
                 cache[path] = await engine.read_file(server_id, path)
@@ -393,13 +455,29 @@ async def paper_tuning(server_id: str) -> list[dict]:
         text = cache[path]
         if text is None:
             continue
-        current = yaml_get(text, keys)
+        fmt = "json" if path.endswith(".json") else "yaml"
+        current = (json_get if fmt == "json" else yaml_get)(text, keys)
         if current is None:
             continue
-        out.append({"id": f"yaml:{path}:{'.'.join(keys)}", "file": path,
+        out.append({"id": f"{fmt}:{path}:{'.'.join(keys)}", "file": path,
                     "key": ".".join(keys), "current": current, "value": value,
-                    "why": why, "gameplay": gameplay,
+                    "why": why, "gameplay": gameplay, "kind": kind,
                     "applied": current.lower() == value.lower()})
+    return out
+
+
+async def paper_tuning(server_id: str) -> list[dict]:
+    """The curated settings, for keys that exist in this server's files."""
+    return await _tuning(server_id, PAPER_TUNING, "paper")
+
+
+async def mod_tuning(server_id: str, present: set[str]) -> list[dict]:
+    """The optimisation mods' own switches, for mods this server has."""
+    table = [row[1:] for row in MOD_TUNING if row[0] in present]
+    out = await _tuning(server_id, table, "mod")
+    names = {row[1]: OPTIMIZATION_MODS[row[0]]["name"] for row in MOD_TUNING}
+    for item in out:
+        item["mod"] = names.get(item["file"], "")
     return out
 
 
@@ -462,9 +540,6 @@ async def analyse(server_id: str) -> dict:
     if keys & {"ferritecore", "modernfix"}:
         notes.append("FerriteCore/ModernFix are present: this pack needs noticeably less "
                      "heap than packs of its size usually do.")
-    if "servercore" in keys:
-        notes.append("ServerCore manages view and simulation distance itself, so the Tune "
-                     "tab's distance proposals are left to it.")
     if kind == "mods" and not keys & {"alltheleaks", "memoryleakfix"} and len(files) > 150:
         notes.append("No memory-leak fix mod is present. On a pack this size, a daily "
                      "restart keeps the heap from creeping up over long uptimes.")
@@ -474,6 +549,11 @@ async def analyse(server_id: str) -> dict:
                      "faster if you can switch.")
 
     paper = await paper_tuning(server_id) if kind == "plugins" else []
+    mod_settings = await mod_tuning(server_id, keys)
+    dynamic = next((x for x in mod_settings if x["key"] == "dynamic.enabled"), None)
+    if dynamic and dynamic["applied"]:
+        notes.append("ServerCore's dynamic mode is on: it moves view and simulation distance "
+                     "itself, so the distances in server.properties are only where it starts.")
     spark_numbers = None
     try:
         from app import spark
@@ -486,7 +566,7 @@ async def analyse(server_id: str) -> dict:
         "jvm": {"args": parsed["args"], "issues": issues,
                 "source": "user_jvm_args.txt + command" if args_file is not None else "command"},
         "mods": present, "actions": actions, "notes": notes,
-        "paper": paper, "spark": spark_numbers,
+        "paper": paper, "mod_settings": mod_settings, "spark": spark_numbers,
         "counts": {"bad": sum(1 for i in issues if i["level"] == "bad"),
                    "warn": sum(1 for i in issues if i["level"] == "warn")},
     }
@@ -580,7 +660,7 @@ async def apply(server_id: str, *, jvm_fixes: list[dict], yaml_ids: list[str]) -
     if args_text is not None:
         await engine.write_file(server_id, "user_jvm_args.txt", args_text)
 
-    by_id = {p["id"]: p for p in reading["paper"]}
+    by_id = {p["id"]: p for p in reading["paper"] + reading["mod_settings"]}
     files: dict[str, str] = {}
     for yid in yaml_ids:
         item = by_id.get(yid)
@@ -589,7 +669,8 @@ async def apply(server_id: str, *, jvm_fixes: list[dict], yaml_ids: list[str]) -
         text = files.get(item["file"])
         if text is None:
             text = await engine.read_file(server_id, item["file"])
-        new = yaml_set(text, tuple(item["key"].split(".")), item["value"])
+        setter = json_set if item["id"].startswith("json:") else yaml_set
+        new = setter(text, tuple(item["key"].split(".")), item["value"])
         if new is not None:
             files[item["file"]] = new
             done.append(f"{item['file']}: {item['key']} = {item['value']}")

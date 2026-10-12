@@ -11,7 +11,7 @@ BlessForge never does. The UI credits it and links its source.
 What it is used for:
 
   * a health snapshot -- TPS, tick times (MSPT), CPU, memory, GC -- read
-    from `spark tps` and `spark health show --memory`;
+    from `spark tps` and the text health report (never the uploaded one);
   * a recorded profile: `spark profiler start`, a fixed wait, then
     `spark profiler stop`. By default spark uploads the result to its public
     viewer (spark.lucko.me) and prints the link; with `--save-to-file` it is
@@ -167,7 +167,7 @@ def _strip(line: str) -> str:
 
 
 def parse_health(lines: list[str]) -> dict:
-    """Numbers out of `spark tps` and `spark health show --memory`.
+    """Numbers out of `spark tps` and the text health report.
 
     Tolerant on purpose: the wording has moved between spark versions, so
     each figure is found by the heading above it, and a figure that is not
@@ -227,6 +227,25 @@ def parse_health(lines: list[str]) -> dict:
     return out
 
 
+_REPORT_END = re.compile(r"Disk|Network|Expected flag", re.I)
+
+
+async def _health_text(server_id: str) -> list[str]:
+    """The health report as text in the console.
+
+    The command changed under spark's feet: from 1.10.6x `spark health` on
+    its own uploads the report to spark's web viewer and `spark health show`
+    prints it; before that, `spark health` printed it and `show` is refused
+    ("Expected flag at position 0"). So `show` first, and the bare command
+    only when this spark has said it is the old kind -- a report is never
+    uploaded without the owner asking.
+    """
+    lines = await _command_output(server_id, "spark health show", wait=8, until=_REPORT_END)
+    if any("expected flag" in _strip(ln).lower() for ln in lines):
+        lines = await _command_output(server_id, "spark health", wait=8, until=_REPORT_END)
+    return lines
+
+
 async def health(job: Job | None, server_id: str) -> dict:
     """A snapshot of how the server is coping right now."""
     st = await engine.get_stats(server_id)
@@ -235,8 +254,7 @@ async def health(job: Job | None, server_id: str) -> dict:
                          "take the snapshot")
     lines = await _command_output(server_id, "spark tps", wait=5,
                                   until=re.compile(r"CPU usage", re.I))
-    lines += await _command_output(server_id, "spark health show --memory", wait=8,
-                                   until=re.compile(r"Disk|Network", re.I))
+    lines += await _health_text(server_id)
     numbers = parse_health(lines)
     if not numbers:
         raise SparkError("spark did not answer -- is it installed, and has the server "

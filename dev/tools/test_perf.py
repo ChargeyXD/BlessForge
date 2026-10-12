@@ -10,7 +10,10 @@
   * the YAML editor changes one key in place, comments kept, and never adds
     one; same-named keys in different sections are told apart;
   * optimisation mods are recognised by their jars, disabled ones ignored;
-  * applying a fix edits the setting where it lives.
+  * applying a fix edits the setting where it lives;
+  * the optimisation mods' own switches are offered only for mods that are
+    there and keys their files really have, and JSON keeps its types;
+  * spark's console report is read as spark really prints it.
 
 Offline: the in-memory engine.
 """
@@ -134,6 +137,64 @@ async def main():
           == "java @user_jvm_args.txt @libraries/x/unix_args.txt nogui")
     check("...reporting what changed", result["restart_needed"] and result["applied"],
           result)
+
+    # --- the optimisation mods' switches ------------------------------------------------
+    j = '{\n  "version": 2,\n  "continueOnRestart": false,\n  "updateInterval": 1\n}\n'
+    check("a JSON key is read by its path", perf.json_get(j, ("continueOnRestart",)) == "false")
+    out = perf.json_set(j, ("continueOnRestart",), "true")
+    check("...set keeping its type (a boolean stays a boolean)",
+          out is not None and '"continueOnRestart": true' in out
+          and '"updateInterval": 1' in out, out)
+    check("...and a JSON key that is not there is never added",
+          perf.json_set(j, ("nope",), "1") is None)
+
+    sc = ("features:\n  lobotomize-villagers:\n    enabled: false\n    tick-interval: 20\n"
+          "dynamic:\n  enabled: false\n  target-mspt: 35\n")
+    for d in ("config/servercore", "config/chunky", "mods"):
+        await engine.ensure_dir(sid, d)
+    await engine.write_file(sid, "config/servercore/config.yml", sc)
+    await engine.write_file(sid, "config/chunky/config.json", j)
+    offered = await perf.mod_tuning(sid, {"chunky"})
+    check("switches are offered only for mods that are present",
+          [x["file"] for x in offered] == ["config/chunky/config.json"], offered)
+    offered = await perf.mod_tuning(sid, {"servercore", "chunky"})
+    check("...with the mod's name and the keys its file has",
+          {(x["mod"], x["key"]) for x in offered} == {
+              ("ServerCore", "dynamic.enabled"),
+              ("ServerCore", "features.lobotomize-villagers.enabled"),
+              ("Chunky", "continueOnRestart")}, offered)
+    await engine.write_file(sid, "mods/servercore-fabric-1.5.jar", "x")
+    await engine.write_file(sid, "mods/Chunky-1.3.146.jar", "x")
+    reading = await perf.analyse(sid)
+    ids = [x["id"] for x in reading["mod_settings"] if x["key"] in
+           ("dynamic.enabled", "continueOnRestart")]
+    result = await perf.apply(sid, jvm_fixes=[], yaml_ids=ids)
+    sc_now = await engine.read_file(sid, "config/servercore/config.yml")
+    ch_now = await engine.read_file(sid, "config/chunky/config.json")
+    check("applying writes each switch in its own file and nothing else",
+          "dynamic:\n  enabled: true" in sc_now
+          and "lobotomize-villagers:\n    enabled: false" in sc_now
+          and '"continueOnRestart": true' in ch_now and len(result["applied"]) == 2,
+          (sc_now, ch_now, result))
+
+    # --- spark's numbers, as spark 1.10 prints them -------------------------------------
+    from app import spark
+    real = [
+        "[13:19:08] [spark-worker-pool-1-thread-1/INFO]: [⚡] TPS from last 5s, 10s, 1m, 5m, 15m:",
+        "[13:19:08] [spark-worker-pool-1-thread-1/INFO]: [⚡]  *20.0, 19.2, *20.0, *20.0, *20.0",
+        "[13:19:08] [spark-worker-pool-1-thread-1/INFO]: [⚡] Tick durations (min/med/95%ile/max ms) from last 10s, 1m:",
+        "[13:19:08] [spark-worker-pool-1-thread-1/INFO]: [⚡]  0.6/0.8/4.2/8.2;  0.6/2.4/31.0/215.0",
+        "[13:19:08] [spark-worker-pool-1-thread-1/INFO]: [⚡] CPU usage from last 10s, 1m, 15m:",
+        "[13:19:08] [spark-worker-pool-1-thread-1/INFO]: [⚡]  7%, 27%, 27%  (system)",
+        "[13:19:08] [spark-worker-pool-1-thread-1/INFO]: [⚡]  1%, 18%, 18%  (process)",
+        "[13:19:09] [spark-worker-pool-1-thread-2/INFO]: Memory usage:",
+        "[13:19:09] [spark-worker-pool-1-thread-2/INFO]:     1.2 GB / 4.0 GB   (30%)",
+    ]
+    n = spark.parse_health(real)
+    check("spark's TPS, tick times, CPU and heap are all read",
+          n.get("tps", {}).get("10s") == 19.2 and n.get("mspt", {}).get("p95") == 4.2
+          and n.get("mspt_1m", {}).get("max") == 215.0 and n.get("cpu_process") == 1.0
+          and n.get("memory_mb") == {"used": 1229, "max": 4096, "percent": 30.0}, n)
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")

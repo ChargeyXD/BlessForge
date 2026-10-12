@@ -361,6 +361,8 @@ export async function render(ctx) {
     const tone = (l) => ({ bad: 'bad', warn: 'warn', info: 'ghost', ok: 'ok' }[l] || 'ghost');
     const fixable = issues.filter((i) => i.fix);
     const paper = perf.paper || [];
+    const modSettings = perf.mod_settings || [];
+    const settings = paper.concat(modSettings);
     const s = perf.spark;
     mount(perfHost, h('div.panel',
       h('header', icon('activity', 15), h('h3', 'How it is running'),
@@ -404,26 +406,9 @@ export async function render(ctx) {
                 h('b', m.name), ' \u2014 ', h('span.muted', m.what)))))
           : null,
         ...(perf.notes || []).map((n) => h('div.note', n)),
-        paper.length
-          ? h('div',
-            h('div.muted', { style: { fontSize: '12px', margin: '4px 0 6px' } },
-              'Paper and Spigot settings'),
-            h('div.modlist', ...paper.map((x) => h('div.modrow',
-              h('input', {
-                type: 'checkbox', checked: perfPick.has(x.id) || false,
-                disabled: x.applied, 'aria-label': `Set ${x.key}`,
-                onchange: (e) => {
-                  if (e.target.checked) perfPick.add(x.id); else perfPick.delete(x.id);
-                },
-              }),
-              h('div.who',
-                h('div.nm', `${x.key}: ${x.current} \u2192 ${x.value}`),
-                h('div.fn', x.why),
-                h('div.tags', pill(x.file.split('/').pop(), 'ghost'),
-                  x.applied ? pill('already set', 'ok') : null,
-                  x.gameplay ? pill('changes gameplay a little', 'warn') : null))))))
-          : null,
-        (fixable.length || paper.some((x) => !x.applied))
+        settingList('Paper and Spigot settings', paper),
+        settingList('Switches in the optimisation mods', modSettings),
+        (fixable.length || settings.some((x) => !x.applied))
           ? h('div.btnrow', h('button.btn.sm.primary', { onclick: applyPerf },
             hl(), icon('check', 13), h('span', 'Apply the ticked fixes')),
           h('span.muted', { style: { fontSize: '12px' } }, 'Takes effect at the next start.'))
@@ -445,10 +430,34 @@ export async function render(ctx) {
       )));
   }
 
+  /* Settings that live in a config file: Paper/Spigot's, and the switches
+     the optimisation mods ship turned off. Never ticked by default -- each
+     is a trade, and the reason is written next to it. */
+  function settingList(title, items) {
+    if (!items.length) return null;
+    return h('div',
+      h('div.muted', { style: { fontSize: '12px', margin: '4px 0 6px' } }, title),
+      h('div.modlist', ...items.map((x) => h('div.modrow',
+        h('input', {
+          type: 'checkbox', checked: perfPick.has(x.id) || false,
+          disabled: x.applied, 'aria-label': `Set ${x.key}`,
+          onchange: (e) => {
+            if (e.target.checked) perfPick.add(x.id); else perfPick.delete(x.id);
+          },
+        }),
+        h('div.who',
+          h('div.nm', `${x.mod ? `${x.mod}: ` : ''}${x.key}: ${x.current} \u2192 ${x.value}`),
+          h('div.fn', x.why),
+          h('div.tags', pill(x.file.split('/').pop(), 'ghost'),
+            x.applied ? pill('already set', 'ok') : null,
+            x.gameplay ? pill('changes gameplay a little', 'warn') : null))))));
+  }
+
   async function applyPerf() {
     const jvm = (perf.jvm.issues || []).filter((i) => i.fix && perfPick.has(issueKey(i)))
       .map((i) => i.fix);
-    const yaml = (perf.paper || []).filter((x) => perfPick.has(x.id)).map((x) => x.id);
+    const yaml = (perf.paper || []).concat(perf.mod_settings || [])
+      .filter((x) => perfPick.has(x.id)).map((x) => x.id);
     if (!jvm.length && !yaml.length) { toast('Nothing is ticked.', 'warn'); return; }
     try {
       const r = await api.post(`/api/instances/${ctx.id}/perf/apply`,
