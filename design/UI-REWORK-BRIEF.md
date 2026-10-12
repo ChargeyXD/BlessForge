@@ -238,7 +238,9 @@ list, import/export/clear), Administration: users (the register), audit log
   `running, state (offline|starting|running|stopping|crashed|installing),
   crashed, started, online, max, players[], sessions{name:{since, exact}},
   player_source (log|list|ping), version, cpu, cpu_cores, cpu_allowance, mem,
-  mem_limit, mem_percent`.
+  mem_limit, mem_percent, last_exit{code, oom, at, asked}`. `last_exit.oom`
+  means the kernel killed it for its memory limit — say so in the header and
+  point at Tune, never at a mod.
 - States to design: running, starting, stopping, stopped, crashed (with the
   crash-loop note), orphan ("no server directory"), incomplete ("setup
   unfinished" + Finish setup), installing.
@@ -414,7 +416,11 @@ Snapshots taken before destructive changes, "Take one now", Restore.
 - **spark** profiler and health; **perf** reading, JVM fixes, mod switches,
   pre-generation.
 - **Stats semantics**: `cpu` share 0–100 of `cpu_allowance` cores; `mem_percent`
-  of `mem_limit`; `created` is UTC with `Z`.
+  of `mem_limit`; `created` is UTC with `Z`; `last_exit` says how it last
+  stopped (an OOM kill included).
+- **Out of memory**: the boot check names an OOM kill and the repair lowers
+  the heap to fit (`fit_heap` repair, with "give the server N MB to keep the
+  old heap"). Container sizes now leave room that grows with the mod count.
 - **Containers**: the JVM's temp folder is `/server/.blessforge-tmp` (it will
   appear in the file list; consider hiding dot-folders by default).
 
