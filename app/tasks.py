@@ -135,6 +135,25 @@ async def fix_dependency(job: Job, server_id: str, mod_id: str,
     return await repair.fix_dependency(job, server_id, mod_id, required_by)
 
 
+@task("spark_install")
+async def spark_install(job: Job, server_id: str) -> dict:
+    from app import spark
+    return await spark.install(job, server_id)
+
+
+@task("spark_health")
+async def spark_health(job: Job, server_id: str) -> dict:
+    from app import spark
+    return await spark.health(job, server_id)
+
+
+@task("spark_profile")
+async def spark_profile(job: Job, server_id: str, seconds: int = 60,
+                        upload: bool = False) -> dict:
+    from app import spark
+    return await spark.profile(job, server_id, seconds=seconds, upload=upload)
+
+
 @task("smoke_test")
 async def smoke_test(job: Job, server_id: str, timeout: int = 300) -> dict:
     from app import smoketest

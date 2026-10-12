@@ -1044,6 +1044,41 @@ async def boot_repair(server_id: str) -> dict:
     return {"job_id": job.id}
 
 
+@app.get("/api/instances/{server_id}/spark")
+async def spark_status(server_id: str) -> dict:
+    """Whether spark is on this server, and the reports recorded with it."""
+    from app import spark
+    try:
+        return await spark.status(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/spark/install")
+async def spark_install(server_id: str) -> dict:
+    job = await _job_for("spark_install", "Install spark", server_id)
+    await registry.submit(job, "spark_install", server_id=server_id)
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/spark/health")
+async def spark_health(server_id: str) -> dict:
+    job = await _job_for("spark_health", "Health snapshot", server_id)
+    await registry.submit(job, "spark_health", server_id=server_id)
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/spark/profile")
+async def spark_profile(server_id: str, body: dict = Body(default={})) -> dict:
+    """Record a profile. Kept on the server unless `upload` asks for spark's
+    public viewer -- an upload is readable by anyone with the link."""
+    job = await _job_for("spark_profile", "Record a profile", server_id)
+    await registry.submit(job, "spark_profile", server_id=server_id,
+                          seconds=int(body.get("seconds") or 60),
+                          upload=bool(body.get("upload", False)))
+    return {"job_id": job.id}
+
+
 @app.post("/api/instances/{server_id}/fix/dependency")
 async def fix_dependency(server_id: str, body: dict = Body(...)) -> dict:
     """Bring back a missing library: re-enable it, or install a compatible build."""

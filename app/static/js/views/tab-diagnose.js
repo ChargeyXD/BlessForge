@@ -21,6 +21,7 @@
 import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num,
   empty, loadingFox, confirmDialog, modal, close, frag, segmented, copyText,
+  toggle, ago,
 } from '../core.js';
 import { run, runAwait } from '../jobs.js';
 
@@ -33,6 +34,9 @@ export async function render(ctx) {
   let ai = null;
   let scan = null;
   let view = 'findings';
+  let sparkState = null;
+  let profileSeconds = 60;
+  let profileUpload = false;
 
   async function load(quiet) {
     if (!quiet) mount(host, loadingFox('Running the checks'));
@@ -56,8 +60,13 @@ export async function render(ctx) {
         segmented([
           { value: 'findings', label: `Findings ${findings.length}` },
           { value: 'client', label: 'Client-only scan' },
+          { value: 'profiler', label: 'Profiler' },
           { value: 'logs', label: 'Logs' },
-        ], view, (v) => { view = v; paint(); }, 'Diagnose view'),
+        ], view, (v) => {
+          view = v;
+          if (v === 'profiler' && !sparkState) loadSpark();
+          paint();
+        }, 'Diagnose view'),
         h('div.grow'),
         h('button.btn.sm.ghost', { onclick: () => load() },
           icon('refresh', 13), h('span', 'Re-check')),
@@ -76,7 +85,8 @@ export async function render(ctx) {
 
       view === 'findings' ? findingsView(findings, crit, warn)
         : view === 'client' ? clientView()
-          : logsView(),
+          : view === 'profiler' ? profilerView()
+            : logsView(),
     );
   }
 
@@ -343,6 +353,144 @@ export async function render(ctx) {
       { timeout: 9000 });
     } catch (e) { toastError(e); }
     await load(true);
+  }
+
+  /* --- profiler (spark) ----------------------------------------- */
+
+  /* spark is lucko's profiler (GPL-3.0). BlessForge installs spark's own
+     published jar when asked and only types its console commands; it does
+     not ship or change any of spark. A profile stays on the server unless
+     the operator chooses spark's public viewer, which anyone with the link
+     can read -- so that is a choice, off by default. */
+  async function loadSpark() {
+    try {
+      sparkState = await api.get(`/api/instances/${ctx.id}/spark`);
+    } catch (e) { sparkState = { error: e.message }; }
+    paint();
+  }
+
+  function profilerView() {
+    if (!sparkState) return loadingFox('Looking for spark');
+    if (sparkState.error) return h('div.note.bad', sparkState.error);
+    const st = sparkState;
+    const running = !!ctx.running;
+    return frag(
+      h('div.card', { style: { marginBottom: '14px' } },
+        h('header',
+          h('h3', { style: { flex: 1 } }, 'spark'),
+          st.installed
+            ? pill(st.where === 'bundled' ? 'built into this server' : `installed (${st.where})`,
+              'ok')
+            : pill('not installed', 'ghost')),
+        h('p.muted', { style: { fontSize: '13px' } },
+          'A profiler by lucko \u2014 ',
+          h('a', { href: st.source, target: '_blank', rel: 'noopener' }, 'source'),
+          `, ${st.license}. It measures TPS, tick times, CPU, memory and garbage `
+          + 'collection, and records profiles that show which mod is spending '
+          + 'the time. BlessForge installs spark\u2019s own published build and '
+          + 'drives it through its console commands.'),
+        !st.installed && st.supported
+          ? h('div.btnrow', h('button.btn.sm.primary', { onclick: installSpark },
+            hl(), icon('download', 13), h('span', 'Install spark')))
+          : null,
+        !st.supported ? h('div.note', st.why_not || 'spark cannot run on this server.') : null,
+        st.installed
+          ? frag(
+            !running ? h('div.note', 'Start the server and let it settle; a snapshot '
+              + 'of a server that just booted measures the boot.') : null,
+            h('div.btnrow', { style: { flexWrap: 'wrap', gap: '8px' } },
+              h('button.btn.sm', { disabled: !running, onclick: sparkHealth },
+                icon('activity', 13), h('span', 'Health snapshot')),
+              segmented([
+                { value: 30, label: '30 s' }, { value: 60, label: '60 s' },
+                { value: 120, label: '2 min' },
+              ], profileSeconds, (v) => { profileSeconds = v; paint(); }, 'Profile length'),
+              h('button.btn.sm.primary', { disabled: !running, onclick: sparkProfile },
+                hl(), icon('clock', 13), h('span', 'Record a profile'))),
+            toggle('Upload to spark\u2019s viewer (spark.lucko.me)', profileUpload,
+              (v) => { profileUpload = v; },
+              { help: 'Off: the profile is saved on the server, under config/spark, '
+                + 'and you can download it. On: spark uploads it and you get a link '
+                + '\u2014 readable by anyone who has that link.' }))
+          : null),
+      (st.reports || []).length
+        ? h('div', { style: { display: 'grid', gap: '12px' } },
+          ...st.reports.map(sparkReport))
+        : h('p.muted', { style: { fontSize: '13px' } },
+          'No reports yet. A health snapshot takes about fifteen seconds.'),
+    );
+  }
+
+  function sparkReport(r) {
+    const n = r.numbers || {};
+    const chips = [];
+    if (n.tps) chips.push(pill(`${n.tps['1m'] ?? n.tps['10s']} TPS`,
+      (n.tps['1m'] ?? 20) >= 19.5 ? 'ok' : 'warn', 'Ticks per second over the last minute'));
+    if (n.mspt) chips.push(pill(`${n.mspt.p95} ms p95`,
+      n.mspt.p95 <= 40 ? 'ok' : n.mspt.p95 <= 50 ? 'warn' : 'bad',
+      '95% of ticks took at most this long; the budget is 50 ms'));
+    if (n.cpu_process !== undefined) chips.push(pill(`CPU ${n.cpu_process}%`, 'ghost'));
+    if (n.memory_mb) chips.push(pill(`heap ${n.memory_mb.percent}%`,
+      n.memory_mb.percent > 90 ? 'warn' : 'ghost',
+      `${n.memory_mb.used} of ${n.memory_mb.max} MB`));
+    if (r.players !== undefined && r.players !== null) chips.push(pill(`${r.players} online`, 'ghost'));
+    return h('div.card.finding',
+      h('header',
+        pill(r.kind === 'profile' ? `${r.seconds}s profile` : 'snapshot', 'plum'),
+        h('h3', { style: { flex: 1 } }, ago(r.at)),
+        ...chips),
+      ...(r.advice || []).map((a) => h('div', { style: { display: 'flex', gap: '8px',
+        alignItems: 'baseline', marginTop: '6px' } },
+        pill(a.level === 'ok' ? 'fine' : a.level, a.level === 'ok' ? 'ok' : a.level),
+        h('div', h('b', a.title), h('div.muted', { style: { fontSize: '12.5px' } }, a.detail)))),
+      r.viewer_url
+        ? h('div.btnrow', h('a.btn.sm', { href: r.viewer_url, target: '_blank',
+          rel: 'noopener' }, icon('link', 13), h('span', 'Open in spark\u2019s viewer')))
+        : null,
+      r.file
+        ? h('div.btnrow',
+          h('button.btn.sm', { onclick: () => downloadProfile(r.file) },
+            icon('download', 13), h('span', 'Download the profile')),
+          h('span.muted', { style: { fontSize: '12px' } },
+            'Drop it onto spark.lucko.me to open it in the viewer.'))
+        : null);
+  }
+
+  async function installSpark() {
+    try {
+      await runAwait(`/api/instances/${ctx.id}/spark/install`, {}, { title: 'Install spark' });
+      toast('spark is installed. It loads with the next start.', 'ok', { timeout: 7000 });
+    } catch (e) { toastError(e); }
+    loadSpark();
+  }
+
+  async function sparkHealth() {
+    try {
+      await runAwait(`/api/instances/${ctx.id}/spark/health`, {}, { title: 'Health snapshot' });
+    } catch (e) { toastError(e); }
+    loadSpark();
+  }
+
+  async function sparkProfile() {
+    try {
+      await runAwait(`/api/instances/${ctx.id}/spark/profile`,
+        { seconds: profileSeconds, upload: profileUpload },
+        { title: `Recording a ${profileSeconds}s profile` });
+    } catch (e) { toastError(e); }
+    loadSpark();
+  }
+
+  async function downloadProfile(path) {
+    try {
+      const res = await api.raw(`/api/instances/${ctx.id}/files/download?path=`
+        + encodeURIComponent(path));
+      const url = URL.createObjectURL(await res.blob());
+      const a = h('a', { href: url, download: path.split('/').pop(),
+        style: { display: 'none' } });
+      document.body.append(a);
+      a.click();
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+    } catch (e) { toastError(e); }
   }
 
   /* --- client-only scan ---------------------------------------- */
