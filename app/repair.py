@@ -125,6 +125,10 @@ class Disk:
                 with zipfile.ZipFile(io.BytesIO(blob)) as z:
                     self._names[file] = set(z.namelist())
                     self._meta[file]["mixin_sides"] = _mixin_sides(z)
+                    # Recipes, loot, worldgen, tags: what a server runs.
+                    self._meta[file]["has_data"] = any(
+                        n.startswith("data/") and n.count("/") >= 2 and not n.endswith("/")
+                        for n in self._names[file])
             except Exception:       # noqa: BLE001
                 self._meta.setdefault(file, {})
         return self._meta[file]
@@ -361,8 +365,26 @@ async def decide(server_id: str, text: str, *, mc: str, loader: str, disk: Disk,
                               "the server, and no installed jar could be matched to it")
             continue
         evidence = (c.get("evidence") or "") + " " + " ".join(c.get("reasons") or [])
-        client = (c["score"] == 70 or bool(_CLIENT_HINT.search(evidence))
-                  or await disk.is_client_side(jar) or await disk.client_mixins_only(jar))
+        client = (c["score"] == 70 or await disk.is_client_side(jar)
+                  or await disk.client_mixins_only(jar))
+        if not client and _CLIENT_HINT.search(evidence):
+            # A client class in the failure says something on this server
+            # touched client code -- not that this mod is client-side. Beyond
+            # Depth: Create and The Undergarden failed registering their event
+            # handlers beside two real client mods, and were disabled with
+            # everything that needs them. Only a mod with no server content
+            # that nothing enabled depends on is taken on that evidence.
+            meta = await disk.meta(jar)
+            needed_by = await disk.users_of(meta.get("mod_id") or "", exclude=jar) \
+                if meta.get("mod_id") else []
+            if meta.get("has_data") or needed_by:
+                unresolved.append(
+                    f"{jar} failed loading a client class, but it "
+                    + (f"is needed by {', '.join(needed_by[:3])}" if needed_by
+                       else "carries server content")
+                    + " -- another mod is the likelier cause")
+                continue
+            client = True
         if client:
             plan({"do": "disable", "file": jar,
                   "why": f"the boot crashed on it ({c['why'][:160]}) and it is a "

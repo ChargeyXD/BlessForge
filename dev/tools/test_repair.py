@@ -151,6 +151,32 @@ def groovy_jar(mod_id: str, depends_on_gml: bool = True) -> bytes:
     return buf.getvalue()
 
 
+# Beyond Depth, round 6: two content mods and two client mods failed alike.
+DIST_BLOCKS = """-- MOD create --
+Details:
+\tMod File: /server/mods/create-1.20.1-6.0.8.jar
+\tFailure message: Create (create) has failed to load correctly
+\t\tjava.lang.RuntimeException: Attempted to load class com/mojang/blaze3d/vertex/PoseStack for invalid dist DEDICATED_SERVER
+-- MOD sodiumextras --
+Details:
+\tMod File: /server/mods/sodiumextras-forge-1.0.7-1.20.1.jar
+\tFailure message: Sodium Extras (sodiumextras) has failed to load correctly
+\t\tjava.lang.RuntimeException: Attempted to load class net/minecraft/client/Options for invalid dist DEDICATED_SERVER
+"""
+
+
+def content_jar(mod_id: str, needs: str | None = None) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        dep = (f'[[dependencies.{mod_id}]]\nmodId="{needs}"\nmandatory=true\n'
+               'versionRange="[0,)"\nside="BOTH"\n') if needs else ""
+        z.writestr("META-INF/mods.toml",
+                   'modLoader="javafml"\nloaderVersion="[47,)"\n[[mods]]\n'
+                   f'modId="{mod_id}"\nversion="1.0.0"\n' + dep)
+        z.writestr(f"data/{mod_id}/recipes/thing.json", "{}")
+    return buf.getvalue()
+
+
 def jar_with(mod_id: str, *entries: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
@@ -388,6 +414,18 @@ async def main():
     check("...blaming no mod, and saying how much memory keeps the old heap",
           "6144 MB memory limit" in result["repairs"][0]["why"]
           and "give the server" in result["repairs"][0]["why"], result["repairs"])
+
+    # --- a client class in a content mod's failure is not proof --------------------------------
+    actions, why = await decide_for({
+        "create-1.20.1-6.0.8.jar": content_jar("create"),
+        "copycats-3.0.10.jar": content_jar("copycats", needs="create"),
+        "sodiumextras-forge-1.0.7-1.20.1.jar": forge_jar("sodiumextras")},
+        DIST_BLOCKS, loader="forge")
+    check("a content mod others need is never disabled because its failure names a "
+          "client class; the client mod beside it is",
+          [(a["do"], a.get("file")) for a in actions]
+          == [("disable", "sodiumextras-forge-1.0.7-1.20.1.jar")]
+          and any("needed by copycats" in w for w in why), (actions, why))
 
     # --- a boot that dies without a recognised failure line ------------------------------------
     class DiesOnBoot(MockEngine):
