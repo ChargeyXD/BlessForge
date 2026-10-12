@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""The performance reading (app/perf.py): faults are faults, taste is taste.
+
+  * JVM arguments are read from where the server really takes them -- the
+    command, and user_jvm_args.txt when the command reads it;
+  * a flag Java removed is a fault on that Java and only a warning on an
+    older one; two collectors, a heap that does not fit its container, a
+    minimum above the maximum, a debugger left on -- all faults;
+  * tidy settings produce nothing at all;
+  * the YAML editor changes one key in place, comments kept, and never adds
+    one; same-named keys in different sections are told apart;
+  * optimisation mods are recognised by their jars, disabled ones ignored;
+  * applying a fix edits the setting where it lives.
+
+Offline: the in-memory engine.
+"""
+import asyncio
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from app import engine, perf  # noqa: E402
+from app.engine.mock import MockEngine  # noqa: E402
+
+results = []
+
+
+def check(name, cond, extra=""):
+    results.append(bool(cond))
+    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  — {extra}" if extra else ""))
+
+
+def levels(issues):
+    return {(i["level"], i["title"].split(" ")[0]) for i in issues}
+
+
+async def main():
+    # --- where arguments come from -----------------------------------------------------
+    a = perf.jvm_args("java @user_jvm_args.txt @libraries/x/unix_args.txt nogui",
+                      "# managed\n-Xms4G\n-Xmx6G -XX:+UseG1GC\n")
+    check("a Forge command's arguments come from user_jvm_args.txt",
+          [(x["arg"], x["from"]) for x in a["args"]] == [
+              ("-Xms4G", "user_jvm_args.txt"), ("-Xmx6G", "user_jvm_args.txt"),
+              ("-XX:+UseG1GC", "user_jvm_args.txt")], a["args"])
+    a = perf.jvm_args('"/opt/java/bin/java" -Xmx2G -jar paper.jar --nogui', None)
+    check("a jar command's arguments stop at -jar",
+          [x["arg"] for x in a["args"]] == ["-Xmx2G"], a["args"])
+
+    # --- faults -------------------------------------------------------------------------
+    def run(cmd, **kw):
+        return perf.check_jvm(perf.jvm_args(cmd, None)["args"], **kw)
+
+    issues = run("java -Xmx4G -XX:+UseConcMarkSweepGC -jar s.jar", java=17, container_mb=6000,
+                 cpus=4, mc="1.20.1")
+    check("CMS stops Java 17 starting: a fault", any(i["level"] == "bad" and "CMS" in
+                                                      i["detail"] for i in issues))
+    issues = run("java -Xmx4G -XX:+UseConcMarkSweepGC -jar s.jar", java=8, container_mb=6000,
+                 cpus=4, mc="1.12.2")
+    check("...but on Java 8 only a warning", any(i["level"] == "warn" and "CMS" in i["detail"]
+                                                for i in issues)
+          and not any(i["level"] == "bad" and "CMS" in i["detail"] for i in issues))
+    issues = run("java -Xmx4G -XX:+UseG1GC -XX:+UseZGC -jar s.jar", java=21,
+                 container_mb=6000, cpus=4)
+    check("two collectors at once: a fault", any("Two garbage collectors" in i["title"]
+                                                for i in issues))
+    issues = run("java -Xmx6G -jar s.jar", java=21, container_mb=6200, cpus=4)
+    check("a heap with no room left in its container: a fault, with a size that fits",
+          any(i["level"] == "bad" and "does not fit" in i["title"] and
+              i["fix"]["set_heap_mb"] < 6200 - 512 for i in issues))
+    issues = run("java -Xms8G -Xmx4G -jar s.jar", java=21, container_mb=9000, cpus=4)
+    check("a minimum heap above the maximum: a fault",
+          any("minimum heap is bigger" in i["title"] for i in issues))
+    issues = run("java -Xmx4G -agentlib:jdwp=transport=dt_socket,server=y -jar s.jar",
+                 java=21, container_mb=6000, cpus=4)
+    check("a debugger left on: a fault", any("debugger" in i["title"] for i in issues))
+    issues = run("java -Xmx4G -XX:ParallelGCThreads=16 -jar s.jar", java=21,
+                 container_mb=6000, cpus=4)
+    check("more GC threads than CPUs: flagged, with a count that fits",
+          any("ParallelGCThreads" in i["title"] and i["fix"]["replace_arg"][1].endswith("=3")
+              for i in issues))
+    issues = run("java -Xmx4G -XX:+UseG1GC -jar s.jar", java=17, container_mb=6000, cpus=4,
+                 mc="1.16.5")
+    check("an old Minecraft without the Log4Shell mitigation is flagged",
+          any("Log4Shell" in i["title"] for i in issues))
+    issues = run("java -Xms5G -Xmx5G -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -jar s.jar",
+                 java=21, container_mb=6400, cpus=8, mc="1.21.1")
+    check("tidy settings produce nothing", issues == [], issues)
+
+    # --- YAML --------------------------------------------------------------------------
+    y = ("world-settings:\n  default:\n    merge-radius:\n      item: 2.5 # a comment\n"
+         "    entity-activation-range:\n      animals: 32\n"
+         "    entity-tracking-range:\n      animals: 48\n")
+    check("a key is read by its path",
+          perf.yaml_get(y, ("world-settings", "default", "entity-tracking-range", "animals"))
+          == "48")
+    out = perf.yaml_set(y, ("world-settings", "default", "entity-activation-range", "animals"),
+                        "16")
+    check("one key changes; its namesake in another section does not",
+          "      animals: 16\n    entity-tracking-range:\n      animals: 48" in out)
+    out = perf.yaml_set(y, ("world-settings", "default", "merge-radius", "item"), "3.5")
+    check("the comment on the line survives", "item: 3.5 # a comment" in out, out)
+    check("a key that is not there is never added",
+          perf.yaml_set(y, ("world-settings", "default", "nope"), "1") is None)
+
+    # --- optimisation mods ------------------------------------------------------------------
+    found = perf.detect_mods(["lithium-fabric-mc1.20.1-0.11.2.jar", "ferritecore-6.0.1.jar",
+                              "c2me-fabric-mc1.20.1.jar.disabled", "create-0.5.1.jar",
+                              "Chunky-1.3.146.jar", "spark-1.10.53-fabric.jar"])
+    check("optimisation mods are recognised by their jars, disabled ones ignored",
+          sorted(m["key"] for m in found) == ["chunky", "ferritecore", "lithium", "spark"],
+          [m["key"] for m in found])
+
+    # --- applying, where each setting lives ---------------------------------------------------
+    mock = MockEngine(seed=False)
+    engine.configure("mock", drivers={"local": mock})
+    sid = await engine.create_server(name="Perf", port=25800, memory_mb=6000,
+                                     mc_version="1.20.1", loader="forge")
+    await engine.update_server(sid, {"execution_command":
+                                     "java @user_jvm_args.txt @libraries/x/unix_args.txt nogui"})
+    await engine.write_file(sid, "user_jvm_args.txt",
+                            "-Xmx8G\n-XX:+UseG1GC\n-XX:+AggressiveOpts\n")
+    await engine.write_manifest(sid, {"schema": 1, "minecraft": "1.20.1", "loader": "forge"})
+    reading = await perf.analyse(sid)
+    fixes = [i["fix"] for i in reading["jvm"]["issues"] if i.get("fix")]
+    result = await perf.apply(sid, jvm_fixes=fixes, yaml_ids=[])
+    text = await engine.read_file(sid, "user_jvm_args.txt")
+    check("fixes are written into user_jvm_args.txt, where those flags live",
+          "AggressiveOpts" not in text and "-Xmx8G" not in text and "-XX:+UseG1GC" in text,
+          text)
+    check("...and the command is left alone",
+          (await engine.get_server(sid))["execution_command"]
+          == "java @user_jvm_args.txt @libraries/x/unix_args.txt nogui")
+    check("...reporting what changed", result["restart_needed"] and result["applied"],
+          result)
+
+    passed = sum(results)
+    print(f"\n{passed}/{len(results)} checks passed")
+    return passed == len(results)
+
+
+if __name__ == "__main__":
+    sys.exit(0 if asyncio.run(main()) else 1)

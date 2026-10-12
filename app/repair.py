@@ -137,20 +137,38 @@ class Disk:
 # --- finding a library to install --------------------------------------------
 
 
+_LOADER_TAG = re.compile(r"\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\]|\b(?:neo)?forge\b|\bfabric\b"
+                         r"|\bquilt\b|\bmod\b", re.I)
+
+
+def _project_key(text: str | None) -> str:
+    """A catalogue name or slug as the mod id it stands for: loader tags,
+    brackets and the word "mod" dropped. "FerriteCore (Fabric)",
+    "ferritecore-fabric" and "FerriteCore ((Neo)Forge)" are all ferritecore."""
+    return _norm(_LOADER_TAG.sub(" ", (text or "").replace("-", " ").replace("_", " ")))
+
+
+def _is_project(mod_id: str, slug: str | None, name: str | None) -> bool:
+    want = _norm(mod_id)
+    return bool(want) and want in {_norm(slug), _norm(name), _project_key(slug),
+                                   _project_key(name)}
+
+
 async def find_library(mod_id: str, *, mc: str, loader: str) -> dict | None:
     """A build of `mod_id` for this Minecraft version and loader.
 
     CurseForge first -- it is where packs come from -- then Modrinth. A
     CurseForge file whose author blocks third-party downloads is passed over,
     not fetched (that is the author's call to make, and the API's terms).
+    Catalogue names carry loader tags ("FerriteCore (Fabric)") and slugs
+    carry them too ("c2me-fabric"); both are compared with those removed.
     """
-    want = _norm(mod_id)
     try:
         res = await curseforge.search(query=mod_id.replace("_", " ").replace("-", " "),
                                       class_id=curseforge.CLASS_MODS, game_version=mc,
                                       mod_loader=loader, page_size=10)
         for p in res.get("items") or []:
-            if want not in (_norm(p.get("slug")), _norm(p.get("name"))):
+            if not _is_project(mod_id, p.get("slug"), p.get("name")):
                 continue
             files = await curseforge.list_files(int(p["id"]), game_version=mc,
                                                 mod_loader=loader)
@@ -164,15 +182,25 @@ async def find_library(mod_id: str, *, mc: str, loader: str) -> dict | None:
     except Exception:       # noqa: BLE001 -- Modrinth is still worth asking
         pass
     try:
-        proj = await modrinth.get_project(mod_id) or await modrinth.get_project(
-            mod_id.replace("_", "-"))
-        if proj:
-            versions = await modrinth.list_versions(proj["id"], game_version=mc, loader=loader)
+        candidates = []
+        for slug in dict.fromkeys((mod_id, mod_id.replace("_", "-"), f"{mod_id}-{loader}")):
+            proj = await modrinth.get_project(slug)
+            if proj:
+                candidates.append(proj)
+                break
+        if not candidates:
+            hits = (await modrinth.search(query=mod_id.replace("_", " "), game_version=mc,
+                                          loader=loader, page_size=10))["items"]
+            candidates = [h for h in hits if _is_project(mod_id, h.get("slug"), h.get("name"))]
+        for proj in candidates[:2]:
+            versions = await modrinth.list_versions(proj.get("slug") or proj["id"],
+                                                    game_version=mc, loader=loader)
             versions = [v for v in versions if v.get("download_url")]
             versions.sort(key=lambda v: (v.get("release_type") == "release", v.get("date") or ""),
                           reverse=True)
             if versions:
-                return {"do": "install", "source": "modrinth", "project_id": proj["id"],
+                return {"do": "install", "source": "modrinth",
+                        "project_id": versions[0].get("mod_id") or proj["id"],
                         "file_id": versions[0]["file_id"], "name": proj.get("name") or mod_id,
                         "file": versions[0].get("file_name")}
     except Exception:       # noqa: BLE001
