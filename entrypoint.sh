@@ -39,6 +39,12 @@ if [ "$(id -u)" = "0" ]; then
         echo "         Point this mount at /DATA/AppData/blessforge/data instead." >&2
     fi
 
+    # setpriv changes the user, not the environment: HOME would stay /root,
+    # which uid 1000 cannot read -- and asyncpg looks there for client
+    # certificates on every connection, so the panel died on its first query
+    # with "Permission denied: '/root/.postgresql/postgresql.key'".
+    export HOME=/home/studio
+
     # The panel writes the bundled agent's config here (LOCAL_AGENT_CONFIG).
     if [ -n "${LOCAL_AGENT_CONFIG:-}" ]; then
         mkdir -p "$(dirname "$LOCAL_AGENT_CONFIG")" 2>/dev/null || true
