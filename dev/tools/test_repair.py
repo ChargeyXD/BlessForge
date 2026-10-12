@@ -402,6 +402,62 @@ async def main():
           "ClassMetadataNotFoundException" in (result["failure_line"] or ""),
           result["failure_line"])
 
+    # --- slow is not dead; silent after an error is hung -------------------------------------------
+    class Writes(MockEngine):
+        """A boot that logs a fatal-looking line and then either keeps
+        working (2BROKE4LORE: "Preparing spawn area") or goes quiet (BMC4)."""
+        script: list = []
+
+        async def power(self, server_id, action):
+            await super().power(server_id, action)
+            if action != "start":
+                return
+            self.stats[server_id].update(running=True, crashed=False)
+
+            async def feed():
+                lines = []
+                for item in self.script:
+                    await asyncio.sleep(item[0])
+                    lines.append(item[1])
+                    self._put(server_id, "logs", "latest.log",
+                              ("\n".join(lines) + "\n").encode())
+            asyncio.get_running_loop().create_task(feed())
+
+    old_quiet, old_hung = smoketest.FATAL_QUIET_S, smoketest.HUNG_AFTER_ERROR_S
+    smoketest.FATAL_QUIET_S, smoketest.HUNG_AFTER_ERROR_S = 8, 8
+    try:
+        slow = Writes(seed=False)
+        slow.script = [(0, "[main/INFO]: Starting"),
+                       (1, "[main/FATAL] [mixin/]: something it survives")] + [
+            (3, f"[Worker-Main-5/INFO]: Preparing spawn area: {p}%") for p in range(0, 100, 20)
+        ] + [(2, '[Server thread/INFO]: Done (61.2s)! For help, type "help"')]
+        engine.configure("mock", drivers={"local": slow})
+        sid = await engine.create_server(name="Slow", port=25703, memory_mb=4096,
+                                         mc_version="1.20.1", loader="forge")
+        await engine.update_server(sid, {"execution_command": "java -jar s.jar nogui"})
+        result = await smoketest.run(Job("t", "t"), sid, timeout=120)
+        check("a boot still logging after a fatal-looking line is not killed for it",
+              result["outcome"] == "ready", result["outcome"])
+
+        hung = Writes(seed=False)
+        hung.script = [(0, "[main/INFO]: Starting"),
+                       (1, "[main/ERROR] [net.minecraft.resources.RegistryDataLoader/]: "
+                           "Registry loading errors:"),
+                       (0, "Caused by: java.lang.IllegalStateException: Failed to load "
+                           "registries due to above errors")]
+        engine.configure("mock", drivers={"local": hung})
+        sid = await engine.create_server(name="Hung", port=25704, memory_mb=4096,
+                                         mc_version="1.20.1", loader="forge")
+        await engine.update_server(sid, {"execution_command": "java -jar s.jar nogui"})
+        t0 = time.time()
+        result = await smoketest.run(Job("t", "t"), sid, timeout=120)
+        check("a boot that goes quiet after an exception is called hung, not waited out",
+              result["outcome"] == "failed" and time.time() - t0 < 40
+              and "Failed to load registries" in (result["failure_line"] or ""),
+              (result["outcome"], result["failure_line"]))
+    finally:
+        smoketest.FATAL_QUIET_S, smoketest.HUNG_AFTER_ERROR_S = old_quiet, old_hung
+
     # --- the loop -------------------------------------------------------------------------------
     mock, sid = await server_with({
         "simplybows-forge-neoforge-0.1.4.jar": forge_jar("simplybows"),

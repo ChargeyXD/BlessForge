@@ -47,6 +47,13 @@ _FAILED = re.compile(
 )
 
 
+# A boot that stops logging after an exception has hung, not slowed down.
+FATAL_QUIET_S = 120
+HUNG_AFTER_ERROR_S = 300
+HUNG_SILENT_S = 900
+_ERROR_TAIL = re.compile(r"/(?:ERROR|FATAL)\]|^Caused by: |^\S*Exception: ", re.M)
+
+
 def _last_error(text: str) -> str | None:
     """The most telling line of a boot that died without a recognised failure
     line: its last "Caused by", else its last ERROR."""
@@ -88,6 +95,8 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
 
     outcome = "timeout"
     oom = False
+    last_signature: tuple = ()
+    last_growth = time.time()
     ready_after = None
     lines: list[str] = []
     failure_line: str | None = None
@@ -118,6 +127,13 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
                                      and lines[0] != previous_first):
                 base = 0
             text = "\n".join(lines[base:])
+            # When the log last moved. A busy boot keeps writing; a hung one
+            # stops. (Count and last line together: a capped read keeps the
+            # count still while the text moves on.)
+            signature = (len(lines), lines[-1] if lines else "")
+            if signature != last_signature:
+                last_signature, last_growth = signature, time.time()
+            silent = time.time() - last_growth
             elapsed = int(time.time() - started_at)
             job.set_step(f"Watching the boot ({elapsed}s)",
                          10 + 70 * min(elapsed / max(timeout, 1), 1.0))
@@ -163,12 +179,29 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             # A line is only a failed boot if the server then actually dies.
             # The pattern alone stopped healthy boots: a 1.12 pack logs FATAL
             # lines it survives, and was killed mid-load by this test.
+            # A fatal-looking line is fatal once the log has stopped for two
+            # minutes after it. Wall time alone killed 2BROKE4LORE while it
+            # was still "Preparing spawn area" on a slow box.
             if failure_line:
-                if failure_at and time.time() - failure_at > 120:
+                if failure_at and time.time() - failure_at > FATAL_QUIET_S and silent > FATAL_QUIET_S:
                     outcome = "failed"
-                    job.log_line("Still not up two minutes after that line -- "
+                    job.log_line("Nothing logged for two minutes after that line -- "
                                  "treating it as fatal.", "warn")
                     break
+            elif silent > HUNG_AFTER_ERROR_S and _ERROR_TAIL.search(
+                    "\n".join(lines[-60:])):
+                # Hung after an exception with no line in FML's own words:
+                # BMC4 sat on "Failed to load registries" for 29 minutes.
+                outcome = "failed"
+                failure_line = _last_error(text)
+                job.log_line(f"No output for {int(silent)}s after an error -- the boot "
+                             "has hung.", "warn")
+                break
+            elif silent > HUNG_SILENT_S:
+                outcome = "failed"
+                failure_line = _last_error(text) or "no output at all for 15 minutes"
+                job.log_line(f"No output for {int(silent)}s -- the boot has hung.", "warn")
+                break
         else:
             job.log_line(
                 f"No 'Done' and no failure within {timeout}s -- either this "
