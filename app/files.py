@@ -457,8 +457,11 @@ async def search(server_id: str, query: str, root: str = ".",
     if len(q) < 2:
         raise FileError("type at least two characters to search")
     root = guard_path(root)
+    # On the node, in one request. This walked the tree from here, one
+    # directory listing per request: a Fabric server's libraries/ alone is
+    # hundreds of folders, and a search took minutes and looked broken.
     try:
-        entries = await engine.walk(server_id, root, max_entries=8000)
+        entries = await engine.search_files(server_id, q, root, limit)
     except Exception as e:
         raise FileError(f"could not search {root}: {e}")
     hits = []

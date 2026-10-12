@@ -238,8 +238,11 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         return files.usage(folder(uuid), path)
 
     @app.get("/v1/servers/{uuid}/files/search")
-    async def search(uuid: str, q: str, path: str = "."):
-        return {"results": files.search(folder(uuid), q, path)}
+    async def search(uuid: str, q: str, path: str = ".", limit: int = 300):
+        # A thread: a walk of a big pack's folder must not hold up every
+        # other server's console on this node while it runs.
+        return {"results": await asyncio.to_thread(
+            files.search, folder(uuid), q, path, max(1, min(limit, 2000)))}
 
     # --- backups: WP-11 ------------------------------------------------------------
 

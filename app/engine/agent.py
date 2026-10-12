@@ -226,6 +226,12 @@ class AgentEngine:
                                params={"path": path})
         return out["entries"]
 
+    async def search_files(self, server_id: str, query: str, root: str,
+                           limit: int) -> list[dict]:
+        out = await self._call("GET", f"/v1/servers/{server_id}/files/search",
+                               params={"q": query, "path": root, "limit": limit})
+        return list(out.get("results") or [])[:limit]
+
     async def read_file(self, server_id: str, path: str) -> str:
         out = await self._call("GET", f"/v1/servers/{server_id}/files/content",
                                params={"path": path})

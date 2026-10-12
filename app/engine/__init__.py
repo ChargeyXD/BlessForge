@@ -30,7 +30,8 @@ __all__ = [
     "list_dir", "dir_exists", "read_file", "read_tail", "write_file", "delete_paths",
     "rename_path", "move_path", "create_entry", "ensure_dir", "upload_file",
     "upload_path", "extract", "download_file", "stream_file", "wait_for_path",
-    "walk", "console_lines", "send_command", "read_manifest", "write_manifest",
+    "walk", "search_files", "console_lines", "send_command", "read_manifest",
+    "write_manifest",
 ]
 
 _drivers: dict[str, ServerEngine] = {}
@@ -337,6 +338,19 @@ async def wait_for_path(server_id: str, rel_path: str, timeout: float,
         if loop.time() >= deadline:
             return False
         await asyncio.sleep(poll)
+
+
+async def search_files(server_id: str, query: str, root: str = ".",
+                       limit: int = 300) -> list[dict]:
+    """Entries under `root` whose name contains `query`. On the node in one
+    request where the driver can; walked from here otherwise."""
+    drv = await _driver(server_id)
+    own = getattr(drv, "search_files", None)
+    if own is not None:
+        return await own(server_id, query, root, limit)
+    q = query.lower()
+    return [e for e in await walk(server_id, root, max_entries=8000)
+            if q in e["name"].lower()][:limit]
 
 
 async def walk(server_id: str, root: str = ".", max_entries: int = 20000) -> list[dict]:

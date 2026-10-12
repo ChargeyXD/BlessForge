@@ -256,6 +256,16 @@ async def main():
         check("...and a path outside the folder is refused",
               r.status_code == 400 and not (TMP / "node" / "servers" / "outside.txt").exists())
 
+        # --- search runs on the node, in one request -----------------------------------------
+        deep = TMP / "node" / "servers" / sid / "libraries" / "a" / "b" / "c"
+        deep.mkdir(parents=True, exist_ok=True)
+        (deep / "needle-1.0.jar").write_bytes(b"x")
+        r = await c.get(f"/api/instances/{sid}/files/search", params={"q": "needle"})
+        hits = r.json().get("results") or [] if r.status_code == 200 else []
+        check("a file search finds a file deep in the tree, through the node's own search",
+              [h["path"] for h in hits] == ["libraries/a/b/c/needle-1.0.jar"]
+              and hits[0]["bytes"] == 1, r.text[:200])
+
         # --- a crash is noticed and recorded ------------------------------------------------
         await c.post(f"/api/instances/{sid}/command", json={"command": "crash"})
 
