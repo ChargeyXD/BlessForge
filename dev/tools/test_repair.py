@@ -327,6 +327,14 @@ async def main():
         loader="forge")
     check("...and with no client-side Groovy mod, nothing is disabled on a guess",
           actions == [] and any("gml-4.0.11-all.jar" in w for w in why), (actions, why))
+    actions, _ = await decide_for({
+        "gml-4.0.11-all.jar": forge_jar("gml"),
+        "eatinganimation-1.20.1-5.1.0.jar.disabled": groovy_jar("eatinganimation"),
+        "create-1.20.1-0.5.1.jar": forge_jar("create")}, GML_CRASH, loader="forge")
+    check("with its client mod already off and nothing else loading through it, the "
+          "crashing provider itself is disabled",
+          [(a["do"], a.get("file")) for a in actions]
+          == [("disable", "gml-4.0.11-all.jar")], actions)
 
     # --- a client mixin that never applied ---------------------------------------------------------
     actions, _ = await decide_for({

@@ -34,6 +34,7 @@ What it will and will not do:
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import posixpath
@@ -153,6 +154,23 @@ class Disk:
         info = await self.meta(file)
         return (info.get("side") == "client"
                 or info.get("side_inferred") == "client")
+
+    async def users_of(self, language: str, *, exclude: str | None = None) -> list[str]:
+        """Enabled jars that load through a language provider or depend on it.
+        Reads every enabled jar's metadata (once; it is remembered), eight at
+        a time -- only ever asked when a provider is about to be blamed."""
+        gate = asyncio.Semaphore(8)
+
+        async def one(jar: str) -> str | None:
+            async with gate:
+                meta = await self.meta(jar)
+            uses = (meta.get("language") == language
+                    or any(d.get("id") == language and d.get("mandatory", True)
+                           for d in meta.get("dependencies") or []))
+            return jar if uses else None
+
+        found = await asyncio.gather(*(one(j) for j in self.enabled if j != exclude))
+        return [j for j in found if j]
 
     async def find(self, mod_id: str, pool: list[str]) -> str | None:
         """The jar in `pool` that is mod `mod_id`: by name first, then metadata."""
@@ -372,7 +390,25 @@ async def decide(server_id: str, text: str, *, mc: str, loader: str, disk: Disk,
                   "why": f"{failure['jar']} crashed loading it on a dedicated server "
                          f"(the client-only class {failure['class']}), and it is a "
                          "client-side mod"})
-        if not suspects:
+        provider = next((j for j in disk.enabled
+                         if _jar_key(j) == _jar_key(failure["jar"])), None)
+        if not actions and provider:
+            # No client mod left to blame. Beyond Depth: with Eating Animation
+            # off, GML still died loading the client library it bundles. If
+            # nothing enabled loads through the provider any more, it is
+            # dead weight that stops the boot.
+            users = await disk.users_of(lang, exclude=provider)
+            if not users:
+                plan({"do": "disable", "file": provider,
+                      "why": f"it crashes on a dedicated server (the client-only class "
+                             f"{failure['class']}) and no enabled mod loads through it "
+                             "any more"})
+            else:
+                unresolved.append(
+                    f"{failure['jar']} crashes on the server (the client-only class "
+                    f"{failure['class']}), and these mods load through it: "
+                    + ", ".join(users[:6]))
+        elif not suspects:
             unresolved.append(f"{failure['jar']} crashed loading a mod on the server "
                               f"(the client-only class {failure['class']}); no client-side "
                               "mod that loads through it was found")
