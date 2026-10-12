@@ -19,7 +19,7 @@ import posixpath
 import re
 from collections import defaultdict
 
-from app import engine, curseforge, jarmeta, modrinth, packs
+from app import engine, curseforge, jarmeta, loaders, modrinth
 from app import mods as modmgr
 from app.jobs import Job
 
@@ -447,9 +447,17 @@ async def quick_check(server_id: str) -> dict:
             fix={"action": "accept_eula"}, category="config",
         ))
 
-    # Mods present?
+    # Which folder this server's loader reads, if any. Vanilla reads none and
+    # the Paper family reads plugins/ -- "No mods directory" on either was a
+    # false alarm on every health check.
+    family = loaders.family_of(manifest.get("loader") or "")
+    if not family:
+        family = ("paper" if "plugins" in names and "mods" not in names
+                  else "forge" if "mods" in names else "vanilla")
+    mod_dir = None if family == "vanilla" else loaders.mod_directory(family)
+
     mod_files: list[str] = []
-    if "mods" in names:
+    if mod_dir == "mods" and "mods" in names:
         try:
             entries = await engine.list_dir(server_id, "mods")
             mod_files = [
@@ -457,31 +465,30 @@ async def quick_check(server_id: str) -> dict:
                 if n != "root_path" and isinstance(m, dict) and not m.get("dir")
                 and n.lower().endswith((".jar", ".jar.disabled"))
             ]
-            if not mod_files:
+            pack_source = (manifest.get("pack") or {}).get("source")
+            if not mod_files and pack_source not in (None, "empty"):
                 findings.append(_finding(
                     "warning", "No mods installed",
-                    "The mods directory is empty.", category="mods",
+                    "This server was installed from a modpack, but its mods "
+                    "folder is empty.", category="mods",
                 ))
         except engine.EngineError:
             pass
-    else:
+    elif mod_dir == "mods" and (manifest.get("pack") or {}).get("source") not in (
+            None, "empty"):
         findings.append(_finding(
-            "warning", "No mods directory",
-            "This instance has no mods/ folder -- expected for vanilla, "
-            "a problem for a modpack.", category="mods",
+            "warning", "No mods folder",
+            "This server was installed from a modpack, but it has no mods/ "
+            "folder at all.", category="mods",
         ))
 
-    # Client-only jars sitting in mods/
-    client_only = [f for f in mod_files
-                   if not f.endswith(".disabled") and packs.is_client_only_jar(f)]
-    if client_only:
-        findings.append(_finding(
-            "error", f"{len(client_only)} client-only mod(s) present",
-            "These mods are client-side and commonly crash a dedicated server: "
-            + ", ".join(client_only[:6]) + ("..." if len(client_only) > 6 else ""),
-            fix={"action": "disable_mods", "files": client_only},
-            category="mods",
-        ))
+    # Client-only mods are NOT flagged here any more. A jar's name or its
+    # declared side is a guess, and on a healthy server that guess was a
+    # standing "error" on every health check -- including for the client
+    # mods a server pack ships because the server needs them. A client mod
+    # is reported only when a crash actually names it (analyse_logs, and the
+    # boot repair in app/repair.py); the Client-only scan stays available on
+    # demand.
 
     # RAM vs what the pack asked for
     try:

@@ -121,6 +121,14 @@ def _ext(name: str) -> str:
     return posixpath.splitext(name)[1].lower()
 
 
+def _extractable(name: str) -> bool:
+    """Whether an upload should be offered for extraction: a .zip, and only
+    that. A .jar is a zip too, but it is a mod, not a bundle -- offering to
+    unpack it led to "extract failed" on every jar uploaded, because extract
+    rightly refuses anything that is not a .zip."""
+    return _ext(name) == ".zip"
+
+
 def classify(name: str, is_dir: bool) -> str:
     """One word for what an entry is, so the UI can pick an icon."""
     if is_dir:
@@ -368,7 +376,7 @@ async def upload(server_id: str, folder: str, filename: str, data: bytes
         raise FileError(f"upload failed: {e}")
     rel = filename if folder == "." else f"{folder}/{filename}"
     return {"path": rel, "bytes": len(data), "uploaded": True,
-            "archive": _ext(filename) in ARCHIVE_EXT}
+            "archive": _extractable(filename)}
 
 
 def download(server_id: str, path: str) -> tuple[Any, str]:
@@ -424,7 +432,7 @@ async def upload_stream(server_id: str, folder: str, filename: str,
 
     rel = filename if folder == "." else f"{folder}/{filename}"
     return {"path": rel, "bytes": size, "uploaded": True,
-            "archive": _ext(filename) in ARCHIVE_EXT}
+            "archive": _extractable(filename)}
 
 
 async def extract(server_id: str, path: str) -> dict:

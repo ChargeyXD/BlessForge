@@ -83,6 +83,8 @@ export async function render(ctx) {
     prefs.set(`files.path.${ctx.id}`, path);
     selected.clear();
     searching = null;
+    searchSeq += 1;                   // drop any search still in flight
+    searchBox.value = '';
     if (!quiet) mount(mainHost, loadingFox('Reading the directory'));
     try {
       view = await api.get(`/api/instances/${ctx.id}/files` + qs({ path }));
@@ -108,10 +110,50 @@ export async function render(ctx) {
     return h('div.crumbline', { 'aria-label': 'Path' }, ...out);
   }
 
+  /* The search box is made ONCE and moved between paints, never rebuilt.
+     It used to be a fresh <input> in every paint() -- and a search result
+     triggers a paint -- so a pause after the first character repainted the
+     bar with an empty box: the query "cancelled itself" after one letter,
+     and focus went with it. The same element keeps its text; focus and the
+     caret are put back after the move, and a slow reply to an older query
+     is dropped rather than painted over a newer one. */
+  let searchSeq = 0;
+  const searchBox = h('input.inp', {
+    type: 'search', placeholder: 'Find a file…', 'data-search': '1',
+    'aria-label': 'Search files under this folder',
+    style: { maxWidth: '210px', minHeight: '36px' },
+    oninput: debounce(async (e) => {
+      const q = e.target.value.trim();
+      const seq = ++searchSeq;
+      if (q.length < 2) {
+        if (searching) { searching = null; paint(); }
+        return;
+      }
+      let found = null;
+      try {
+        found = await api.get(`/api/instances/${ctx.id}/files/search`
+          + qs({ q, root: path }));
+      } catch (err) { toastError(err); }
+      if (seq !== searchSeq) return;          // a newer query is in flight
+      searching = found;
+      paint();
+    }, 320),
+  });
+
   function paint() {
     const rows = searching ? searching.results : (view?.entries || []);
     const isSearch = !!searching;
+    const typing = document.activeElement === searchBox;
+    const caret = typing ? [searchBox.selectionStart, searchBox.selectionEnd] : null;
 
+    mountMain(rows, isSearch);
+    if (typing) {
+      searchBox.focus();
+      try { searchBox.setSelectionRange(...caret); } catch { /* type=search */ }
+    }
+  }
+
+  function mountMain(rows, isSearch) {
     mount(mainHost,
       h('div.fm-bar',
         view?.parent !== null && view?.parent !== undefined && !isSearch
@@ -120,20 +162,7 @@ export async function render(ctx) {
           }, icon('chevronLeft', 15))
           : null,
         crumbs(),
-        h('input.inp', {
-          type: 'search', placeholder: 'Find a file…', 'data-search': '1',
-          'aria-label': 'Search files under this folder',
-          style: { maxWidth: '210px', minHeight: '36px' },
-          oninput: debounce(async (e) => {
-            const q = e.target.value.trim();
-            if (q.length < 2) { searching = null; paint(); return; }
-            try {
-              searching = await api.get(`/api/instances/${ctx.id}/files/search`
-                + qs({ q, root: path }));
-            } catch (err) { toastError(err); searching = null; }
-            paint();
-          }, 320),
-        }),
+        searchBox,
         h('button.btn.icon.sm.ghost', {
           'aria-label': 'Refresh', title: 'Refresh',
           onclick: () => open(path),
@@ -171,7 +200,9 @@ export async function render(ctx) {
             + (searching.truncated ? ' (showing the first 300)' : '')),
           h('div', { style: { flex: 1 } }),
           h('button.btn.sm.ghost', {
-            onclick: () => { searching = null; paint(); },
+            onclick: () => {
+              searching = null; searchSeq += 1; searchBox.value = ''; paint();
+            },
           }, h('span', 'Clear search')))
         : null,
 

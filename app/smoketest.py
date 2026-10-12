@@ -67,15 +67,19 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
     # so a previous boot's failure sits in it and would be read as this one's;
     # everything from here on is ours.
     try:
-        base = len(await engine.console_lines(server_id, from_file=True))
+        previous = await engine.console_lines(server_id, from_file=True)
     except Exception:
-        base = 0
+        previous = []
+    base = len(previous)
+    previous_first = previous[0] if previous else None
     started_at = time.time()
     await engine.power(server_id, "start")
 
     outcome = "timeout"
     ready_after = None
     lines: list[str] = []
+    failure_line: str | None = None
+    failure_at: float | None = None
     job.set_step("Watching the boot", 10)
 
     try:
@@ -96,7 +100,10 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             # 400-line window within one 5-second poll, so a server that had
             # booted was watched for the full five minutes and called a
             # timeout.
-            if len(lines) < base:      # buffer rotated under us
+            # A start rotates latest.log, so a different first line means a
+            # new file: all of it is this run's, however long it already is.
+            if len(lines) < base or (lines and previous_first is not None
+                                     and lines[0] != previous_first):
                 base = 0
             text = "\n".join(lines[base:])
             elapsed = int(time.time() - started_at)
@@ -106,12 +113,37 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
                 outcome = "ready"
                 ready_after = elapsed
                 job.log_line(f"Server reached 'Done' after {elapsed}s")
+                if failure_line:
+                    job.log_line("An earlier line looked fatal but was not -- the "
+                                 f"server booted past it: {failure_line[:160]}")
                 break
-            if _FAILED.search(text):
-                outcome = "failed"
-                job.log_line(f"The loader reported a failure after {elapsed}s",
-                             "warn")
-                break
+            m = _FAILED.search(text)
+            if m and failure_line is None:
+                start = text.rfind("\n", 0, m.start()) + 1
+                end = text.find("\n", m.end())
+                failure_line = text[start: end if end >= 0 else None].strip()
+                failure_at = time.time()
+                job.log_line(f"A failure-looking line after {elapsed}s: "
+                             f"{failure_line[:200]}", "warn")
+            # A line is only a failed boot if the server then actually dies.
+            # The pattern alone stopped healthy boots: a 1.12 pack logs FATAL
+            # lines it survives, and was killed mid-load by this test.
+            if failure_line:
+                running = True
+                try:
+                    stats = await engine.get_stats(server_id)
+                    running = bool(stats.get("running")) and not stats.get("crashed")
+                except Exception:
+                    pass
+                if not running:
+                    outcome = "failed"
+                    job.log_line(f"The server exited after {elapsed}s", "warn")
+                    break
+                if failure_at and time.time() - failure_at > 120:
+                    outcome = "failed"
+                    job.log_line("Still not up two minutes after that line -- "
+                                 "treating it as fatal.", "warn")
+                    break
         else:
             job.log_line(
                 f"No 'Done' and no failure within {timeout}s -- either this "
@@ -146,6 +178,7 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
         "seconds": ready_after if ready_after is not None
         else int(time.time() - started_at),
         "timeout": timeout,
+        "failure_line": failure_line,
         "findings": findings,
         "log_tail": "\n".join(lines[-200:]),
         "has_logs": analysis.get("has_logs", False),
