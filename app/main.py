@@ -889,6 +889,10 @@ def _dedupe_findings(findings: list[dict]) -> list[dict]:
     return out
 
 
+_MISSING_LIB_WHY = re.compile(
+    r"requires .*(?:not installed|missing)|is not installed|which is missing", re.I)
+
+
 @app.get("/api/instances/{server_id}/diagnose")
 async def diagnose(server_id: str) -> dict:
     """Everything three passes can say about why an instance misbehaves.
@@ -944,7 +948,11 @@ async def diagnose(server_id: str) -> dict:
                            "what": "which jars the crash report blames"})
             if review.get("culprits"):
                 top = review["culprits"][:4]
-                confident = [c["file"] for c in top if c["confidence"] != "low"]
+                # A mod that failed only because a library it needs is missing
+                # is not the culprit -- disabling it would throw away a working
+                # mod. The "Missing dependency" finding offers the real fix.
+                confident = [c["file"] for c in top if c["confidence"] != "low"
+                             and not _MISSING_LIB_WHY.search(c.get("why") or "")]
                 result["findings"].insert(0, {
                     "severity": "critical",
                     "category": "mods",

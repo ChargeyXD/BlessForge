@@ -63,6 +63,11 @@ export async function render(ctx) {
           icon('refresh', 13), h('span', 'Re-check')),
         h('button.btn.sm.ghost', { onclick: deepScan },
           icon('layers', 13), h('span', 'Deep scan')),
+        h('button.btn.sm.ghost', {
+          onclick: bootAndRepair,
+          title: 'Boot the server, fix what that boot proves broken, and '
+            + 'repeat until it is up',
+        }, icon('wrench', 13), h('span', 'Boot and repair')),
         ai?.available
           ? h('button.btn.sm.primary', { onclick: askAI },
             hl(), icon('flask', 13), h('span', 'Ask the assistant'))
@@ -105,6 +110,7 @@ export async function render(ctx) {
     if (!findings.length) {
       return frag(
         passReport(),
+        firstBootCard(),
         empty('parrot-vibing.gif',
           diag.complete === false
             ? 'Nothing found — but not everything ran'
@@ -123,6 +129,7 @@ export async function render(ctx) {
     }
     return frag(
       passReport(),
+      firstBootCard(),
       h('div.chiprow', { style: { marginBottom: '14px' } },
         crit.length ? pill(`${crit.length} critical`, 'bad') : null,
         warn.length ? pill(`${warn.length} warnings`, 'warn') : null,
@@ -173,6 +180,7 @@ export async function render(ctx) {
       set_ram: ['Fix the heap size', 'sliders'],
       disable_mods: [`Disable ${(fix.files || []).length} mod(s)`, 'minus'],
       fix_versions: ['Find compatible versions', 'layers'],
+      install_dependency: [`Bring back ${fix.mod_id || 'the dependency'}`, 'download'],
       search_dependency: ['Find the missing dependency', 'search'],
     };
     const [label, ico] = labels[fix.action] || [fix.action, 'wrench'];
@@ -206,6 +214,14 @@ export async function render(ctx) {
         await api.post(`/api/instances/${ctx.id}/mods/bulk-toggle`,
           { files, enabled: false });
         toast(`${files.length} disabled.`, 'ok');
+      } else if (fix.action === 'install_dependency') {
+        // Re-enables it if a disabled jar provides it, otherwise installs a
+        // build for this version: CurseForge first, Modrinth second.
+        await runAwait(`/api/instances/${ctx.id}/fix/dependency`,
+          { mod_id: fix.mod_id, required_by: fix.required_by },
+          { title: `Bring back ${fix.mod_id}` });
+        toast(`${fix.mod_id} is back. Start the server, or Boot and repair `
+          + 'to check the rest.', 'ok', { timeout: 8000 });
       } else if (fix.action === 'fix_versions') {
         const r = await api.post(`/api/instances/${ctx.id}/fix/versions`,
           { files: fix.files || [] });
@@ -248,6 +264,85 @@ export async function render(ctx) {
       footer: h('button.btn.ghost', { onclick: () => close() },
         h('span', 'Close')),
     });
+  }
+
+  /* --- the first boot, and boot-and-repair --------------------- */
+
+  /* What the boot at the end of the install found and fixed. Every repair
+     says why, and the ones that disabled or enabled a jar can be undone in
+     one click -- a repair the operator cannot reverse is one they cannot
+     trust. */
+  function firstBootCard() {
+    const check = diag.boot_check;
+    const repairs = diag.repairs || [];
+    if (!check && !repairs.length) return null;
+    const ok = check?.outcome === 'ready';
+    const tone = ok ? 'ok' : check?.outcome === 'timeout' ? 'warn' : 'bad';
+    return h(`div.card.finding.sev-${ok ? 'info' : 'critical'}`,
+      { style: { marginBottom: '14px' } },
+      h('header',
+        pill(ok ? 'booted' : (check?.outcome || 'repaired'), tone),
+        h('h3', { style: { flex: 1, minWidth: 0 } },
+          ok ? `First boot: up${check.rounds > 1 ? ` on attempt ${check.rounds}` : ''}`
+            : 'First boot did not come up'),
+        check?.seconds ? pill(`${check.seconds}s`, 'ghost') : null),
+      !ok && check?.why ? h('p.wrapany', check.why) : null,
+      repairs.length
+        ? h('div.modlist', { style: { marginTop: '8px' } },
+          ...repairs.map((r) => h('div.modrow',
+            h('div.who',
+              h('div.nm', `${r.do === 'disable' ? 'Disabled'
+                : r.do === 'enable' ? 'Re-enabled'
+                  : r.do === 'install' ? 'Installed'
+                    : r.do === 'set_java' ? `Java ${r.major}` : r.do} `
+                + `${r.file || r.name || ''}`),
+              h('div.fn', r.why),
+              r.last_resort
+                ? h('div.tags', pill('last resort', 'warn',
+                  'Its required library could not be downloaded'))
+                : null),
+            h('div.acts',
+              (r.do === 'disable' || r.do === 'enable') && r.file
+                ? h('button.btn.xs.ghost', {
+                  onclick: () => undoRepair(r),
+                  title: 'Put this jar back the way the pack shipped it',
+                }, icon('refresh', 12), h('span', 'Undo'))
+                : null))))
+        : null);
+  }
+
+  async function undoRepair(r) {
+    const file = r.do === 'disable' ? `${r.file}.disabled` : r.file;
+    const enable = r.do === 'disable';
+    try {
+      await api.post(`/api/instances/${ctx.id}/mods/bulk-toggle`,
+        { files: [file.replace(/\.disabled\.disabled$/, '.disabled')], enabled: enable });
+      toast(`${r.file} is ${enable ? 'enabled' : 'disabled'} again.`, 'ok');
+      await load(true);
+    } catch (e) { toastError(e); }
+  }
+
+  async function bootAndRepair() {
+    const ok = await confirmDialog({
+      title: 'Boot and repair?',
+      message: 'The server is started and watched. If it fails, BlessForge '
+        + 'applies only the fixes the crash proves -- a missing library is '
+        + 'brought back, a client-side mod the crash names is disabled, the '
+        + 'wrong Java is swapped -- and boots again, until it is up or there '
+        + 'is nothing more it can prove. It is stopped again afterwards.',
+      confirmLabel: 'Boot and repair',
+    });
+    if (!ok) return;
+    try {
+      const r = (await runAwait(`/api/instances/${ctx.id}/repair`, {},
+        { title: 'Boot and repair' })) || {};
+      toast(r.outcome === 'ready'
+        ? `Up after ${r.rounds} boot(s)${(r.repairs || []).length
+          ? `, ${r.repairs.length} repair(s)` : ''}.`
+        : `Not up: ${r.why || r.outcome}`, r.outcome === 'ready' ? 'ok' : 'warn',
+      { timeout: 9000 });
+    } catch (e) { toastError(e); }
+    await load(true);
   }
 
   /* --- client-only scan ---------------------------------------- */

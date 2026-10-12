@@ -45,21 +45,6 @@ from app.jobs import Job
 MAX_ROUNDS = 8
 MOD_DIR = "mods"
 
-# Forge 1.20+ / NeoForge, in the loader's own per-mod failure message:
-#   Mod simplybows requires simplytooltips 0 or above
-#   Currently, simplytooltips is not installed
-_FORGE_REQUIRES = re.compile(
-    r"Mod ([\w\-.]+) requires ([\w\-.]+) (\S+) or above\s*(?:\n\s*)?"
-    r"Currently, \2 is (?:not installed|(\S+))", re.I)
-# Fabric:
-#   Mod 'Colorwheel' (colorwheel) 1.3.0 requires version 1.7.0 or later of iris, which is missing!
-#   Mod 'Forge Config Screens' (forgeconfigscreens) 8.0.2 requires any version of modmenu, which is missing!
-_FABRIC_MISSING = re.compile(
-    r"Mod '[^']*' \(([\w\-.]+)\) \S+ requires (?:version (\S+) or later of|any version of|"
-    r"version (\S+) of|any (?:\S+ )?version of) ([\w\-.]+), which is missing!", re.I)
-# Not libraries anyone can install into mods/.
-_PLATFORM_IDS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-loader",
-                 "quilt_loader", "fml", "javafml", "lowcodefml", "mixinextras"}
 # A crash that mentions these was a client-side class on a dedicated server.
 _CLIENT_HINT = re.compile(
     r"net[/.]minecraft[/.]client|invalid dist DEDICATED_SERVER|in environment type SERVER"
@@ -71,23 +56,7 @@ def _norm(text: str) -> str:
 
 
 def missing_dependencies(text: str) -> list[dict]:
-    """Every "X requires Y, which is not there" the loader wrote."""
-    out: dict[tuple, dict] = {}
-    for by, dep, low, actual in _FORGE_REQUIRES.findall(text):
-        out[(dep.lower(), by.lower())] = {"dep": dep, "by": by, "min": low,
-                                          "actual": actual or None}
-    for by, low, exact, dep in _FABRIC_MISSING.findall(text):
-        out[(dep.lower(), by.lower())] = {"dep": dep, "by": by, "min": low or exact or None,
-                                          "actual": None}
-    for f in diagnostics._scan_missing_deps(text):
-        fix = f.get("fix") or {}
-        dep, by = fix.get("mod_id"), fix.get("required_by")
-        if dep and by:
-            m = re.match(r"[\[(]\s*([^,\])]*)", fix.get("version_range") or "")
-            out.setdefault((dep.lower(), by.lower()), {
-                "dep": dep, "by": by, "min": (m.group(1).strip() if m else None) or None,
-                "actual": None})
-    return [m for m in out.values() if m["dep"].lower() not in _PLATFORM_IDS]
+    return diagnostics.missing_dependencies(text)
 
 
 # --- what is on disk ---------------------------------------------------------

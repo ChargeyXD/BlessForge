@@ -55,27 +55,60 @@ _MISSING_DEP_LINE = re.compile(
 )
 
 
-def _scan_missing_deps(text: str) -> list[dict]:
+# Forge 1.20+ / NeoForge, in the loader's own per-mod failure message:
+#   Mod simplybows requires simplytooltips 0 or above
+#   Currently, simplytooltips is not installed
+_FORGE_REQUIRES = re.compile(
+    r"Mod ([\w\-.]+) requires ([\w\-.]+) (\S+) or above\s*(?:\n\s*)?"
+    r"Currently, \2 is (?:not installed|(\S+))", re.I)
+# Fabric:
+#   Mod 'Colorwheel' (colorwheel) 1.3.0 requires version 1.7.0 or later of iris, which is missing!
+#   Mod 'Forge Config Screens' (forgeconfigscreens) 8.0.2 requires any version of modmenu, which is missing!
+_FABRIC_MISSING = re.compile(
+    r"Mod '[^']*' \(([\w\-.]+)\) \S+ requires (?:version (\S+) or later of|any version of|"
+    r"version (\S+) of|any (?:\S+ )?version of) ([\w\-.]+), which is missing!", re.I)
+# Not libraries anyone can install into mods/.
+_PLATFORM_IDS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-loader",
+                 "quilt_loader", "fml", "javafml", "lowcodefml", "mixinextras"}
+
+
+def missing_dependencies(text: str) -> list[dict]:
+    """Every "X requires Y, which is not there" the loader wrote, in any of
+    the three shapes Forge, NeoForge and Fabric use."""
+    out: dict[tuple, dict] = {}
+    for by, dep, low, actual in _FORGE_REQUIRES.findall(text or ""):
+        out[(dep.lower(), by.lower())] = {"dep": dep, "by": by, "min": low,
+                                          "actual": actual or None}
+    for by, low, exact, dep in _FABRIC_MISSING.findall(text or ""):
+        out[(dep.lower(), by.lower())] = {"dep": dep, "by": by,
+                                          "min": low or exact or None, "actual": None}
+    for block in _MISSING_DEP_BLOCK.findall(text or ""):
+        for dep, by, rng, actual in _MISSING_DEP_LINE.findall(block):
+            m = re.match(r"[\[(]\s*([^,\])]*)", rng or "")
+            out.setdefault((dep.lower(), by.lower()), {
+                "dep": dep, "by": by, "min": (m.group(1).strip() if m else None) or None,
+                "actual": None if actual in ("", "[MISSING]", "null") else actual})
+    return [m for m in out.values() if m["dep"].lower() not in _PLATFORM_IDS]
+
+
+def _scan_missing_libraries(text: str) -> list[dict]:
+    """One finding per missing library, whichever loader reported it --
+    with a fix that brings it back rather than one that removes the mod
+    that needs it."""
     findings = []
-    for block in _MISSING_DEP_BLOCK.findall(text):
-        for mod_id, requested_by, rng, actual in _MISSING_DEP_LINE.findall(block):
-            missing = actual in ("", "[MISSING]", "null")
-            findings.append(
-                _finding(
-                    "critical",
-                    f"Missing dependency: {mod_id}",
-                    f"'{requested_by}' requires '{mod_id}' {rng}"
-                    + ("" if missing else f" but found {actual}"),
-                    fix={
-                        "action": "install_dependency",
-                        "mod_id": mod_id,
-                        "required_by": requested_by,
-                        "version_range": rng,
-                    },
-                    evidence=block.strip(),
-                    category="dependency",
-                )
-            )
+    for miss in missing_dependencies(text):
+        need = f" {miss['min']} or newer" if miss.get("min") not in (None, "", "0", "*") else ""
+        findings.append(_finding(
+            "critical", f"Missing dependency: {miss['dep']}",
+            f"'{miss['by']}' needs '{miss['dep']}'{need}, and it is not installed"
+            + (f" (found {miss['actual']})" if miss.get("actual") else "") + ". "
+            "BlessForge can re-enable it if it is sitting disabled, or install a "
+            "build for this version -- from CurseForge, or Modrinth when "
+            "CurseForge cannot provide it.",
+            fix={"action": "install_dependency", "mod_id": miss["dep"],
+                 "required_by": miss["by"], "version_range": miss.get("min") or ""},
+            category="dependency",
+        ))
     return findings
 
 
@@ -336,7 +369,7 @@ def _scan_java_feature(text: str) -> list[dict]:
 
 def scan_text(text: str) -> list[dict]:
     """Run every pattern over a log/crash report."""
-    findings = (_scan_missing_deps(text) + _scan_wrong_environment(text)
+    findings = (_scan_missing_libraries(text) + _scan_wrong_environment(text)
                 + _scan_missing_client_class(text) + _scan_java_feature(text))
     for pattern, builder in _PATTERNS:
         m = pattern.search(text)
@@ -571,6 +604,9 @@ async def quick_check(server_id: str) -> dict:
         "pack": manifest.get("pack"),
         "minecraft": manifest.get("minecraft"),
         "loader": manifest.get("loader"),
+        # What the first boot after install found and fixed (app/repair.py).
+        "boot_check": manifest.get("boot_check"),
+        "repairs": manifest.get("repairs") or [],
     }
 
 
