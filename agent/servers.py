@@ -33,7 +33,7 @@ from typing import Any
 
 import httpx
 
-from agent import files
+from agent import addons, files
 from agent.config import AgentConfig
 from agent.containers import RuntimeError_, argv_of, limits_of
 
@@ -263,8 +263,17 @@ class Supervisor:
         async def on_exit(code: int | None, info: dict | None = None) -> None:
             await self._exited(srv, code, info or {})
 
+        # The ports its add-ons open (Geyser, Voice Chat, a web map), read
+        # from the folder at every start so a mod added since is picked up.
+        game_port = int(srv.spec["port"])
+        extra = addons.detect(self.folder(srv.uuid), game_port)
+        for a in extra:
+            srv.console.feed(f"[BlessForge] Publishing {a['what']} on port "
+                             f"{a['port']}/{a['proto']} "
+                             f"({a['from'] or 'its default; it has not run yet'})")
         try:
-            srv.running = await self.runtime.start(srv.spec, self.folder(srv.uuid),
+            srv.running = await self.runtime.start({**srv.spec, "addon_ports": extra},
+                                                   self.folder(srv.uuid),
                                                    on_output, on_exit)
         except Exception:
             srv.state = "offline"

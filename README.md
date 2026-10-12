@@ -509,6 +509,13 @@ The same tab also carries:
   (unless you override), and warns when the port falls outside
   `GAME_PORT_RANGE`, the range a node's edge forwards, where the server would
   run but be unreachable.
+- **Add-on ports, without asking.** Each start, the node reads the server's
+  folder for add-ons that open a port of their own — Geyser (Bedrock
+  players), Simple Voice Chat, Plasmo Voice, Dynmap, BlueMap, squaremap, a
+  separate query port — and publishes those next to the game port, saying so
+  in the console. One that has not run yet gets its default port. If
+  something else on the machine already holds one, the server starts without
+  it and the console says which file to change. RCON is never published.
 - **The whole of `server.properties`**, every key editable, grouped and typed:
   toggles for booleans, dropdowns for enums, number fields for integers, with
   a short note on what each one does. Keys your mods add are shown too rather

@@ -20,6 +20,8 @@ shut:
                  rule broken one at a time
   9. config      the unisolated process runtime is refused unless asked for
  10. disk        the watchdog stops a server that fills its disk
+ 11. add-ons     the ports Geyser, Voice Chat and web maps open are found
+                 and published -- and a config linked out is not followed
 
     python dev/tools/test_agent_security.py           # everything above
     python dev/tools/test_agent_security.py --live    # also the Docker tier
@@ -65,11 +67,11 @@ import jwt  # noqa: E402
 from cryptography.hazmat.primitives import serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 
-from agent import auth, files  # noqa: E402
+from agent import addons, auth, files  # noqa: E402
 from agent.config import AgentConfig, load  # noqa: E402
 from agent.containers import (NATIVE_TMP, ProcessRuntime, RuntimeError_,  # noqa: E402
                               UnsafeSpec, assert_safe, container_spec,
-                              fresh_native_tmp, installer_spec)
+                              fresh_native_tmp, installer_spec, port_in_use)
 
 LIVE = "--live" in sys.argv
 TMP = pathlib.Path(tempfile.mkdtemp(prefix="bf-agent-sec-"))
@@ -730,6 +732,17 @@ def test_containers():
          ["25565/tcp"][0].__setitem__("HostIp", "")),
         ("a port on 0.0.0.0", lambda s: s["HostConfig"]["PortBindings"]
          ["25565/udp"][0].__setitem__("HostIp", "0.0.0.0")),
+        ("a game port published as another host port", lambda s: s["HostConfig"]
+         ["PortBindings"]["25565/tcp"][0].__setitem__("HostPort", "80")),
+        ("a port Docker may pick itself", lambda s: s["HostConfig"]
+         ["PortBindings"]["25565/tcp"][0].__setitem__("HostPort", "")),
+        ("a privileged port", lambda s: s["HostConfig"]["PortBindings"].__setitem__(
+            "22/tcp", [{"HostIp": "10.8.0.2", "HostPort": "22"}])),
+        ("an unknown protocol", lambda s: s["HostConfig"]["PortBindings"].__setitem__(
+            "25570/sctp", [{"HostIp": "10.8.0.2", "HostPort": "25570"}])),
+        ("a whole range of ports", lambda s: s["HostConfig"]["PortBindings"].update(
+            {f"{p}/tcp": [{"HostIp": "10.8.0.2", "HostPort": str(p)}]
+             for p in range(30000, 30020)})),
         ("another tmpfs", hcset("Tmpfs", {"/tmp": "rw", "/run": "rw"})),
         ("a Docker restart policy", hcset("RestartPolicy", {"Name": "always"})),
     ]
@@ -754,6 +767,87 @@ def test_containers():
         except UnsafeSpec:
             ok = True
         check(f"assert_safe refuses {label}", ok)
+
+
+def test_addons():
+    section("11. add-on ports: found, published, and nothing else")
+    cfg = docker_cfg()
+    folder = cfg.server_dir(A_ID)
+    server = {"uuid": A_ID, "port": 25565, "java_major": 21, "memory_mb": 2048,
+              "execution_command": "java -jar server.jar nogui",
+              "addon_ports": [{"port": 24454, "proto": "udp", "what": "Voice"},
+                              {"port": 8123, "proto": "tcp", "what": "Dynmap"},
+                              {"port": 25565, "proto": "udp", "what": "query"}]}
+    spec = container_spec(server, cfg, folder)
+    pb = spec["HostConfig"]["PortBindings"]
+    try:
+        assert_safe(spec, cfg, folder)
+        ok = True
+    except UnsafeSpec as e:
+        ok = str(e)
+    check("add-on ports are published next to the game port, and pass the check",
+          ok is True and sorted(pb) == ["24454/udp", "25565/tcp", "25565/udp", "8123/tcp"]
+          and sorted(spec["ExposedPorts"]) == sorted(pb), (ok, sorted(pb)))
+    check("...each on the game address, on the same number on both sides",
+          all(b == [{"HostIp": "10.8.0.2", "HostPort": k.split("/")[0]}]
+              for k, b in pb.items()))
+
+    box = TMP / "addons"
+    (box / "mods").mkdir(parents=True)
+    (box / "config" / "voicechat").mkdir(parents=True)
+    (box / "config" / "Geyser-NeoForge").mkdir(parents=True)
+    (box / "config" / "voicechat" / "voicechat-server.properties").write_text(
+        "# Simple Voice Chat server config\nport=24460\nbind_address=\n")
+    (box / "config" / "Geyser-NeoForge" / "config.yml").write_text(
+        "bedrock:\n  address: 0.0.0.0\n  # The port\n  port: 19140\n"
+        "  clone-remote-port: false\nremote:\n  port: 25565\n")
+    (box / "mods" / "Dynmap-3.7-beta-6-neoforge-1.21.jar").write_bytes(b"jar")
+    (box / "mods" / "bluemap-5.4-neoforge.jar").write_bytes(b"jar")
+    (box / "dynmap").mkdir()
+    (box / "dynmap" / "configuration.txt").write_text(
+        "deftemplatesuffix: lowres\nwebserver-port: 8124\n")
+    (box / "server.properties").write_text(
+        "server-port=25565\nenable-query=true\nquery.port=25570\n"
+        "enable-rcon=true\nrcon.port=25575\n")
+    found = {(a["port"], a["proto"]): a["what"] for a in addons.detect(box, 25565)}
+    check("a port an add-on's config names is the one published",
+          found.get((24460, "udp")) == "Simple Voice Chat"
+          and found.get((19140, "udp")) == "Geyser (Bedrock players)"
+          and found.get((8124, "tcp")) == "Dynmap", found)
+    check("an add-on that has not run yet gets its default port (BlueMap 8100)",
+          found.get((8100, "tcp")) == "BlueMap", found)
+    check("a separate query port is published; RCON never is",
+          (25570, "udp") in found and not any(p == 25575 for p, _ in found), found)
+    check("Geyser's `remote` port (the Java server) is not mistaken for its own",
+          (25565, "tcp") not in found and (25565, "udp") not in found, found)
+
+    (box / "config" / "voicechat" / "voicechat-server.properties").write_text("port=-1\n")
+    (box / "dynmap" / "configuration.txt").write_text(
+        "disable-webserver: true\nwebserver-port: 8124\n")
+    found = {(a["port"], a["proto"]) for a in addons.detect(box, 25565)}
+    check("Voice Chat on the game port, and a switched-off Dynmap, publish nothing",
+          not any(p in (24454, 24460, 8123, 8124) for p, _ in found), found)
+
+    # A config that is a link out of the folder is not followed.
+    (OUTSIDE / "voicechat-server.properties").write_text("port=31337\n")
+    target = box / "config" / "voicechat" / "voicechat-server.properties"
+    target.unlink()
+    kind = make_link(target, OUTSIDE / "voicechat-server.properties", folder=False)
+    if kind:
+        found = {a["port"] for a in addons.detect(box, 25565)}
+        check(f"a config that is a {kind} out of the folder is not read",
+              31337 not in found, found)
+    (OUTSIDE / "voicechat-server.properties").unlink()
+
+    check("Docker's 'already allocated' error names the port",
+          port_in_use("driver failed programming external connectivity on endpoint "
+                      "bf-x (abc): Bind for 0.0.0.0:8123 failed: port is already "
+                      "allocated") == 8123)
+    check("...and so does a program on the host holding it",
+          port_in_use("Error starting userland proxy: listen udp4 0.0.0.0:19132: "
+                      "bind: address already in use") == 19132)
+    check("...and any other failure is not mistaken for one",
+          port_in_use("OCI runtime create failed: no such file") is None)
 
 
 async def test_graceful_stop():
@@ -1015,6 +1109,7 @@ async def main():
     await test_panel_side()
     test_api()
     test_containers()
+    test_addons()
     await test_graceful_stop()
     test_config()
     await test_disk()

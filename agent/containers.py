@@ -16,7 +16,9 @@ spec builder becomes a refused start rather than an escape:
     /tmp refuses -- Beyond Depth would not boot;
   * an unprivileged uid, and exactly one bind mount: the server's own
     folder, at /server;
-  * the game port published on the node's game address only.
+  * the game port published on the node's game address only, plus the
+    ports its add-ons open (agent/addons.py) -- each on the same number on
+    both sides, never below 1024, and never more than a handful.
 
 The agent restarts servers itself (RestartPolicy "no"), so a crash loop is
 something it can see and report rather than something Docker hides.
@@ -53,6 +55,21 @@ RUNTIME_CONTEXT = Path(__file__).resolve().parent / "images"
 SERVER_MOUNT = "/server"
 # The JVM's temp folder, inside the server folder, emptied at each start.
 NATIVE_TMP = ".blessforge-tmp"
+# The game port on two protocols, and agent/addons.py's MAX_ADDON_PORTS.
+MAX_PUBLISHED = 2 + 8
+
+
+_PORT_TAKEN = re.compile(
+    r":(\d{1,5})(?: failed: port is already allocated|: bind: address already in use)")
+
+
+def port_in_use(docker_error: str) -> int | None:
+    """The host port a failed start could not publish, from Docker's error:
+    "Bind for 0.0.0.0:8123 failed: port is already allocated" (another
+    container has it) or "listen udp4 0.0.0.0:19132: bind: address already
+    in use" (a program on the host does)."""
+    m = _PORT_TAKEN.search(docker_error or "")
+    return int(m.group(1)) if m else None
 
 
 class RuntimeError_(Exception):
@@ -101,8 +118,16 @@ def container_spec(server: dict, cfg: AgentConfig, folder: Path) -> dict:
     port = int(server["port"])
     lim = limits_of(server)
     mem = lim["memory_mb"] * 1024 * 1024
-    ports = {f"{port}/tcp": {}, f"{port}/udp": {}}
-    bind = [{"HostIp": cfg.game_bind_ip, "HostPort": str(port)}]
+    # The game port on both protocols (query and some voice mods share it),
+    # then each add-on port the agent found in the folder.
+    published = [f"{port}/tcp", f"{port}/udp"]
+    for extra in server.get("addon_ports") or []:
+        key = f"{int(extra['port'])}/{extra['proto']}"
+        if key not in published:
+            published.append(key)
+    ports = {k: {} for k in published}
+    bindings = {k: [{"HostIp": cfg.game_bind_ip, "HostPort": k.split("/")[0]}]
+                for k in published}
     return {
         "Image": cfg.image_for(server.get("java_major")),
         "Entrypoint": ["/usr/local/bin/bf-entry"],
@@ -136,7 +161,7 @@ def container_spec(server: dict, cfg: AgentConfig, folder: Path) -> dict:
             "SecurityOpt": ["no-new-privileges:true"],
             "ReadonlyRootfs": True,
             "Tmpfs": {"/tmp": f"rw,noexec,nosuid,nodev,size={cfg.tmp_size_mb}m"},
-            "PortBindings": {f"{port}/tcp": bind, f"{port}/udp": bind},
+            "PortBindings": bindings,
             "NetworkMode": cfg.game_network,
             "RestartPolicy": {"Name": "no"},
             "Privileged": False,
@@ -238,10 +263,18 @@ def assert_safe(spec: dict, cfg: AgentConfig, folder: Path) -> None:
     user = str(spec.get("User") or "")
     if not user or user.split(":")[0] in ("0", "root"):
         raise UnsafeSpec("it would run as root")
-    for name, binding in (hc.get("PortBindings") or {}).items():
+    bindings = hc.get("PortBindings") or {}
+    if len(bindings) > MAX_PUBLISHED:
+        raise UnsafeSpec(f"{len(bindings)} published ports")
+    for name, binding in bindings.items():
+        number, _, proto = name.partition("/")
+        if proto not in ("tcp", "udp") or not number.isdigit():
+            raise UnsafeSpec(f"published port {name}")
         for b in binding or []:
             if (b.get("HostIp") or "") != cfg.game_bind_ip:
                 raise UnsafeSpec(f"port {name} published on {b.get('HostIp') or 'every address'}")
+            if str(b.get("HostPort") or "") != number or int(number) < 1024:
+                raise UnsafeSpec(f"port {name} published as {b.get('HostPort') or 'any port'}")
     tmpfs = hc.get("Tmpfs") or {}
     if set(tmpfs) - {"/tmp"}:
         raise UnsafeSpec(f"tmpfs mounts {sorted(tmpfs)}")
@@ -414,18 +447,40 @@ class DockerRuntime:
 
     async def start(self, server: dict, folder: Path, on_output: Output,
                     on_exit: Exited) -> Running:
-        spec = container_spec(server, self.cfg, folder)
         fresh_native_tmp(folder)
-        assert_safe(spec, self.cfg, folder)
         name = self.container(server["uuid"])
+        server = {**server, "addon_ports": list(server.get("addon_ports") or [])}
         async with _docker_client(self.cfg, 120) as c:
-            await self._ensure_image(c, spec["Image"])
-            await self._recreate(c, name, spec)
-            reader, writer = await self._attach(name)
-            r = await c.post(f"/containers/{name}/start")
-            if r.status_code >= 400:
+            while True:
+                spec = container_spec(server, self.cfg, folder)
+                assert_safe(spec, self.cfg, folder)
+                await self._ensure_image(c, spec["Image"])
+                await self._recreate(c, name, spec)
+                reader, writer = await self._attach(name)
+                r = await c.post(f"/containers/{name}/start")
+                if r.status_code < 400:
+                    break
                 writer.close()
-                raise RuntimeError_(f"Docker could not start it: {r.text[:300]}", 502)
+                taken = port_in_use(r.text)
+                if taken is None:
+                    raise RuntimeError_(f"Docker could not start it: {r.text[:300]}", 502)
+                if taken == int(server["port"]):
+                    raise RuntimeError_(
+                        f"Port {taken} is already in use on this machine -- by another "
+                        "program or container (Crafty publishes 25500-25600, for one). "
+                        "Give this server a free port and start it again.", 409)
+                # An add-on's port: start without it rather than not at all.
+                dropped = [a for a in server["addon_ports"] if int(a["port"]) == taken]
+                if not dropped:
+                    raise RuntimeError_(f"Docker could not start it: {r.text[:300]}", 502)
+                server["addon_ports"] = [a for a in server["addon_ports"]
+                                         if int(a["port"]) != taken]
+                for a in dropped:
+                    where = (f"in {a['from']}" if a.get("from")
+                             else "in its config file, which it writes on this first start,")
+                    on_output(f"[BlessForge] {a['what']} wants port {taken}/{a['proto']}, "
+                              "but something else on this machine already has it, so it "
+                              f"is not published. Change its port {where} to a free one.")
 
         async def pump():
             buf = bytearray()
