@@ -76,7 +76,10 @@ def limits_of(spec: dict) -> dict:
     memory_mb = int(spec.get("memory_mb") or lim.get("memory_mb") or 2048)
     return {
         "memory_mb": max(256, memory_mb),
-        "cpu_pct": max(10, int(lim.get("cpu_pct") or 100)),
+        # No plan limit means the node's own cores. The default used to be
+        # 100 -- ONE core -- so every pack on a self-hosted node booted on a
+        # single core of eight, and a 370-mod pack took a quarter of an hour.
+        "cpu_pct": max(10, int(lim.get("cpu_pct") or (os.cpu_count() or 1) * 100)),
         "io_weight": min(1000, max(10, int(lim.get("io_weight") or 500))),
         "disk_mb": int(lim.get("disk_mb") or 0),
     }

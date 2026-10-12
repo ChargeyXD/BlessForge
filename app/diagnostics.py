@@ -250,7 +250,8 @@ _PATTERNS = [
 _FABRIC_WRONG_ENV = re.compile(
     r"Cannot load class ([\w.$]+) in environment type SERVER", re.I
 )
-_JAR_IN_TRACE = re.compile(r"\[([\w.\-+]+\.jar):")
+# Fabric writes [name.jar:?]; Forge 1.17+ writes [name.jar%23705!/:?].
+_JAR_IN_TRACE = re.compile(r"\[([\w.\-+]+\.jar)(?:%23\d+!?/?)?:")
 
 
 def _scan_wrong_environment(text: str) -> list[dict]:
@@ -1101,7 +1102,14 @@ _MIXIN_FAIL = re.compile(
 _MIXIN_CONFIG = re.compile(r"([\w\-.]+)\.mixins\.json", re.I)
 
 # Fabric names the jar in brackets at the end of a frame it attributes.
-_TRACE_JAR = re.compile(r"\[([\w.\-+ ]+\.jar)(?::[^\]]*)?\]")
+# Both frame shapes: Fabric "[name.jar:?]" and Forge 1.17+
+# "~[name.jar%23705!/:1.0.3]" -- the second was not matched, so stack-trace
+# attribution saw no mod at all on modern Forge.
+_TRACE_JAR = re.compile(r"\[([\w.\-+ ]+\.jar)(?:%23\d+!?/?)?(?::[^\]]*)?\]")
+# A client class failing to load on a dedicated server, and the frame under it.
+_CLIENT_CLASS_FAIL = re.compile(
+    r"(?:NoClassDefFoundError|ClassNotFoundException)[:\s]+((?:net[/.]minecraft[/.]client|"
+    r"com[/.]mojang[/.]blaze3d)[\w/.$]*)")
 
 # Frames belonging to the platform rather than to any mod. Counting these
 # would rank the loader as the top culprit on every single crash.
@@ -1240,6 +1248,23 @@ def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
                 f"it loaded the client-only class {match.group(1)} on a "
                 "dedicated server", match.group(0))
             break
+
+    # 4b. A client class that failed to load: the first mod frame under the
+    #     error is the mod that asked for it. Forge reports these inside
+    #     "Synchronous work queue completed exceptionally" with the real cause
+    #     only in the suppressed traces, so the mod is otherwise never named.
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        match = _CLIENT_CLASS_FAIL.search(line)
+        if not match:
+            continue
+        for frame in lines[idx + 1: idx + 40]:
+            jars = [j for j in _TRACE_JAR.findall(frame) if not _PLATFORM_JARS.match(j)]
+            if jars:
+                add(_resolve_jar(jars[0], mod_files), 75,
+                    f"it loaded the client-only class {match.group(1)} on a dedicated "
+                    "server", line.strip()[:300])
+                break
 
     # 5. Stack-trace attribution, counted rather than taken at face value:
     #    one frame proves nothing, a jar owning most of the trace does.
