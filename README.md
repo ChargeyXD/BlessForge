@@ -634,8 +634,8 @@ existing install can update and move **some** of its servers across while
 Crafty keeps running the rest — nothing on Crafty's side is touched.
 
 1. **Back up** the BlessForge state volume (`/data`) and Crafty's servers
-   folder. To stay on the Crafty version, pin `ghcr.io/chargeyxd/blessforge:v2.1-crafty`
-   (or check out the `v2.1-crafty` tag) instead of `latest`.
+   folder. To stay on the Crafty version, pin `ghcr.io/chargeyxd/blessforge:2.1.0`
+   (or check out the `v2.1-crafty` tag) instead of `latest`; `:2.2.0` pins this one.
 2. **Update the panel** to `latest` and set `ENGINE: "agent"` (the one-box
    `docker-compose.yml` ships `ENGINE: "mock"`, which shows an empty, in-memory
    fleet — your Crafty servers are not gone, BlessForge is just not looking at
