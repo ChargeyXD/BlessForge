@@ -65,10 +65,19 @@ services:
 
     environment:
       # ---- The engine ----------------------------------------------------
-      # What runs the servers. "agent" is every node registered with this
-      # BlessForge, each running the BlessForge node agent; "mock" keeps
-      # everything in memory, for trying the interface with no node at all.
-      ENGINE: "mock"
+      # What runs the servers: BlessForge node agents. The `agent` service
+      # below is this machine's own, and the panel registers it by itself on
+      # its first start (the four LOCAL_* settings) -- there is nothing to set
+      # up by hand. More machines can be added as nodes later. "mock" instead
+      # keeps everything in memory, for trying the interface with no servers.
+      ENGINE: "agent"
+      LOCAL_AGENT_URL: "http://agent:8443"
+      LOCAL_AGENT_CONFIG: "/node/agent.toml"
+      LOCAL_PANEL_URL: "http://blessforge:8710"
+      # Where game servers live. The SAME path on the host and in the agent's
+      # container: the agent mounts each server's folder into its game
+      # container by this path.
+      LOCAL_SERVERS_ROOT: "/DATA/AppData/blessforge/servers"
 
       # ---- The database --------------------------------------------------
       # Accounts, sessions, the audit log, racks and decisions live in the
@@ -113,9 +122,8 @@ services:
       SERVER_READY_TIMEOUT: "900"
       TZ: "UTC"
 
-      # BlessForge measures RAM and CPU from inside its own container. If the
-      # node runs on a DIFFERENT machine, set these to describe that machine
-      # or the optimizer will size heaps against the wrong host.
+      # Heaps are sized against the node's own RAM and CPUs, which the agent
+      # reports. Set these only to override that reading.
       # HOST_RAM_GB: "16"
       # HOST_CPU_COUNT: "8"
 
@@ -132,6 +140,12 @@ services:
       # chown this folder and then drops to uid 1000 (see entrypoint.sh), so a
       # root-created bind mount works with no manual chown.
       - /DATA/AppData/blessforge/data:/data
+      # Where the panel writes the bundled agent's config, and the agent reads
+      # it. Holds the agent's token: keep it to this app.
+      - /DATA/AppData/blessforge/node:/node
+      # Moving servers off Crafty (README "Updating from 2.1"): give the panel
+      # Crafty's servers folder, read-only, and point --from-dir at it.
+      # - /DATA/AppData/big-bear-crafty/servers:/crafty-servers:ro
 
     healthcheck:
       # /api/healthz is a static liveness probe -- it never touches a node or
@@ -147,10 +161,9 @@ services:
       category: Games
       description:
         en_us: >-
-          Install CurseForge modpacks into Crafty Controller, or import a pack
-          you exported yourself, then manage mods with automatic dependency
-          resolution, edit configs, tune JVM flags to the host's specs, and
-          diagnose failed launches with a local AI model.
+          A Minecraft server panel: install CurseForge modpacks or a pack you
+          exported yourself as real servers, boot-checked and repaired
+          automatically, then manage mods, configs, players and performance.
       developer: ChargeyXD
       hostname: ""
       icon: https://raw.githubusercontent.com/ChargeyXD/BlessForge/main/app/static/icon.png
@@ -160,21 +173,19 @@ services:
       scheme: http
       store_app_id: blessforge
       tagline:
-        en_us: CurseForge modpacks for Crafty, made manageable
+        en_us: CurseForge modpacks as real servers, made manageable
       title:
         custom: ""
         en_us: BlessForge
       tips:
         before_install:
           en_us: >-
-            Set CRAFTY_URL to this machine's Crafty address -- LAN IP, not
-            localhost, and the port your Crafty tile actually shows (8111 for
-            the CasaOS Crafty app, 8443 for big-bear-crafty). Set CRAFTY_TOKEN
-            to a token from that Crafty's user profile; a token only works on
-            the Crafty that issued it. Paste your own CurseForge key, base64
-            encoded (echo -n KEY | base64 -w0), as CURSEFORGE_API_KEY_B64.
-            Leave the /data folder pointing at /DATA/AppData/blessforge/data --
-            it is BlessForge's own cache, not Crafty's directory.
+            Paste your own CurseForge key, base64 encoded (echo -n KEY |
+            base64 -w0), as CURSEFORGE_API_KEY_B64, and change the Postgres
+            password in both places. BlessForge runs its game servers itself
+            (the agent service); nothing else needs setting up. Leave the
+            /data folder pointing at /DATA/AppData/blessforge/data -- it is
+            BlessForge's own folder, not Crafty's.
       envs:
         - container: CURSEFORGE_API_KEY_B64
           description:
@@ -193,7 +204,7 @@ services:
             en_us: "Model to use, e.g. qwen3:4b-instruct"
         - container: HOST_RAM_GB
           description:
-            en_us: "Override detected RAM when Crafty runs on another machine"
+            en_us: "Override the RAM the node reports, for heap sizing"
       ports:
         - container: "8710"
           description:
@@ -222,7 +233,7 @@ services:
       redis:
         condition: service_healthy
     environment:
-      ENGINE: "mock"
+      ENGINE: "agent"
       DATABASE_URL: "postgresql+asyncpg://blessforge:CHANGE-ME@postgres:5432/blessforge"
       REDIS_URL: "redis://redis:6379/0"
       CURSEFORGE_API_KEY_B64: "JDJhJDEwJEQzQm9OUjFQLkZYNGJ3OEVTeU1XUXVVVHFkZlJaU2ZiZ1p3UUFYOHhyYk5Vd3lZT0FYdnNx"
@@ -234,6 +245,41 @@ services:
       - /DATA/AppData/blessforge/data:/data
     healthcheck:
       disable: true
+
+  # This machine's node agent: it starts and stops the game servers, each in
+  # its own locked-down container (memory, CPU and process limits, no
+  # capabilities, read-only root, only its own folder mounted). Same image,
+  # running `python -m agent`. It waits for the panel to register it and
+  # write /node/agent.toml on the panel's first start, then reports in.
+  #
+  # It is the one container given the Docker socket -- that is how it creates
+  # game containers -- and it runs as uid 1000 with only the socket's group.
+  # Runtime images (one per Java version) are pulled, or built here from the
+  # Dockerfile the agent ships with when they cannot be. Game ports are
+  # published on this machine's own addresses.
+  agent:
+    image: ghcr.io/chargeyxd/blessforge:latest
+    container_name: blessforge-agent
+    restart: unless-stopped
+    command: ["python", "-m", "agent"]
+    mem_limit: 256m
+    environment:
+      BLESSFORGE_AGENT_CONFIG: "/node/agent.toml"
+      BLESSFORGE_AGENT_WAIT: "1"
+      LOCAL_SERVERS_ROOT: "/DATA/AppData/blessforge/servers"
+      TZ: "UTC"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The same path on both sides -- see LOCAL_SERVERS_ROOT above.
+      - /DATA/AppData/blessforge/servers:/DATA/AppData/blessforge/servers
+      - /DATA/AppData/blessforge/agent:/var/lib/blessforge-agent
+      - /DATA/AppData/blessforge/node:/node:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8443/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   redis:
     image: redis:7-alpine
@@ -283,9 +329,9 @@ x-casaos:
   category: Games
   description:
     en_us: >-
-      A CurseForge-style browser for Crafty Controller: install modpacks or
-      import your own exports, manage mods and configs, tune performance, and
-      troubleshoot failed launches.
+      A Minecraft server panel that runs its own servers: install CurseForge
+      modpacks or your own exports, boot-checked and repaired automatically,
+      then manage mods, configs, players and performance.
   developer: ChargeyXD
   icon: https://raw.githubusercontent.com/ChargeyXD/BlessForge/main/app/static/icon.png
   index: /
@@ -293,14 +339,14 @@ x-casaos:
   scheme: http
   store_app_id: blessforge
   tagline:
-    en_us: CurseForge modpacks for Crafty, made manageable
+    en_us: CurseForge modpacks as real servers, made manageable
   thumbnail: ""
   title:
     en_us: BlessForge
   tips:
     before_install:
       en_us: >-
-        BlessForge needs a Crafty Controller instance on your network. Set
-        CRAFTY_URL to its LAN address and CRAFTY_TOKEN to an API token from
-        that Crafty's user profile, then open the app -- it tells you on the
-        first screen if anything is still missing.
+        Set your CurseForge key (base64) and the Postgres password, then open
+        the app -- it runs its own game servers and tells you on the first
+        screen if anything is still missing. Crafty is not needed; servers
+        already in Crafty can be moved across (README, "Updating from 2.1").

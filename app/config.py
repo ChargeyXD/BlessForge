@@ -68,6 +68,18 @@ SECRET_KEY = (os.environ.get("BLESSFORGE_SECRET", "") or "").strip()
 PUBLIC_API_URL = (os.environ.get("PUBLIC_API_URL", "") or
                   f"http://127.0.0.1:{os.environ.get('PORT', '8710')}").rstrip("/")
 
+# A node agent bundled with the panel (the one-box docker-compose.yml). Set,
+# the panel registers it as "This machine" on its first start and writes its
+# config where the agent reads it -- no manual node setup. All four come from
+# the compose file; LOCAL_SERVERS_ROOT must be the same path on the host and
+# in the agent's container, because the agent mounts server folders into game
+# containers by host path.
+LOCAL_AGENT_URL = (os.environ.get("LOCAL_AGENT_URL", "") or "").strip().rstrip("/")
+LOCAL_AGENT_CONFIG = (os.environ.get("LOCAL_AGENT_CONFIG", "") or "").strip()
+LOCAL_SERVERS_ROOT = (os.environ.get("LOCAL_SERVERS_ROOT", "") or "").strip()
+# How that agent reaches this panel on the compose network.
+LOCAL_PANEL_URL = (os.environ.get("LOCAL_PANEL_URL", "") or "").strip().rstrip("/")
+
 # --- The job queue --------------------------------------------------------
 # redis://host:6379/0. Set, long jobs (installs, provisioning, the update
 # sweep) run in the worker process (`arq app.worker.WorkerSettings`) and

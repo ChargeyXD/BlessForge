@@ -14,3 +14,5 @@ redis==5.3.1
 # Nodes (WP-05): encrypted node tokens, and Ed25519 browser tokens.
 cryptography==50.0.2
 pyjwt==2.15.1
+# The bundled node agent's process and memory readings (agent/requirements.txt).
+psutil==7.2.2

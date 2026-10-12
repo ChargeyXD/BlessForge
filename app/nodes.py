@@ -243,6 +243,67 @@ def agent_config(*, node_id: str, token_id: str, token: str, panel_url: str,
     return "\n".join(lines) + "\n"
 
 
+LOCAL_NODE_ID = "local"
+
+
+async def ensure_local() -> bool:
+    """Register the agent bundled with this panel, once, and keep its config
+    file where it reads it. True when a node was registered or its config
+    (re)written -- the caller reloads the engine's nodes.
+
+    For the one-box install (docker-compose.yml): the agent runs in the same
+    compose project and waits for this file, so nobody registers a node by
+    hand. Off unless LOCAL_AGENT_URL and LOCAL_AGENT_CONFIG are set. A config
+    file that went missing (its folder wiped) gets a fresh token for the same
+    node rather than a second node, so the node's servers stay its own.
+    """
+    from pathlib import Path
+    from urllib.parse import urlparse
+    if config.ENGINE != "agent" or not config.LOCAL_AGENT_URL or not config.LOCAL_AGENT_CONFIG:
+        return False
+    url = urlparse(config.LOCAL_AGENT_URL)
+    if url.scheme not in ("http", "https") or not url.hostname:
+        log.warning("LOCAL_AGENT_URL %r is not an http(s) URL; not registering it",
+                    config.LOCAL_AGENT_URL)
+        return False
+    port = url.port or (443 if url.scheme == "https" else 8443)
+    path = Path(config.LOCAL_AGENT_CONFIG)
+    async with db.session() as s:
+        node = await s.get(Node, LOCAL_NODE_ID)
+    if node is not None and path.exists():
+        return False
+    extra: dict = {"listen_port": port, "game_bind_ip": "0.0.0.0",
+                   "state_dir": "/var/lib/blessforge-agent"}
+    if config.LOCAL_SERVERS_ROOT:
+        extra["servers_root"] = config.LOCAL_SERVERS_ROOT
+    panel_url = config.LOCAL_PANEL_URL or config.PUBLIC_API_URL
+    if node is None:
+        made = await register(name="This machine", fqdn=url.hostname, agent_port=port,
+                              scheme=url.scheme, node_id=LOCAL_NODE_ID,
+                              panel_url=panel_url, runtime="docker", extra=extra)
+        text = made["config"]
+        log.info("registered the bundled agent as node %s", LOCAL_NODE_ID)
+    else:
+        token_id, token = secrets.token_hex(8), secrets.token_urlsafe(32)
+        async with db.session() as s:
+            row = await s.get(Node, LOCAL_NODE_ID)
+            row.token_id, row.token_encrypted, row.state = token_id, encrypt(token), "pending"
+        text = agent_config(node_id=LOCAL_NODE_ID, token_id=token_id, token=token,
+                            panel_url=panel_url, public_key=await public_key_pem(),
+                            runtime="docker", extra=extra)
+        log.warning("the bundled agent's config was missing; wrote it again with a "
+                    "new token")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+    return True
+
+
 async def list_nodes() -> list[dict]:
     async with db.session() as s:
         return [public(n) for n in (await s.execute(select(Node).order_by(Node.id)))

@@ -32,10 +32,13 @@ Two runtimes implement the same small interface:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import re
 import shlex
 import struct
+import tarfile
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -44,6 +47,9 @@ import httpx
 from agent.config import AgentConfig
 
 CONTAINER_PREFIX = "bf-"
+# The runtime images' own Dockerfile, shipped with the agent: what it builds
+# from when an image cannot be pulled.
+RUNTIME_CONTEXT = Path(__file__).resolve().parent / "images"
 SERVER_MOUNT = "/server"
 # The JVM's temp folder, inside the server folder, emptied at each start.
 NATIVE_TMP = ".blessforge-tmp"
@@ -374,8 +380,31 @@ class DockerRuntime:
         repo, _, tag = image.rpartition(":")
         r = await c.post("/images/create", params={"fromImage": repo, "tag": tag},
                          timeout=1800)
-        if r.status_code >= 400:
+        if r.status_code < 400 and '"error"' not in r.text:
+            return
+        # Not pullable (not published, or a private registry this machine is
+        # not logged in to): build it here from the Dockerfile the agent
+        # ships with -- a JRE on Temurin's public image, nothing else.
+        java = re.fullmatch(r"java(\d+)", tag or "")
+        if not java or not RUNTIME_CONTEXT.is_dir():
             raise RuntimeError_(f"could not pull {image}: {r.text[:200]}", 502)
+        await self._build_runtime(c, image, int(java.group(1)))
+
+    async def _build_runtime(self, c: httpx.AsyncClient, image: str, java: int) -> None:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for f in sorted(RUNTIME_CONTEXT.iterdir()):
+                if f.is_file():
+                    tar.add(f, arcname=f.name)
+        r = await c.post("/build", params={"t": image, "pull": "1", "rm": "1",
+                                           "buildargs": json.dumps({"JAVA": str(java)})},
+                         content=buf.getvalue(),
+                         headers={"Content-Type": "application/x-tar"}, timeout=1800)
+        # The build streams JSON lines; a failure is a line with "error".
+        failed = [ln for ln in r.text.splitlines() if '"error"' in ln]
+        if r.status_code >= 400 or failed:
+            raise RuntimeError_(f"could not build {image}: "
+                                f"{(failed[-1] if failed else r.text)[:300]}", 502)
 
     async def _recreate(self, c, name: str, spec: dict) -> None:
         await c.delete(f"/containers/{name}", params={"force": "true"})

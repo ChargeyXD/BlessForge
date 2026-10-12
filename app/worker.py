@@ -52,13 +52,25 @@ async def startup(ctx) -> None:
     await eng.load_nodes()
     await whitelist.load()
     ctx["heartbeat"] = asyncio.create_task(jobs.heartbeat_forever())
+    ctx["nodes"] = asyncio.create_task(_nodes_until_found())
     ctx["sweep"] = asyncio.create_task(_sweep_forever())
     log.info("worker %s ready (engine %s, database %s)",
              OWNER, eng.kind(), db.redacted_url())
 
 
+async def _nodes_until_found() -> None:
+    """The panel registers the bundled agent on its first start, and the
+    worker may have started first. Until it can see a node, look again."""
+    while eng.kind() == "agent" and not eng.drivers():
+        await asyncio.sleep(10)
+        try:
+            await eng.load_nodes()
+        except Exception as e:      # noqa: BLE001 -- the database may still be coming up
+            log.warning("could not load nodes yet: %s", e)
+
+
 async def shutdown(ctx) -> None:
-    for key in ("sweep", "heartbeat"):
+    for key in ("sweep", "heartbeat", "nodes"):
         task = ctx.get(key)
         if task:
             task.cancel()

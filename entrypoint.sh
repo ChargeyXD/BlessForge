@@ -39,6 +39,26 @@ if [ "$(id -u)" = "0" ]; then
         echo "         Point this mount at /DATA/AppData/blessforge/data instead." >&2
     fi
 
+    # The panel writes the bundled agent's config here (LOCAL_AGENT_CONFIG).
+    if [ -n "${LOCAL_AGENT_CONFIG:-}" ]; then
+        mkdir -p "$(dirname "$LOCAL_AGENT_CONFIG")" 2>/dev/null || true
+        chown studio:studio "$(dirname "$LOCAL_AGENT_CONFIG")" 2>/dev/null || true
+    fi
+
+    # The bundled node agent: the one container given the Docker socket. It
+    # runs as uid 1000 -- the uid game containers run as, so the server
+    # folders it writes are theirs too -- with the socket's group and nothing
+    # else, rather than as root.
+    if [ -S /var/run/docker.sock ]; then
+        for d in "${LOCAL_SERVERS_ROOT:-}" /var/lib/blessforge-agent; do
+            [ -n "$d" ] || continue
+            mkdir -p "$d" 2>/dev/null || true
+            chown studio:studio "$d" 2>/dev/null || true
+        done
+        SOCK_GID=$(stat -c %g /var/run/docker.sock)
+        exec setpriv --reuid=1000 --regid=1000 --groups="$SOCK_GID" --inh-caps=-all "$@"
+    fi
+
     exec setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all "$@"
 fi
 

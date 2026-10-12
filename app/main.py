@@ -72,6 +72,11 @@ async def _lifespan(_app: FastAPI):
         logging.getLogger(__name__).error("the JSON import failed: %s", e)
     await auth.bootstrap()
     if config.ENGINE == "agent":
+        try:
+            # The one-box install's own agent: registered on the first start.
+            await nodes.ensure_local()
+        except Exception as e:      # noqa: BLE001 -- logged; the panel still starts
+            logging.getLogger(__name__).error("could not register the bundled agent: %s", e)
         await engine.load_nodes()
     await fleetgroups.load()
     await whitelist.load()

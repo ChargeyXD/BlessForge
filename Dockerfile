@@ -40,6 +40,13 @@ COPY alembic/ ./alembic/
 COPY alembic.ini ./
 # One template per loader (app/templates.py): without them nothing can be created.
 COPY templates/ ./templates/
+# The node agent, so one image runs the panel, the worker AND the agent the
+# one-box docker-compose.yml bundles (`python -m agent`). agent/images is the
+# runtime images' Dockerfile, built on the machine when it cannot be pulled.
+COPY agent/ ./agent/
+# Moving servers off Crafty, from inside the panel's container:
+#   docker exec -it blessforge python dev/tools/import_from_crafty.py --dry-run
+COPY dev/tools/import_from_crafty.py ./dev/tools/import_from_crafty.py
 
 # The app runs unprivileged as uid 1000. The container still STARTS as root so
 # the entrypoint can hand it a writable /data -- CasaOS creates bind-mount
