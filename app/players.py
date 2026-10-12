@@ -202,8 +202,13 @@ async def online_players(server_id: str, *, running: bool | None = None
     """
     names: list[str] = []
     count = maximum = None
+    sessions: dict = {}
+    source = version = None
     try:
         stats = await engine.get_stats(server_id)
+        sessions = stats.get("sessions") or {}
+        source = stats.get("player_source")
+        version = stats.get("version")
         if running is None:
             running = bool(stats.get("running"))
         count = stats.get("online")
@@ -239,7 +244,70 @@ async def online_players(server_id: str, *, running: bool | None = None
             pass
 
     return {"running": bool(running), "count": count if count is not None
-            else len(names), "max": maximum, "names": names}
+            else len(names), "max": maximum, "names": names,
+            "sessions": sessions, "source": source, "version": version}
+
+
+# --- what the world files know about each player ------------------------------
+
+STATS_LIMIT = 120       # stats files read per snapshot; the rest show "--"
+
+
+def _stat(data: dict, modern: tuple[str, ...], legacy: str) -> int | None:
+    """One counter from a stats file, in either format.
+
+    1.13+ nests them ({"stats": {"minecraft:custom": {...}}}); 1.12 and
+    older keep flat "stat.x" keys. Play time was renamed at 1.17
+    (play_one_minute -> play_time), both still in ticks.
+    """
+    custom = ((data.get("stats") or {}).get("minecraft:custom") or {})
+    for key in modern:
+        if key in custom:
+            return int(custom[key])
+    return int(data[legacy]) if legacy in data else None
+
+
+async def world_records(server_id: str, props: dict, uuids: list[str]) -> dict:
+    """{uuid: {last_seen, playtime_s, deaths, mob_kills, player_kills}}.
+
+    last_seen is the player's save file's modification time -- the server
+    writes it when they leave and on every autosave while they are on --
+    rather than usercache.json's expiresOn, which is a cache expiry a month
+    after the login, not a sighting.
+    """
+    level = (props.get("level-name") or "world").strip() or "world"
+    out: dict[str, dict] = {}
+    try:
+        entries = await engine.list_dir(server_id, f"{level}/playerdata")
+        for name, meta in entries.items():
+            if name.endswith(".dat") and isinstance(meta, dict):
+                modified = meta.get("modified")
+                try:
+                    out.setdefault(dashed(name[:-4]), {})["last_seen"] = float(modified)
+                except (TypeError, ValueError):
+                    pass
+    except Exception:       # noqa: BLE001 -- a fresh world has no playerdata yet
+        pass
+
+    gate = asyncio.Semaphore(8)
+
+    async def one(uid: str) -> None:
+        async with gate:
+            try:
+                raw = await engine.read_file(server_id, f"{level}/stats/{uid}.json")
+                data = json.loads(raw)
+            except Exception:       # noqa: BLE001
+                return
+        ticks = _stat(data, ("minecraft:play_time", "minecraft:play_one_minute"),
+                      "stat.playOneMinute")
+        row = out.setdefault(uid, {})
+        row["playtime_s"] = (ticks // 20) if ticks is not None else None
+        row["deaths"] = _stat(data, ("minecraft:deaths",), "stat.deaths")
+        row["mob_kills"] = _stat(data, ("minecraft:mob_kills",), "stat.mobKills")
+        row["player_kills"] = _stat(data, ("minecraft:player_kills",), "stat.playerKills")
+
+    await asyncio.gather(*(one(u) for u in uuids[:STATS_LIMIT] if u))
+    return out
 
 
 async def snapshot(server_id: str) -> dict:
@@ -287,7 +355,9 @@ async def snapshot(server_id: str) -> dict:
     for entry in cache_raw:
         if isinstance(entry, dict) and entry.get("name"):
             row = touch(entry["name"], entry.get("uuid", ""))
-            row["last_seen"] = entry.get("expiresOn")
+            # Only a fallback: expiresOn is the login plus a month, so the
+            # login is a month before it. The player's save file beats it.
+            row["last_seen"] = _month_before(entry.get("expiresOn"))
     for entry in whitelist_raw:
         if isinstance(entry, dict) and entry.get("name"):
             touch(entry["name"], entry.get("uuid", ""))["whitelisted"] = True
@@ -308,10 +378,23 @@ async def snapshot(server_id: str) -> dict:
     for name in live["names"]:
         touch(name)["online"] = True
 
+    records = await world_records(server_id, props,
+                                  [r["uuid"] for r in people.values() if r["uuid"]])
+    sessions = {str(k).lower(): v for k, v in (live.get("sessions") or {}).items()}
     for key, row in people.items():
         row["online"] = row["online"] or key in online_names
         row["note"] = (notes.get(key) or {}).get("note", "")
         row["avatar"] = avatar_url(row["uuid"], row["name"])
+        rec = records.get(row["uuid"]) or {}
+        if rec.get("last_seen"):
+            row["last_seen"] = rec["last_seen"]
+        for field in ("playtime_s", "deaths", "mob_kills", "player_kills"):
+            row[field] = rec.get(field)
+        session = sessions.get(key) if row["online"] else None
+        row["online_since"] = (session or {}).get("since")
+        # False when the agent found them already on (a ping or `list`)
+        # rather than seeing them join -- the session is at least this long.
+        row["online_since_exact"] = (session or {}).get("exact")
 
     ordered = sorted(
         people.values(),
@@ -324,6 +407,8 @@ async def snapshot(server_id: str) -> dict:
     return {
         "running": live["running"],
         "online": live["count"],
+        "player_source": live.get("source"),
+        "server_version": live.get("version"),
         "max_players": live["max"] or props.get("max-players"),
         "online_names": live["names"],
         "players": ordered,
@@ -356,6 +441,18 @@ async def snapshot(server_id: str) -> dict:
         "unused": {"op_names": sorted(op_names), "wl_names": sorted(wl_names),
                    "ban_names": sorted(ban_by_name)},
     }
+
+
+def _month_before(stamp) -> float | None:
+    """usercache's expiresOn ("2026-11-12 08:30:00 +0000") minus a month."""
+    import datetime as _dt
+    if not isinstance(stamp, str):
+        return None
+    try:
+        t = _dt.datetime.strptime(stamp.strip(), "%Y-%m-%d %H:%M:%S %z")
+    except ValueError:
+        return None
+    return (t - _dt.timedelta(days=30)).timestamp()
 
 
 def avatar_url(uuid_: str, name: str) -> str:

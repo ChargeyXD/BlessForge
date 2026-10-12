@@ -372,14 +372,28 @@ export async function render(ctx) {
       }
       mount(playerHost,
         h('div', { style: { display: 'grid', gap: '8px' } },
+          h('p.muted', { style: { fontSize: '12px', margin: 0 } },
+            `${p.online} of ${p.max_players || '?'} on`
+            + (p.player_source === 'ping' || p.player_source === 'list'
+              ? ' \u00b7 confirmed with the server' : '')),
           ...p.players.filter((x) => x.online).slice(0, 8).map((x) =>
             h('div', { style: { display: 'flex', gap: '9px', alignItems: 'center' } },
               h('img', { src: x.avatar, alt: '', loading: 'lazy',
                 style: { width: '26px', height: '26px', border: '2px solid var(--rule)',
                   imageRendering: 'pixelated' } }),
               h('span', { style: { flex: 1, minWidth: 0 } },
-                h('span.h-num', { style: { fontSize: '13.5px' } }, x.name)),
-              x.op ? pill('op', 'gold') : null))),
+                h('span.h-num', { style: { fontSize: '13.5px' } }, x.name),
+                x.online_since
+                  ? h('span.muted', { style: { fontSize: '11.5px', marginLeft: '8px' } },
+                    `${x.online_since_exact === false ? '\u2265 ' : ''}`
+                    + duration(Date.now() / 1000 - x.online_since))
+                  : null),
+              x.op ? pill('op', 'gold') : null)),
+          p.online > p.players.filter((x) => x.online).length
+            ? h('p.muted', { style: { fontSize: '12px', margin: 0 } },
+              `+${p.online - p.players.filter((x) => x.online).length} the server did `
+              + 'not name')
+            : null),
         h('button.btn.sm.ghost.block', {
           style: { marginTop: '10px' }, onclick: () => ctx.go('players'),
         }, icon('users', 13), h('span', 'Manage players')));

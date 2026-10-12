@@ -14,7 +14,7 @@
 import {
   h, hl, mount, icon, api, toast, toastError, pill, empty, loadingFox,
   confirmDialog, promptDialog, modal, close, frag, debounce, segmented,
-  toggle, field, ago, num,
+  toggle, field, ago, num, duration,
 } from '../core.js';
 
 export async function render(ctx) {
@@ -210,6 +210,7 @@ export async function render(ctx) {
       h('div.who',
         h('div.nm', p.name),
         p.uuid ? h('div.uid', p.uuid) : null,
+        playerFacts(p),
         h('div.tags',
           p.online ? pill('online', 'ok') : null,
           p.op ? pill(`op${p.op_level && p.op_level !== 4
@@ -239,6 +240,29 @@ export async function render(ctx) {
           onclick: () => playerMenu(p),
         }, icon('sliders', 12)),
       ));
+  }
+
+  /* One line of what the world knows about them: how long they have been
+     on (or when they were last seen), their total play time, and the two
+     numbers people actually ask about. Read from the server's own files --
+     the player's save and its stats file -- not guessed. */
+  function playerFacts(p) {
+    const bits = [];
+    if (p.online && p.online_since) {
+      const secs = Date.now() / 1000 - p.online_since;
+      bits.push(`on for ${p.online_since_exact === false ? 'at least ' : ''}`
+        + duration(secs));
+    } else if (!p.online && p.last_seen) {
+      bits.push(`last seen ${ago(p.last_seen)}`);
+    }
+    if (p.playtime_s) bits.push(`${duration(p.playtime_s)} played`);
+    if (p.deaths !== null && p.deaths !== undefined) bits.push(`${num(p.deaths)} deaths`);
+    if (p.mob_kills) bits.push(`${num(p.mob_kills)} mobs`);
+    if (p.player_kills) bits.push(`${num(p.player_kills)} players`);
+    return bits.length
+      ? h('div.uid', { title: 'From the server\u2019s own player and stats files' },
+        bits.join(' \u00b7 '))
+      : null;
   }
 
   /* --- actions -------------------------------------------------- */

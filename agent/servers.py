@@ -49,6 +49,16 @@ _UUID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
 _DONE = re.compile(r'Done \([0-9.]+s\)! For help')
 _JOINED = re.compile(r"\]: ([A-Za-z0-9_]{2,16}) joined the game")
 _LEFT = re.compile(r"\]: ([A-Za-z0-9_]{2,16}) left the game")
+# The reply to `list`, both shapes:
+#   There are 2 of a max of 20 players online: Alice, Bob     (1.13+)
+#   There are 2/20 players online:                            (1.12 and older;
+#   Alice, Bob                                                 names on the next line)
+_LIST = re.compile(r"There are (\d+) ?(?:of a max(?: of)? (\d+)|/ ?(\d+)) players online:?(.*)$",
+                   re.I)
+_LIST_NAMES = re.compile(r"\]:\s*(.*)$")
+_PLAYER = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+PING_EVERY = 30        # seconds between server list pings
+LIST_EVERY = 120       # the most often `list` is sent to settle a disagreement
 
 
 def check_uuid(value: str) -> str:
@@ -92,8 +102,31 @@ class Server:
         self.stopping = False
         self.crashes: collections.deque[float] = collections.deque(maxlen=10)
         self.players: set[str] = set()
+        # When each online player joined, as seen by this agent. A player
+        # found by a ping or a `list` rather than a join line gets the time
+        # they were found, flagged as such.
+        self.sessions: dict[str, dict] = {}
+        self.player_source = "log"
+        self.ping: dict | None = None
+        self.pinged_at = 0.0
+        self.listed_at = 0.0
+        self.list_names_next = False
         self.restart_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
+
+    def set_players(self, names: set[str], source: str) -> None:
+        now = time.time()
+        for gone in self.players - names:
+            self.sessions.pop(gone, None)
+        for name in names - self.players:
+            self.sessions[name] = {"since": now, "exact": False}
+        self.players = set(names)
+        self.player_source = source
+
+    def clear_players(self) -> None:
+        self.players.clear()
+        self.sessions.clear()
+        self.ping = None
 
 
 class Supervisor:
@@ -182,7 +215,8 @@ class Supervisor:
         return {**srv.spec, "state": srv.state,
                 "running": srv.running is not None,
                 "started_at": srv.started_at,
-                "players": sorted(srv.players)}
+                "players": sorted(srv.players),
+                "sessions": {n: srv.sessions.get(n) for n in sorted(srv.players)}}
 
     # --- power ------------------------------------------------------------------
 
@@ -212,7 +246,7 @@ class Supervisor:
         argv_of(srv.spec.get("execution_command") or "")      # 409 if none
         srv.stopping = False
         srv.state = "starting"
-        srv.players.clear()
+        srv.clear_players()
         srv.console.feed(f"[BlessForge] Starting {srv.spec.get('name')}")
 
         def on_output(line: str) -> None:
@@ -220,12 +254,7 @@ class Supervisor:
             if srv.state == "starting" and _DONE.search(line):
                 srv.state = "running"
                 self.events.emit("status", srv.uuid, state="running")
-            m = _JOINED.search(line)
-            if m:
-                srv.players.add(m.group(1))
-            m = _LEFT.search(line)
-            if m:
-                srv.players.discard(m.group(1))
+            self._track_players(srv, line)
 
         async def on_exit(code: int | None) -> None:
             await self._exited(srv, code)
@@ -256,7 +285,7 @@ class Supervisor:
     async def _exited(self, srv: Server, code: int | None) -> None:
         srv.running = None
         srv.started_at = None
-        srv.players.clear()
+        srv.clear_players()
         if srv.stopping:
             srv.state = "offline"
             srv.console.feed(f"[BlessForge] Stopped (exit code {code})")
@@ -298,12 +327,84 @@ class Supervisor:
         srv.console.feed(f"> {line}")
         await srv.running.send(line)
 
+    # --- who is online -------------------------------------------------------------
+
+    def _track_players(self, srv: Server, line: str) -> None:
+        """Join and leave lines: the instant signal. `list` replies: the fix."""
+        if srv.list_names_next:
+            srv.list_names_next = False
+            m = _LIST_NAMES.search(line)
+            names = {n.strip() for n in (m.group(1) if m else "").split(",")}
+            srv.set_players({n for n in names if _PLAYER.match(n)}, "list")
+            return
+        m = _JOINED.search(line)
+        if m:
+            srv.players.add(m.group(1))
+            srv.sessions[m.group(1)] = {"since": time.time(), "exact": True}
+            return
+        m = _LEFT.search(line)
+        if m:
+            srv.players.discard(m.group(1))
+            srv.sessions.pop(m.group(1), None)
+            return
+        m = _LIST.search(line)
+        if m:
+            count = int(m.group(1))
+            tail = (m.group(4) or "").strip()
+            if count and not tail:
+                srv.list_names_next = True      # 1.12: the names follow
+                return
+            names = {n.strip() for n in tail.split(",") if n.strip()}
+            srv.set_players({n for n in names if _PLAYER.match(n)}, "list")
+
+    async def _reconcile_players(self, srv: Server) -> None:
+        """Ask the server itself, and settle any drift from missed join lines."""
+        now = time.time()
+        if srv.state != "running" or now - srv.pinged_at < PING_EVERY:
+            return
+        srv.pinged_at = now
+        host = self.cfg.game_bind_ip
+        if not host or host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+        from agent.ping import ping
+        result = await ping(host, int(srv.spec.get("port") or 25565))
+        if result is None:
+            return
+        srv.ping = result
+        if result["online"] == 0:
+            if srv.players:
+                srv.set_players(set(), "ping")
+        elif len(result["sample"]) == result["online"]:
+            if set(result["sample"]) != srv.players:
+                srv.set_players(set(result["sample"]), "ping")
+        elif result["online"] != len(srv.players) and now - srv.listed_at > LIST_EVERY:
+            # The ping names only some (a dozen at most, or none where the
+            # owner hides them); `list` names everyone. Sent straight to the
+            # server, not echoed as a command, and at most every two minutes.
+            srv.listed_at = now
+            try:
+                await srv.running.send("list")
+            except Exception:       # noqa: BLE001
+                pass
+
     async def stats(self, uuid: str) -> dict:
         srv = self.get(uuid)
+        if srv.running is not None:
+            try:
+                await self._reconcile_players(srv)
+            except Exception:       # noqa: BLE001 -- stats must still answer
+                pass
+        online = (srv.ping or {}).get("online", len(srv.players))
+        if srv.ping and srv.ping["online"] != len(srv.players) and srv.player_source == "list":
+            online = len(srv.players)       # a fresh `list` beats an older ping
         out: dict[str, Any] = {"running": srv.running is not None,
                                "state": srv.state, "crashed": srv.state == "crashed",
-                               "started": srv.started_at, "online": len(srv.players),
-                               "players": sorted(srv.players)}
+                               "started": srv.started_at, "online": online,
+                               "max": (srv.ping or {}).get("max") or None,
+                               "players": sorted(srv.players),
+                               "sessions": {n: srv.sessions.get(n) for n in sorted(srv.players)},
+                               "player_source": srv.player_source,
+                               "version": (srv.ping or {}).get("version")}
         if srv.running is not None:
             out.update(await srv.running.stats())
         if out.get("mem_percent") is None and out.get("mem"):
