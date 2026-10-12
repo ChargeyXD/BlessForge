@@ -68,6 +68,8 @@ async def shutdown(ctx) -> None:
                 pass
     await jobs.close_redis()
     await db.dispose()
+    from app import curseforge
+    curseforge.shutdown_pool()
 
 
 async def _watch_cancel(r, job_id: str, target: asyncio.Task) -> None:

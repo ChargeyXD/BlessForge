@@ -91,6 +91,7 @@ async def _lifespan(_app: FastAPI):
                 pass
         await jobs_close()
         await db.dispose()
+        curseforge.shutdown_pool()
 
 
 app = FastAPI(title="BlessForge", version="2.2.0", lifespan=_lifespan)

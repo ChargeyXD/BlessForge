@@ -604,9 +604,24 @@ _pool = None
 def _hash_pool():
     global _pool
     if _pool is None:
+        import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
-        _pool = ProcessPoolExecutor(max_workers=max(1, min(4, (os.cpu_count() or 2) - 1)))
+        # spawn, not Linux's default fork. Forked from a server with threads
+        # running, a worker can inherit a lock some thread held and wait on
+        # it forever -- and it inherits uvicorn's signal handlers, so it
+        # ignores SIGTERM too. On the test server three of four workers sat
+        # in futex_wait and outlived the panel that made them.
+        _pool = ProcessPoolExecutor(max_workers=max(1, min(4, (os.cpu_count() or 2) - 1)),
+                                    mp_context=multiprocessing.get_context("spawn"))
     return _pool
+
+
+def shutdown_pool() -> None:
+    """Let the hashing workers go (the app's shutdown)."""
+    global _pool
+    if _pool is not None:
+        _pool.shutdown(wait=False, cancel_futures=True)
+        _pool = None
 
 
 async def fingerprint_async(data: bytes) -> int:
