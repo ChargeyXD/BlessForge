@@ -119,6 +119,27 @@ java.lang.RuntimeException: Attempted to load class com/mojang/blaze3d/vertex/Po
 """
 
 
+# BMC4's fourth boot: a client mixin that never applied on the server.
+CAST_CRASH = """[12Oct2026 08:33:10.119] [main/FATAL] [net.minecraftforge.fml.DeferredWorkQueue/LOADING]: Synchronous work queue completed exceptionally in 649.2 ms, see suppressed exceptions for details:
+java.lang.RuntimeException: null
+	Suppressed: java.lang.ClassCastException: class net.minecraft.world.effect.MobEffect cannot be cast to class net.lopymine.pe.utils.PEStatusEffect (net.minecraft.world.effect.MobEffect is in module minecraft@1.20.1 of loader 'TRANSFORMER' @38293d23; net.lopymine.pe.utils.PEStatusEffect is in module particle_effects@1.6.0+1.20.1+forge of loader 'TRANSFORMER' @38293d23)
+		at net.lopymine.pe.utils.StatusEffectUtils.swapParticle(StatusEffectUtils.java:17) ~[ParticleEffects-1.6.0+1.20.1+forge.jar%23708!/:?]
+		at net.minecraftforge.fml.DeferredWorkQueue.makeRunnable(DeferredWorkQueue.java:76) ~[fmlcore-1.20.1-47.4.20.jar%23818!/:?]
+"""
+
+
+def mixin_jar(mod_id: str, common: list, client: list) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("META-INF/mods.toml",
+                   'modLoader="javafml"\nloaderVersion="[47,)"\n[[mods]]\n'
+                   f'modId="{mod_id}"\nversion="1.0.0"\n')
+        z.writestr(f"{mod_id}.mixins.json", json.dumps(
+            {"required": True, "package": f"x.{mod_id}.mixin", "mixins": common,
+             "client": client}))
+    return buf.getvalue()
+
+
 def groovy_jar(mod_id: str, depends_on_gml: bool = True) -> bytes:
     buf = io.BytesIO()
     dep = (f'[[dependencies.{mod_id}]]\nmodId="gml"\nmandatory=true\n'
@@ -306,6 +327,22 @@ async def main():
         loader="forge")
     check("...and with no client-side Groovy mod, nothing is disabled on a guess",
           actions == [] and any("gml-4.0.11-all.jar" in w for w in why), (actions, why))
+
+    # --- a client mixin that never applied ---------------------------------------------------------
+    actions, _ = await decide_for({
+        "ParticleEffects-1.6.0+1.20.1+forge.jar": mixin_jar(
+            "particle_effects", [], ["StatusEffectMixin", "ParticleMixin"]),
+        "create-1.20.1-0.5.1.jar": forge_jar("create")}, CAST_CRASH, loader="forge")
+    check("a game class cast to a mod's own interface: its client-only mixins are why, "
+          "and it is disabled",
+          [(a["do"], a.get("file")) for a in actions]
+          == [("disable", "ParticleEffects-1.6.0+1.20.1+forge.jar")], actions)
+    actions, why = await decide_for({
+        "ParticleEffects-1.6.0+1.20.1+forge.jar": mixin_jar(
+            "particle_effects", ["ServerSideMixin"], ["ParticleMixin"])},
+        CAST_CRASH, loader="forge")
+    check("...but a mod with mixins that do apply on a server is reported, not disabled",
+          actions == [], (actions, why))
 
     # --- a boot that dies without a recognised failure line ------------------------------------
     class DiesOnBoot(MockEngine):

@@ -1188,6 +1188,14 @@ _CLIENT_CLASS_FAIL = re.compile(
     r"|RuntimeException: Attempted to load class )"
     r"((?:net[/.]minecraft[/.]client|com[/.]mojang[/.]blaze3d)[\w/.$]*)")
 
+# A game class cast to an interface a mod's mixin was meant to add to it:
+# the mixin never applied. On a dedicated server that is a client-only mixin
+# (BMC4: "MobEffect cannot be cast to ... PEStatusEffect ... is in module
+# particle_effects@1.6.0").
+_MIXIN_CAST = re.compile(
+    r"ClassCastException: class (net\.minecraft\.[\w.$]+) cannot be cast to class "
+    r"([\w.$]+) \([^)]*?\2 is in module ([\w\-.]+)@")
+
 # Language providers: the jar a mod written in that language is loaded
 # through. A crash inside one belongs to a mod it was loading.
 _LANGUAGE_JARS = {"gml": "gml", "kotlinforforge": "kotlinforforge",
@@ -1402,6 +1410,30 @@ def attribute_crash(text: str, mod_files: list[str]) -> list[dict]:
                     f"it loaded the client-only class {match.group(1)} on a dedicated "
                     "server", lines[idx].strip()[:300])
                 break
+
+    # 4d. A game class cast to a mod's own interface: that mod's mixin did
+    #     not apply. The frame under it, else the module the JVM names.
+    for idx, line in enumerate(lines):
+        cast = _MIXIN_CAST.search(line)
+        if not cast:
+            continue
+        header = next((lines[j] for j in range(idx, max(-1, idx - 80), -1)
+                       if lines[j].startswith("[")), "")
+        if header and not re.search(r"/(?:ERROR|FATAL)\]|\bERROR\b|\bFATAL\b", header):
+            continue
+        jar = None
+        for frame in lines[idx + 1: idx + 6]:
+            jars = [j for j in _TRACE_JAR.findall(frame) if not _PLATFORM_JARS.match(j)]
+            if jars:
+                jar = _resolve_jar(jars[0], mod_files)
+                break
+        jar = jar or _mod_id_to_file(cast.group(3), mod_files)
+        target = cast.group(1).rsplit(".", 1)[-1]
+        iface = cast.group(2).rsplit(".", 1)[-1]
+        add(jar, 75,
+            f"its mixin never added {iface} to the game's {target} -- the mixin did not "
+            "apply, which on a dedicated server means it is a client-side mixin",
+            line.strip()[:300])
 
     # 4c. A mixin that dragged a client class onto the server. The error
     #     names no mod; the mixin trail (mixin_context) names the config

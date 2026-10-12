@@ -35,6 +35,7 @@ What it will and will not do:
 from __future__ import annotations
 
 import io
+import json
 import posixpath
 import re
 import time
@@ -67,6 +68,24 @@ def missing_dependencies(text: str) -> list[dict]:
 
 
 # --- what is on disk ---------------------------------------------------------
+
+
+def _mixin_sides(z: zipfile.ZipFile) -> dict:
+    """How many mixins a jar's mixin configs declare common, client and server."""
+    out = {"common": 0, "client": 0, "server": 0}
+    for name in z.namelist():
+        if "/" in name or not name.endswith(".json") or "mixin" not in name.lower():
+            continue
+        try:
+            cfg = json.loads(z.read(name).decode("utf-8", "replace"))
+        except Exception:       # noqa: BLE001 -- a refmap or something else
+            continue
+        if not isinstance(cfg, dict) or "package" not in cfg:
+            continue
+        out["common"] += len(cfg.get("mixins") or [])
+        out["client"] += len(cfg.get("client") or [])
+        out["server"] += len(cfg.get("server") or [])
+    return out
 
 
 class Disk:
@@ -103,9 +122,17 @@ class Disk:
                 self._meta[file] = jarmeta.parse(blob, file.removesuffix(".disabled"))
                 with zipfile.ZipFile(io.BytesIO(blob)) as z:
                     self._names[file] = set(z.namelist())
+                    self._meta[file]["mixin_sides"] = _mixin_sides(z)
             except Exception:       # noqa: BLE001
                 self._meta.setdefault(file, {})
         return self._meta[file]
+
+    async def client_mixins_only(self, file: str) -> bool:
+        """Every mixin the jar declares is a client mixin: on a dedicated
+        server none of them apply. Only ever weighed alongside a crash that
+        already points at the jar."""
+        sides = (await self.meta(file)).get("mixin_sides") or {}
+        return sides.get("client", 0) > 0 and not sides.get("common") and not sides.get("server")
 
     async def holds(self, file: str, entry: str) -> bool:
         """Whether the jar carries `entry` (a mixin config, say) at its root."""
@@ -316,7 +343,7 @@ async def decide(server_id: str, text: str, *, mc: str, loader: str, disk: Disk,
             continue
         evidence = (c.get("evidence") or "") + " " + " ".join(c.get("reasons") or [])
         client = (c["score"] == 70 or bool(_CLIENT_HINT.search(evidence))
-                  or await disk.is_client_side(jar))
+                  or await disk.is_client_side(jar) or await disk.client_mixins_only(jar))
         if client:
             plan({"do": "disable", "file": jar,
                   "why": f"the boot crashed on it ({c['why'][:160]}) and it is a "
