@@ -85,9 +85,10 @@ services:
 
       # ---- Mod sources --------------------------------------------------
       # Your own CurseForge key, base64-encoded: echo -n '<key>' | base64 -w0
-      # Left blank, BlessForge starts and the setup banner says what is
-      # missing. No key ships with this file.
-      CURSEFORGE_API_KEY_B64: ""
+      # TEMPORARY: the owner's key is set here for their own deployment while
+      # the repository is private. Blank it again before the repo or this
+      # file is shared -- dev/tools/test_blocked_downloads.py fails until then.
+      CURSEFORGE_API_KEY_B64: "JDJhJDEwJEQzQm9OUjFQLkZYNGJ3OEVTeU1XUXVVVHFkZlJaU2ZiZ1p3UUFYOHhyYk5Vd3lZT0FYdnNx"
       MODRINTH_ENABLED: "true"
 
       # ---- AI troubleshooting assistant (optional, off by default) -------
@@ -224,7 +225,7 @@ services:
       ENGINE: "mock"
       DATABASE_URL: "postgresql+asyncpg://blessforge:CHANGE-ME@postgres:5432/blessforge"
       REDIS_URL: "redis://redis:6379/0"
-      CURSEFORGE_API_KEY_B64: ""
+      CURSEFORGE_API_KEY_B64: "JDJhJDEwJEQzQm9OUjFQLkZYNGJ3OEVTeU1XUXVVVHFkZlJaU2ZiZ1p3UUFYOHhyYk5Vd3lZT0FYdnNx"
       MODRINTH_ENABLED: "true"
       OLLAMA_URL: ""
       WORKER_CONCURRENCY: "3"
