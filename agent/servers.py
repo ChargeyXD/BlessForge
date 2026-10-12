@@ -113,6 +113,9 @@ class Server:
         self.list_names_next = False
         self.restart_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
+        # How it last ended: {"code", "oom", "at", "asked"} -- asked is True
+        # when someone stopped it. Kept until the next start.
+        self.last_exit: dict | None = None
 
     def set_players(self, names: set[str], source: str) -> None:
         now = time.time()
@@ -245,6 +248,7 @@ class Supervisor:
             raise RuntimeError_("an install is running on this server", 409)
         argv_of(srv.spec.get("execution_command") or "")      # 409 if none
         srv.stopping = False
+        srv.last_exit = None
         srv.state = "starting"
         srv.clear_players()
         srv.console.feed(f"[BlessForge] Starting {srv.spec.get('name')}")
@@ -256,8 +260,8 @@ class Supervisor:
                 self.events.emit("status", srv.uuid, state="running")
             self._track_players(srv, line)
 
-        async def on_exit(code: int | None) -> None:
-            await self._exited(srv, code)
+        async def on_exit(code: int | None, info: dict | None = None) -> None:
+            await self._exited(srv, code, info or {})
 
         try:
             srv.running = await self.runtime.start(srv.spec, self.folder(srv.uuid),
@@ -282,10 +286,17 @@ class Supervisor:
             await asyncio.sleep(0.1)
         await running.kill()
 
-    async def _exited(self, srv: Server, code: int | None) -> None:
+    async def _exited(self, srv: Server, code: int | None, info: dict | None = None) -> None:
         srv.running = None
         srv.started_at = None
         srv.clear_players()
+        oom = bool((info or {}).get("oom"))
+        srv.last_exit = {"code": code, "oom": oom, "at": time.time(), "asked": srv.stopping}
+        if oom:
+            limit = limits_of(srv.spec)["memory_mb"]
+            srv.console.feed(f"[BlessForge] The kernel killed the server: it used more than "
+                             f"its {limit} MB memory limit. Java needs room beyond its heap; "
+                             "lower the heap or raise the limit.")
         if srv.stopping:
             srv.state = "offline"
             srv.console.feed(f"[BlessForge] Stopped (exit code {code})")
@@ -424,7 +435,8 @@ class Supervisor:
                                "players": sorted(srv.players),
                                "sessions": {n: srv.sessions.get(n) for n in sorted(srv.players)},
                                "player_source": srv.player_source,
-                               "version": (srv.ping or {}).get("version")}
+                               "version": (srv.ping or {}).get("version"),
+                               "last_exit": srv.last_exit}
         if srv.running is not None:
             out.update(await srv.running.stats())
         if out.get("cpu") is not None:

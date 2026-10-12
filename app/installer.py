@@ -1044,8 +1044,9 @@ async def install_modpack(
             # overhead, or the kernel kills it the first time it is busy.
             # Until plans fix a server's size (WP-08), its size follows the
             # heap rather than the other way round.
+            mod_count = len([r for r in records if r.get("file", "").endswith(".jar")])
             await engine.update_server(
-                server_id, {"memory_mb": specs.container_memory_mb(heap)})
+                server_id, {"memory_mb": specs.container_memory_mb(heap, mod_count)})
             flags = [f["flag"] for f in specs.build_flag_plan(
                 heap_gb=heap, host=host, mc_version=plan.mc_version,
                 loader=plan.loader) if f["enabled"]]

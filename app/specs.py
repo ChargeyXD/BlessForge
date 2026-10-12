@@ -233,28 +233,40 @@ def effective_host() -> dict:
 # cache and direct buffers sit outside -Xmx. A server whose container limit
 # equals its heap is OOM-killed by the kernel the first time it gets busy,
 # with nothing in its own log. So the container gets the heap plus a margin:
-# at least 768 MB (a vanilla server's non-heap floor) or a fifth of the heap
-# (a large modpack's metaspace grows with its mod count).
+# at least 768 MB (a vanilla server's non-heap floor), a fifth of the heap
+# (G1's own structures grow with it), and room that grows with the mod count
+# (metaspace and the JIT's code cache do). The mod term is measured, not
+# guessed: Prominence II, 450 Fabric mods, was OOM-killed mid-boot in a 6 GB
+# container holding a 5 GB heap -- a fifth of the heap was not enough.
 CONTAINER_OVERHEAD_MIN_MB = 768
 CONTAINER_OVERHEAD_SHARE = 0.20
+CONTAINER_OVERHEAD_PER_MOD_MB = 2.5
+CONTAINER_OVERHEAD_MODS_MAX_MB = 3072
 
 
-def container_memory_mb(heap_gb: float) -> int:
+def container_overhead_mb(heap_mb: int, mod_count: int = 0) -> int:
+    """What a JVM with this heap and this many mods uses beyond its heap."""
+    by_mods = min(CONTAINER_OVERHEAD_MODS_MAX_MB,
+                  int(CONTAINER_OVERHEAD_MIN_MB + CONTAINER_OVERHEAD_PER_MOD_MB * mod_count))
+    return max(CONTAINER_OVERHEAD_MIN_MB, int(heap_mb * CONTAINER_OVERHEAD_SHARE), by_mods)
+
+
+def container_memory_mb(heap_gb: float, mod_count: int = 0) -> int:
     """The memory limit a server's container needs to hold this heap."""
     heap_mb = int(float(heap_gb) * 1024)
-    return heap_mb + max(CONTAINER_OVERHEAD_MIN_MB,
-                         int(heap_mb * CONTAINER_OVERHEAD_SHARE))
+    return heap_mb + container_overhead_mb(heap_mb, mod_count)
 
 
-def heap_for_container_mb(memory_mb: int) -> int:
+def heap_for_container_mb(memory_mb: int, mod_count: int = 0) -> int:
     """The largest heap, in MB, that fits inside a container limit.
 
     The inverse of `container_memory_mb`, rounded down to 256 MB so the
     number on the Tune screen is one a person would type.
     """
     memory_mb = int(memory_mb)
-    heap = min(memory_mb - CONTAINER_OVERHEAD_MIN_MB,
-               int(memory_mb / (1 + CONTAINER_OVERHEAD_SHARE)))
+    by_mods = min(CONTAINER_OVERHEAD_MODS_MAX_MB,
+                  int(CONTAINER_OVERHEAD_MIN_MB + CONTAINER_OVERHEAD_PER_MOD_MB * mod_count))
+    heap = min(memory_mb - by_mods, int(memory_mb / (1 + CONTAINER_OVERHEAD_SHARE)))
     return max(512, heap // 256 * 256)
 
 
@@ -298,8 +310,13 @@ def recommend_memory(
         }
 
     # Reserve for OS + other services: 25% of total, at least 1.5 GB, at most 4.
+    # The ceiling is for the heap, so what the container needs beyond the
+    # heap comes off it too -- otherwise the heap fits and its container does
+    # not.
     reserve = min(4.0, max(1.5, total * 0.25))
-    ceiling = max(1.0, min(total - reserve, available - 0.5 if available else total))
+    room = max(1.0, min(total - reserve, available - 0.5 if available else total))
+    overhead = container_overhead_mb(int(room * 1024), mod_count) / 1024
+    ceiling = max(1.0, room - overhead)
 
     if pack_recommended_mb:
         wanted = pack_recommended_mb / 1024

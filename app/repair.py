@@ -41,7 +41,8 @@ import re
 import time
 import zipfile
 
-from app import curseforge, diagnostics, engine, jarmeta, loaders, modrinth, packs, smoketest
+from app import (curseforge, diagnostics, engine, jarmeta, loaders, modrinth, packs,
+                 smoketest, specs)
 from app import mods as modmgr
 from app.jobs import Job
 
@@ -397,12 +398,41 @@ async def apply(job: Job, server_id: str, action: dict, *, mc: str) -> bool:
                 file_id=action["file_id"], directory=MOD_DIR)
         elif action["do"] == "set_java":
             await engine.set_runtime(server_id, mc, action["major"])
+        elif action["do"] == "fit_heap":
+            from app import perf
+            await perf.apply(server_id, jvm_fixes=[{"set_heap_mb": action["heap_mb"]}],
+                             yaml_ids=[])
         job.log_line(f"Repair: {action['do']} {action.get('file') or action.get('name') or ''}"
                      f" -- {action['why']}", "warn" if action.get("last_resort") else "info")
         return True
     except Exception as e:      # noqa: BLE001 -- reported, the loop decides again
         job.log_line(f"Repair failed: {action['do']} {action.get('file') or ''}: {e}", "warn")
         return False
+
+
+async def _fit_memory(server_id: str, mod_count: int,
+                      tried: set) -> tuple[list[dict], list[str]]:
+    """The heap that fits this server's container with room for its mods.
+
+    The container keeps its size -- that is the owner's (or the plan's) to
+    change -- and the heap comes down to fit inside it.
+    """
+    from app import perf
+    server = await engine.get_server(server_id)
+    limit = int(server.get("memory_mb") or 0)
+    reading = await perf.analyse(server_id)
+    heaps = [a["arg"] for a in reading["jvm"]["args"] if a["arg"].startswith("-Xmx")]
+    current = perf._size_mb(heaps[-1][4:]) if heaps else None
+    fit = specs.heap_for_container_mb(limit, mod_count) if limit else None
+    if not fit or not current or fit >= current or ("fit_heap", str(fit)) in tried:
+        return [], [f"the server was killed for running out of memory in its {limit} MB "
+                    "container; give it more memory (Tune) or run fewer mods"]
+    need = specs.container_memory_mb(current / 1024, mod_count)
+    return [{"do": "fit_heap", "heap_mb": fit, "file": None, "project_id": str(fit),
+             "why": f"the kernel killed it for its {limit} MB memory limit: a {current} MB "
+                    f"heap leaves too little for the JVM around it with {mod_count} mods. "
+                    f"The heap is now {fit} MB; to keep {current} MB, give the server "
+                    f"{need} MB (Tune)"}], []
 
 
 def boot_timeout(mod_count: int) -> int:
@@ -436,8 +466,13 @@ async def boot_and_repair(job: Job, server_id: str, *, rounds: int = MAX_ROUNDS,
                            f"not up within {timeout}s -- it may simply be slow here")
         text = await _crash_text(server_id, started)
         await disk.refresh()
-        actions, unresolved = await decide(server_id, text, mc=mc, loader=loader,
-                                           disk=disk, tried=tried)
+        if last.get("oom"):
+            # Not a mod's fault: the heap and the JVM around it outgrew the
+            # container. Whatever the log's last error was, it is not why.
+            actions, unresolved = await _fit_memory(server_id, len(disk.enabled), tried)
+        else:
+            actions, unresolved = await decide(server_id, text, mc=mc, loader=loader,
+                                               disk=disk, tried=tried)
         if not actions:
             return _result("failed", n, done, last,
                            "; ".join(unresolved[:4]) or

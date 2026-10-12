@@ -344,6 +344,43 @@ async def main():
     check("...but a mod with mixins that do apply on a server is reported, not disabled",
           actions == [], (actions, why))
 
+    # --- killed for memory -------------------------------------------------------------------------
+    import re as _re
+
+    class OOMUnlessFits(MockEngine):
+        """Prominence II on the test server: OOM-killed with a 5 GB heap in a
+        6 GB container. Boots once the heap leaves room for its mods."""
+        async def power(self, server_id, action):
+            await super().power(server_id, action)
+            if action != "start":
+                return
+            cmd = self.servers[server_id].get("execution_command") or ""
+            heap = int(_re.search(r"-Xmx(\d+)M", cmd).group(1))
+            if heap > 4608:
+                self._put(server_id, "logs", "latest.log",
+                          b"[main/INFO]: Reloading YIGD graveyard data (server)\n")
+                self.stats[server_id].update(running=False, crashed=True,
+                                             last_exit={"code": 137, "oom": True})
+
+    oom = OOMUnlessFits(seed=False)
+    engine.configure("mock", drivers={"local": oom})
+    sid = await engine.create_server(name="Big pack", port=25702, memory_mb=6144,
+                                     mc_version="1.20.1", loader="fabric")
+    await engine.update_server(sid, {"execution_command":
+                                     "java -Xms5120M -Xmx5120M -XX:+UseG1GC -jar s.jar nogui"})
+    await engine.write_manifest(sid, {"schema": 1, "minecraft": "1.20.1", "loader": "fabric"})
+    for i in range(300):
+        await engine.upload_file(sid, "mods", f"mod{i:03d}-1.0.jar", fabric_jar(f"mod{i:03d}"))
+    result = await repair.boot_and_repair(Job("t", "t"), sid, timeout=60)
+    cmd = (await engine.get_server(sid))["execution_command"]
+    check("an OOM kill shrinks the heap to fit the container with room for 300 mods, "
+          "and the next boot comes up",
+          result["outcome"] == "ready" and "-Xmx4608M" in cmd
+          and [r["do"] for r in result["repairs"]] == ["fit_heap"], (result, cmd))
+    check("...blaming no mod, and saying how much memory keeps the old heap",
+          "6144 MB memory limit" in result["repairs"][0]["why"]
+          and "give the server" in result["repairs"][0]["why"], result["repairs"])
+
     # --- a boot that dies without a recognised failure line ------------------------------------
     class DiesOnBoot(MockEngine):
         async def power(self, server_id, action):

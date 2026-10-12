@@ -87,6 +87,7 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
     await engine.power(server_id, "start")
 
     outcome = "timeout"
+    oom = False
     ready_after = None
     lines: list[str] = []
     failure_line: str | None = None
@@ -141,6 +142,7 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             # a crash without one went unnoticed: Beyond Depth died 30 seconds
             # in on a mixin error and was watched for 36 minutes.
             running = True
+            stats = {}
             try:
                 stats = await engine.get_stats(server_id)
                 running = bool(stats.get("running")) and not stats.get("crashed")
@@ -148,7 +150,14 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
                 pass
             if not running:
                 outcome = "failed"
-                failure_line = failure_line or _last_error(text)
+                if (stats.get("last_exit") or {}).get("oom"):
+                    # Killed from outside for its memory limit: the log just
+                    # stops, and its last error is somebody else's.
+                    oom = True
+                    failure_line = ("Killed for running out of memory: the JVM used more "
+                                    "than its container's limit")
+                else:
+                    failure_line = failure_line or _last_error(text)
                 job.log_line(f"The server exited after {elapsed}s", "warn")
                 break
             # A line is only a failed boot if the server then actually dies.
@@ -195,6 +204,7 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
         else int(time.time() - started_at),
         "timeout": timeout,
         "failure_line": failure_line,
+        "oom": oom,
         "findings": findings,
         "log_tail": "\n".join(lines[-200:]),
         "has_logs": analysis.get("has_logs", False),

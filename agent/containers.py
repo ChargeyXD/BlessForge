@@ -245,9 +245,11 @@ def assert_safe(spec: dict, cfg: AgentConfig, folder: Path) -> None:
 
 # --- the runtime interface ----------------------------------------------------------
 
-# on_output(line) and on_exit(code) are called by the runtime for a running server.
+# on_output(line) and on_exit(code, info) are called by the runtime for a running
+# server; `info` says how it ended where the runtime knows ({"oom": True} when
+# the kernel killed it for its memory limit).
 Output = Callable[[str], None]
-Exited = Callable[[int | None], Awaitable[None]]
+Exited = Callable[..., Awaitable[None]]
 
 
 class Running:
@@ -412,13 +414,19 @@ class DockerRuntime:
                             on_output(ln.decode("utf-8", "replace").rstrip("\r"))
             finally:
                 code = None
+                oom = False
                 try:
                     async with _docker_client(self.cfg) as c2:
                         w = await c2.post(f"/containers/{name}/wait", timeout=30)
                         code = (w.json() or {}).get("StatusCode")
+                        # Exit 137 is any SIGKILL; only Docker knows whether
+                        # the kernel's OOM killer sent it. Prominence II died
+                        # this way mid-boot with nothing in its own log.
+                        i = await c2.get(f"/containers/{name}/json")
+                        oom = bool(((i.json() or {}).get("State") or {}).get("OOMKilled"))
                 except Exception:       # noqa: BLE001
                     pass
-                await on_exit(code)
+                await on_exit(code, {"oom": oom})
 
         task = asyncio.create_task(pump())
         return DockerRunning(self, name, writer, task)

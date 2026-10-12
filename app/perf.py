@@ -105,6 +105,7 @@ def jvm_args(command: str, args_file: str | None) -> dict:
 
 
 def check_jvm(args: list[dict], *, java: int | None, container_mb: int | None,
+              mod_count: int = 0,
               cpus: float | None, mc: str = "") -> list[dict]:
     """Faults and drags in the JVM arguments. Each finding names the argument."""
     issues: list[dict] = []
@@ -171,12 +172,16 @@ def check_jvm(args: list[dict], *, java: int | None, container_mb: int | None,
             f"{xms[-1][1]} > {xmx[-1][1]}: the JVM refuses to start.", xms[-1][1])
     if heap and container_mb:
         headroom = container_mb - heap
-        if headroom < 512:
+        needed = specs.container_overhead_mb(heap, mod_count)
+        if headroom < needed:
             add("bad", f"The heap ({heap} MB) does not fit the container ({container_mb} MB)",
-                "Java needs memory beyond the heap -- threads, metaspace, the JIT, "
-                "native buffers. Without room for it the container is killed for running "
-                "out of memory, usually under load, with no Java error at all.",
-                xmx[-1][1], {"set_heap_mb": max(1024, specs.heap_for_container_mb(container_mb))})
+                f"Java needs memory beyond the heap -- threads, metaspace, the JIT, native "
+                f"buffers -- about {needed} MB for this server"
+                + (f" with {mod_count} mods" if mod_count else "") + f", and it has "
+                f"{max(0, headroom)} MB. Without that room the container is killed for "
+                "running out of memory, usually under load, with no Java error at all.",
+                xmx[-1][1], {"set_heap_mb": max(1024, specs.heap_for_container_mb(
+                    container_mb, mod_count))})
         elif heap < container_mb * 0.45 and container_mb >= 3072:
             add("info", f"The heap uses only {heap} MB of a {container_mb} MB container",
                 "Most of the container's memory is not available to the game. If the "
@@ -503,7 +508,15 @@ async def analyse(server_id: str) -> dict:
     limits = server.get("limits") or {}
     cpus = (limits.get("cpu_pct") / 100) if limits.get("cpu_pct") else None
     java = server.get("java_major") or engine.java_of(server).get("major")
-    issues = check_jvm(parsed["args"], java=java, container_mb=container_mb, cpus=cpus, mc=mc)
+    mod_jars = 0
+    if kind == "mods":
+        try:
+            mod_jars = len([n for n in await engine.list_dir(server_id, "mods")
+                            if n.lower().endswith(".jar")])
+        except engine.EngineError:
+            mod_jars = 0
+    issues = check_jvm(parsed["args"], java=java, container_mb=container_mb, cpus=cpus, mc=mc,
+                       mod_count=mod_jars)
 
     files: list[str] = []
     folder = "plugins" if kind == "plugins" else "mods"
