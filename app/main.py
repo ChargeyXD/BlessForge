@@ -510,6 +510,8 @@ async def instances(request: Request) -> dict:
             info["players"] = stats.get("online")
             info["max_players"] = stats.get("max")
             info["cpu"] = stats.get("cpu")
+            info["cpu_cores"] = stats.get("cpu_cores")
+            info["cpu_allowance"] = stats.get("cpu_allowance")
             # The gauges want the share; `mem` is the resident set in bytes
             # and `mem_percent` its share of the server's own memory limit.
             info["mem"] = stats.get("mem_percent")

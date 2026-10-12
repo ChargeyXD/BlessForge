@@ -34,6 +34,9 @@ quota, a PID limit, a read-only root filesystem with only a noexec `/tmp`,
 uid 1000, exactly one bind mount (the server's own folder at `/server`),
 the game port published on the node's game address only, and no Docker
 restart policy (the agent restarts servers itself, so it sees crash loops).
+The JVM's temp folder is `/server/.blessforge-tmp` (`JAVA_TOOL_OPTIONS`),
+emptied at each start: JNA, Netty and friends unpack native libraries
+into the temp folder and load them, which the noexec `/tmp` refuses.
 
 Every file operation goes through `agent/files.py`, jailed to the server
 folder: on Linux each path component is opened `O_NOFOLLOW` relative to its

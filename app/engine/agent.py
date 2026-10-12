@@ -48,7 +48,12 @@ def record_of(row: Server) -> dict:
             "java_major": row.java_major,
             "memory_mb": int(limits.get("memory_mb") or 2048), "limits": limits,
             "node": row.node_id, "path": f"{row.node_id}:{row.uuid}",
-            "created": (row.created_at.isoformat() if row.created_at else ""),
+            # With its zone: SQLite hands back a naive UTC time, and a browser
+            # reads a zoneless ISO string as local -- a server made a minute
+            # ago in India showed "added 6 h ago".
+            "created": (time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                      time.gmtime(db.epoch(row.created_at)))
+                        if row.created_at else ""),
             "type": "minecraft-java", "auto_start": bool(row.auto_start),
             "kind": row.kind, "status": row.status, "template": row.template,
             "mc_version": row.mc_version}

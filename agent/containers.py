@@ -10,7 +10,10 @@ spec builder becomes a refused start rather than an escape:
   * `Memory` equal to `MemorySwap` (no swap to hide in), a CPU quota, a PID
     limit (a fork bomb stops at it), a block-IO weight;
   * every capability dropped, no-new-privileges, a read-only root
-    filesystem with only /tmp writable (tmpfs, noexec);
+    filesystem with only /tmp writable (tmpfs, noexec). The JVM's own temp
+    folder is in the server folder instead (NATIVE_TMP): libraries such as
+    JNA and Netty unpack a native library there and load it, which a noexec
+    /tmp refuses -- Beyond Depth would not boot;
   * an unprivileged uid, and exactly one bind mount: the server's own
     folder, at /server;
   * the game port published on the node's game address only.
@@ -42,6 +45,8 @@ from agent.config import AgentConfig
 
 CONTAINER_PREFIX = "bf-"
 SERVER_MOUNT = "/server"
+# The JVM's temp folder, inside the server folder, emptied at each start.
+NATIVE_TMP = ".blessforge-tmp"
 
 
 class RuntimeError_(Exception):
@@ -103,6 +108,9 @@ def container_spec(server: dict, cfg: AgentConfig, folder: Path) -> dict:
             f"SERVER_PORT={port}",
             "HOME=/server",
             "TZ=UTC",
+            # Before the command's own flags, so a pack that sets its own
+            # temp folder still wins.
+            f"JAVA_TOOL_OPTIONS=-Djava.io.tmpdir={SERVER_MOUNT}/{NATIVE_TMP}",
         ],
         "OpenStdin": True, "StdinOnce": False,
         "AttachStdin": True, "AttachStdout": True, "AttachStderr": True,
@@ -151,6 +159,18 @@ def installer_spec(server: dict, cfg: AgentConfig, folder: Path,
     spec["ExposedPorts"] = {}
     spec["HostConfig"]["PortBindings"] = {}
     return spec
+
+
+def fresh_native_tmp(folder: Path) -> None:
+    """An empty NATIVE_TMP for this start, through the jail like any other
+    write into a server folder (a link planted there is removed, never
+    followed)."""
+    from agent import files
+    try:
+        files.delete(folder, [NATIVE_TMP])
+    except files.JailError:
+        pass
+    files.mkdir(folder, ".", NATIVE_TMP)
 
 
 _FORBIDDEN_MOUNTS = ("/var/run/docker.sock", "/run/docker.sock", "/proc", "/sys",
@@ -364,6 +384,7 @@ class DockerRuntime:
     async def start(self, server: dict, folder: Path, on_output: Output,
                     on_exit: Exited) -> Running:
         spec = container_spec(server, self.cfg, folder)
+        fresh_native_tmp(folder)
         assert_safe(spec, self.cfg, folder)
         name = self.container(server["uuid"])
         async with _docker_client(self.cfg, 120) as c:
@@ -431,6 +452,7 @@ class DockerRuntime:
     async def run_installer(self, server: dict, folder: Path, argv: list[str],
                             timeout: int, on_output: Output) -> int:
         spec = installer_spec(server, self.cfg, folder, argv)
+        fresh_native_tmp(folder)
         assert_safe(spec, self.cfg, folder)
         name = self.container(server["uuid"]) + "-install"
         async with _docker_client(self.cfg, timeout + 60) as c:

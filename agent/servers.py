@@ -407,9 +407,20 @@ class Supervisor:
                                "version": (srv.ping or {}).get("version")}
         if srv.running is not None:
             out.update(await srv.running.stats())
+        if out.get("cpu") is not None:
+            # The runtimes count 100 per busy core; the panel shows a share
+            # with "busy" at 60 and "straining" at 85. Raw, a 2-core server
+            # flat out read 200% "straining" and a boot on 16 cores 1223%.
+            # As a share of the cores this server may use, with the counts
+            # kept for the detail.
+            allowance = limits_of(srv.spec)["cpu_pct"]
+            out["cpu_cores"] = round(out["cpu"] / 100, 2)
+            out["cpu_allowance"] = round(allowance / 100, 2)
+            out["cpu"] = round(min(100.0, out["cpu"] / allowance * 100), 1)
+        if out.get("mem") is not None:
+            out["mem_limit"] = limits_of(srv.spec)["memory_mb"] * 1024 * 1024
         if out.get("mem_percent") is None and out.get("mem"):
-            lim = limits_of(srv.spec)["memory_mb"] * 1024 * 1024
-            out["mem_percent"] = round(out["mem"] / lim * 100, 1)
+            out["mem_percent"] = round(out["mem"] / out["mem_limit"] * 100, 1)
         return out
 
     # --- installs -----------------------------------------------------------------

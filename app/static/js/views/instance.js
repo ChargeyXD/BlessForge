@@ -306,7 +306,9 @@ function vitalsRail() {
         : c >= 85 ? 'straining' : c >= 60 ? 'busy' : 'steady',
       c === null
         ? `CPU — ${up ? 'the node reported no CPU figure' : down}`
-        : `CPU ${c.toFixed(1)}%, as the node reports it. The tide is level `
+        : `CPU ${c.toFixed(1)}%${s.cpu_allowance
+          ? ` of the ${s.cpu_allowance} cores this server may use (${s.cpu_cores} busy)`
+          : ', as the node reports it'}. The tide is level `
           + 'with the reading; the dashed mark on the pillars is 85%.');
     /* `is-blank` is the hatch that means "running, but the node sent no
        figure" — NOT the same thing as a stopped server, which keeps its
@@ -332,12 +334,14 @@ function vitalsRail() {
       !up ? down
         : !known ? 'no reading'
           : pct === null ? 'share unknown'
-            : useBytes ? `${Math.round(pct)}% of host`
-              : 'of the host',
+            // The share is of this server's own memory limit, not of the
+            // machine: this read "85% of host" for 2.3 GB on a 15 GB box.
+            : useBytes ? `${Math.round(pct)}% of ${s.mem_limit ? bytes(s.mem_limit) : 'its limit'}`
+              : 'of its limit',
       !up ? `Memory — ${down}`
         : !known ? 'Memory — the node reported no memory figure'
           : `${useBytes ? bytes(raw) : '?'} resident`
-            + `${pct === null ? '' : `, ${pct.toFixed(1)}% of the machine`}`
+            + `${pct === null ? '' : `, ${pct.toFixed(1)}% of the memory this server may use`}`
             + '. The lantern fills with that share.');
     memArt.classList.toggle('is-blank', up && !known);
     /* With bytes but no share there is no level to draw, so the lantern

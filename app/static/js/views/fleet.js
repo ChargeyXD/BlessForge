@@ -253,7 +253,9 @@ function card(s) {
         + 'files or is not answering. It will keep failing until the folder '
         + 'is restored, the node comes back, or the record is deleted.')
       : h('div.gauges',
-        gauge('CPU', s.cpu, `${(s.cpu ?? 0).toFixed?.(0) ?? 0}%`,
+        gauge('CPU', s.cpu, s.cpu_allowance && s.cpu_cores != null
+          ? `${(s.cpu_cores).toFixed(1)} of ${s.cpu_allowance} cores`
+          : `${(s.cpu ?? 0).toFixed?.(0) ?? 0}%`,
           s.cpu > 85 ? 'bad' : s.cpu > 60 ? 'warn' : ''),
         gauge('RAM', s.mem, s.mem_bytes ? bytes(s.mem_bytes) : `${s.mem ?? 0}%`,
           s.mem > 88 ? 'bad' : s.mem > 70 ? 'warn' : ''),

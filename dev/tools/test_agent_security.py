@@ -67,8 +67,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey 
 
 from agent import auth, files  # noqa: E402
 from agent.config import AgentConfig, load  # noqa: E402
-from agent.containers import (ProcessRuntime, RuntimeError_, UnsafeSpec,  # noqa: E402
-                              assert_safe, container_spec, installer_spec)
+from agent.containers import (NATIVE_TMP, ProcessRuntime, RuntimeError_,  # noqa: E402
+                              UnsafeSpec, assert_safe, container_spec,
+                              fresh_native_tmp, installer_spec)
 
 LIVE = "--live" in sys.argv
 TMP = pathlib.Path(tempfile.mkdtemp(prefix="bf-agent-sec-"))
@@ -633,6 +634,24 @@ def test_containers():
     check("the root filesystem is read-only; /tmp is tmpfs and noexec",
           hc["ReadonlyRootfs"] and list(hc["Tmpfs"]) == ["/tmp"]
           and "noexec" in hc["Tmpfs"]["/tmp"])
+    check("the JVM's temp folder is in the server folder (native libraries load there)",
+          f"JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/server/{NATIVE_TMP}" in spec["Env"])
+
+    # The native temp folder is emptied at each start: a link planted in its
+    # place is removed, never followed, and nothing outside is touched.
+    box = TMP / "native-tmp"
+    box.mkdir()
+    kind = make_link(box / NATIVE_TMP, OUTSIDE)
+    if kind:
+        fresh_native_tmp(box)
+        made = box / NATIVE_TMP
+        check(f"a {kind} planted as the native temp folder is replaced, not followed",
+              made.is_dir() and not made.is_symlink() and outside_untouched()
+              and not any(made.iterdir()))
+    (box / NATIVE_TMP / "jna123.tmp").write_bytes(b"old")
+    fresh_native_tmp(box)
+    check("...and it starts empty each time",
+          (box / NATIVE_TMP).is_dir() and not any((box / NATIVE_TMP).iterdir()))
     check("the only mount is the server's own folder",
           hc["Binds"] == [f"{folder}:/server:rw"] and not hc.get("Mounts"))
     check("the Docker socket is nowhere in it", "docker.sock" not in json.dumps(spec))
