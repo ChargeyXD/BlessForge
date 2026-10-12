@@ -62,8 +62,16 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/data
+    # Not `disable: true`: `docker compose up --wait` fails on a container
+    # with no healthcheck. arq's liveness key, refreshed every 60 s; see the
+    # root docker-compose.yml.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import os, sys, redis; sys.exit(0 if redis.Redis.from_url(os.environ['REDIS_URL'], socket_timeout=3).exists('arq:queue:health-check') else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
 
   redis:
     image: redis:7-alpine

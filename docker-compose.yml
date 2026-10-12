@@ -47,6 +47,14 @@ services:
     # one of the ~30 address pools a CasaOS box has (past them, every new
     # project fails with "all predefined address pools have been fully
     # subnetted") -- one network for the whole app, not one per service.
+    #
+    # It is named on every service, not left to Compose's implicit default:
+    # CasaOS's import gives a service with no `networks:` its own
+    # `network_mode: bridge`, which puts all five containers on Docker's
+    # default bridge -- where `postgres`, `redis` and `agent` do not resolve,
+    # so the panel and the worker die on start and the agent is never set up.
+    networks:
+      - blessforge
     depends_on:
       postgres:
         condition: service_healthy
@@ -227,6 +235,8 @@ services:
     # The heavy one now: it downloads and repacks modpacks. Same ceiling
     # the API had when it did the work itself.
     mem_limit: 1g
+    networks:
+      - blessforge
     depends_on:
       postgres:
         condition: service_healthy
@@ -243,8 +253,21 @@ services:
       TZ: "UTC"
     volumes:
       - /DATA/AppData/blessforge/data:/data
+    # It needs a healthcheck of its own, and `disable: true` is not one: the
+    # image's probes the web port, which the worker does not serve, and a
+    # disabled check makes `docker compose up --wait` -- how CasaOS installs
+    # -- fail with "container blessforge-worker has no healthcheck
+    # configured". This reads arq's liveness key, which the worker refreshes
+    # every 60 s (health_check_interval in app/worker.py) and which expires a
+    # second after that. Plain redis, not `arq --check`: that imports the
+    # whole app every 30 s.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import os, sys, redis; sys.exit(0 if redis.Redis.from_url(os.environ['REDIS_URL'], socket_timeout=3).exists('arq:queue:health-check') else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
 
   # This machine's node agent: it starts and stops the game servers, each in
   # its own locked-down container (memory, CPU and process limits, no
@@ -263,6 +286,8 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "agent"]
     mem_limit: 256m
+    networks:
+      - blessforge
     environment:
       BLESSFORGE_AGENT_CONFIG: "/node/agent.toml"
       BLESSFORGE_AGENT_WAIT: "1"
@@ -274,18 +299,23 @@ services:
       - /DATA/AppData/blessforge/servers:/DATA/AppData/blessforge/servers
       - /DATA/AppData/blessforge/agent:/var/lib/blessforge-agent
       - /DATA/AppData/blessforge/node:/node:ro
+    # Healthy once the panel has registered it and it is serving -- the
+    # install waits for that, so it is probed every 5 s until then.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8443/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 120s
+      start_interval: 5s
 
   redis:
     image: redis:7-alpine
     container_name: blessforge-redis
     restart: unless-stopped
     mem_limit: 128m
+    networks:
+      - blessforge
     # Append-only, so a queued job and a job's history survive a restart of
     # Redis itself -- the whole point of the queue.
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
@@ -304,6 +334,8 @@ services:
     # Small: BlessForge's tables are accounts, sessions and records, not
     # worlds. The RAM it does not take is RAM a Minecraft server can have.
     mem_limit: 512m
+    networks:
+      - blessforge
     environment:
       POSTGRES_USER: "blessforge"
       # Must match the password in DATABASE_URL above.
@@ -319,6 +351,11 @@ services:
       timeout: 5s
       retries: 6
       start_period: 20s
+
+# The one network every service above names (see the panel's `networks:`).
+networks:
+  blessforge:
+    driver: bridge
 
 x-casaos:
   architectures:
