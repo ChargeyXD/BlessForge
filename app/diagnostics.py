@@ -956,9 +956,12 @@ async def deep_scan(job: Job, server_id: str, directory: str = "mods") -> dict:
     manifest = await engine.read_manifest(server_id)
     server_loader = (manifest.get("loader") or "").lower()
     mc_version = manifest.get("minecraft") or ""
+    connector = any(jarmeta.is_connector_jar(f) or i.get("mod_id") == "connector"
+                    for f, i in parsed.items())
     misfits = [
         (f, i) for f, i in sorted(parsed.items())
-        if not jarmeta.fits_loader(server_loader, i.get("loaders") or [], mc_version)
+        if not jarmeta.fits_loader(server_loader, i.get("loaders") or [], mc_version,
+                                   connector=connector)
     ]
     if misfits:
         names = [f"{f} ({'/'.join(i['loaders'])})" for f, i in misfits]

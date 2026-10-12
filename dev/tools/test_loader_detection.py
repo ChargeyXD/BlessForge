@@ -159,5 +159,43 @@ for _loader, _mc, _markers, _want, _why in [
           f"{'loads' if _want else 'does not load'}",
           _jm.fits_loader(_loader, _markers, _mc) is _want, _why)
 
+# Sinytra Connector runs Fabric mods on Forge 1.20.1 and NeoForge. BMC4 ships
+# BCLib, Better End and Better Nether that way.
+check("with Connector, a Fabric jar loads on Forge",
+      _jm.fits_loader("forge", ["fabric"], "1.20.1", connector=True))
+check("...and on NeoForge", _jm.fits_loader("neoforge", ["fabric"], "1.21.1", connector=True))
+check("...but Connector does not make a NeoForge jar fit Forge",
+      not _jm.fits_loader("forge", ["neoforge"], "1.21.1", connector=True))
+check("Connector's jar is recognised by its name",
+      _jm.is_connector_jar("mods/Connector-1.0.0-beta.46+1.20.1.jar")
+      and _jm.is_connector_jar("connector-2.0.0-beta.3+1.21.1-full.jar")
+      and not _jm.is_connector_jar("connectivity-1.20.1-5.3.jar"))
+
+from app.installer import PackEntry, connector_pass  # noqa: E402
+
+_records = [
+    {"file": "mods/Connector-1.0.0-beta.46+1.20.1.jar", "wrong_loader": False},
+    {"file": "mods/bclib-3.0.14.jar", "wrong_loader": True,
+     "wrong_loader_reason": "built for fabric, but this server runs forge"},
+    {"file": "mods/somemod-neo.jar", "wrong_loader": True,
+     "wrong_loader_reason": "built for neoforge, but this server runs forge"},
+    {"file": "mods/sodium-fabric.jar", "wrong_loader": True, "client_only": True,
+     "wrong_loader_reason": "built for fabric, but this server runs forge"},
+]
+_results = [PackEntry("Connector-1.0.0-beta.46+1.20.1.jar", blob=b""),
+            PackEntry("bclib-3.0.14.jar.disabled", blob=b""),
+            PackEntry("somemod-neo.jar.disabled", blob=b""),
+            PackEntry("sodium-fabric.jar.disabled", blob=b"")]
+_back = connector_pass("forge", _records, _results)
+check("a Forge pack with Connector keeps its Fabric jars enabled",
+      _back == {"bclib-3.0.14.jar"} and _results[1].target == "bclib-3.0.14.jar"
+      and _records[1]["via_connector"] and not _records[1]["wrong_loader"], _back)
+check("...but not a NeoForge-only jar, nor a client-only Fabric one",
+      _results[2].target.endswith(".disabled") and _results[3].target.endswith(".disabled"))
+_records[0]["file"] = "mods/connectivity-1.20.1-5.3.jar"
+_records[1].update(wrong_loader=True, wrong_loader_reason="built for fabric, but x")
+check("without Connector nothing changes",
+      connector_pass("forge", _records, _results) == set())
+
 print(f"\n{sum(ok)}/{len(ok)} checks passed")
 sys.exit(0 if all(ok) else 1)

@@ -588,6 +588,16 @@ async def _download_manifest_mods(
 
         await asyncio.gather(*(one(e) for e in entries))
 
+    # Sinytra Connector loads Fabric mods on Forge and NeoForge. Which jars a
+    # pack ships is only known once they are all in, so the Fabric jars set
+    # aside as wrong-loader are put back here when Connector is among them.
+    back = connector_pass(plan.loader, records, results)
+    if back:
+        wrong_loader_mods = [m for m in wrong_loader_mods if m not in back]
+        disabled_client = [m for m in disabled_client if m not in back]
+        job.log_line(f"Sinytra Connector is in the pack: {len(back)} Fabric mod(s) it "
+                     "runs on this server stay enabled.")
+
     if wrong_loader_mods:
         job.log_line(
             f"{len(wrong_loader_mods)} mod(s) are built for another loader and "
@@ -625,6 +635,33 @@ async def _download_manifest_mods(
         )
     return (results, records, problems, matched_names, disabled_client,
             blocked_out)
+
+
+def connector_pass(loader: str, records: list[dict], results: list) -> set[str]:
+    """Re-enable the Fabric jars a Forge/NeoForge pack runs through Sinytra
+    Connector. Returns the names put back (empty when there is no Connector).
+    BMC4 ships BCLib, Better End and Better Nether this way; installed
+    disabled as "built for fabric", its datapack lost their world presets
+    and the world never loaded."""
+    if (loader or "").lower() not in ("forge", "neoforge"):
+        return set()
+    if not any(jarmeta.is_connector_jar(r.get("file") or "") and not r.get("wrong_loader")
+               and not r.get("client_only") and not r.get("switched_off_in_pack")
+               for r in records):
+        return set()
+    back: set[str] = set()
+    for rec in records:
+        reason = (rec.get("wrong_loader_reason") or "").split(",")[0]
+        if rec.get("wrong_loader") and "fabric" in reason \
+                and not rec.get("switched_off_in_pack") and not rec.get("client_only"):
+            rec["wrong_loader"] = False
+            rec["wrong_loader_reason"] = None
+            rec["via_connector"] = True
+            back.add(posixpath.basename(rec["file"]))
+    for entry in results:
+        if entry.target.endswith(".disabled") and entry.target[:-9] in back:
+            entry.target = entry.target[:-9]
+    return back
 
 
 def _batch(items: list[PackEntry]) -> list[list[PackEntry]]:

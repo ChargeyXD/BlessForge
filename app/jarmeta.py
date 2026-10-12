@@ -175,17 +175,31 @@ def loader_markers(source) -> set[str]:
     return {loader for entry, loader in _LOADER_MARKERS if entry in names}
 
 
-def fits_loader(server_loader: str, jar_loaders, mc_version: str = "") -> bool:
+_CONNECTOR_JAR = re.compile(r"^(?:sinytra[-_ ]?)?connector[-_](?:\d|mc|forge|neoforge)", re.I)
+
+
+def is_connector_jar(filename: str) -> bool:
+    """Sinytra Connector: runs Fabric mods on Forge 1.20.1 and NeoForge."""
+    import posixpath
+    return bool(_CONNECTOR_JAR.match(posixpath.basename(filename or "")))
+
+
+def fits_loader(server_loader: str, jar_loaders, mc_version: str = "",
+                connector: bool = False) -> bool:
     """Whether a jar with these markers can load on this server.
 
     Deliberately permissive: no markers (a library or resource jar) and any
     single matching marker both pass. Roughly a tenth of real jars ship
     metadata for more than one loader, so anything stricter reports working
-    mods as broken.
+    mods as broken. With Sinytra Connector on a Forge or NeoForge server a
+    Fabric jar loads too -- BMC4 runs BCLib, Better End and Better Nether
+    that way, and switching them off broke its world presets.
     """
     s = (server_loader or "").lower()
     jl = {j.lower() for j in (jar_loaders or ())}
     if not jl or not s:
+        return True
+    if connector and s in ("forge", "neoforge") and "fabric" in jl:
         return True
     if s == "forge":
         return "forge" in jl
