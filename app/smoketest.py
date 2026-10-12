@@ -131,7 +131,12 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             # stops. (Count and last line together: a capped read keeps the
             # count still while the text moves on.)
             signature = (len(lines), lines[-1] if lines else "")
-            if signature != last_signature:
+            if not lines:
+                # Nothing readable this time (rotated mid-read, or too big to
+                # read): that says nothing about the server, so it is not
+                # silence either.
+                last_growth = time.time()
+            elif signature != last_signature:
                 last_signature, last_growth = signature, time.time()
             silent = time.time() - last_growth
             elapsed = int(time.time() - started_at)

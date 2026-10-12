@@ -323,6 +323,15 @@ class AgentEngine:
         if from_file:
             try:
                 return (await self.read_file(server_id, "logs/latest.log")).splitlines()
+            except EngineError as e:
+                if e.status != 413:
+                    return []
+            # Past the whole-read limit: its end, where "Done" and the crash
+            # are. 2BROKE4LORE's log passed 4 MB mid-boot; read whole, it came
+            # back empty, and a server that reached "Done" was called hung.
+            try:
+                return (await self.read_tail(server_id, "logs/latest.log",
+                                             3 * 1024 * 1024)).splitlines()
             except EngineError:
                 return []
         out = await self._call("GET", f"/v1/servers/{server_id}/console",

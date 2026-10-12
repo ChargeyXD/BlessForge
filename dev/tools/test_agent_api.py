@@ -265,6 +265,15 @@ async def main():
         check("a file search finds a file deep in the tree, through the node's own search",
               [h["path"] for h in hits] == ["libraries/a/b/c/needle-1.0.jar"]
               and hits[0]["bytes"] == 1, r.text[:200])
+        logs = TMP / "node" / "servers" / sid / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        with open(logs / "latest.log", "w", encoding="utf-8") as fh:
+            fh.write(("[12:00:00] [main/INFO]: " + "x" * 80 + "\n") * 46000)
+            fh.write('[12:04:17] [Server thread/INFO]: Done (257.518s)! For help, type "help"\n')
+        tail = await eng.console_lines(sid, from_file=True)
+        check("a log past the whole-read limit is read from its end, not returned empty",
+              len(tail) > 1000 and tail[-1].endswith('type "help"'), len(tail))
+        (logs / "latest.log").unlink()
         r = await c.get(f"/api/instances/{sid}/files/usage")
         libs = next((f for f in (r.json().get("folders") or []) if f["name"] == "libraries"), None)
         check("folder sizes are measured on the node too", libs is not None
