@@ -1,5 +1,9 @@
 # design/ — the Claude Design source for the 2026-08-28 UI rebuild
 
+> **For the next redesign, read [`UI-REWORK-BRIEF.md`](UI-REWORK-BRIEF.md)
+> first** — every screen, its endpoints, the observed rendering bugs and the
+> assets needed, as of 2026-10-12.
+
 > **HISTORICAL.** The front end this specified was replaced on 2026-09-10 by a
 > hand-built one on the pink shrine fox theme (`app/static/css` +
 > `app/static/js`). The canvas runtime it describes — `<x-dc>`, `support.js`,
