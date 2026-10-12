@@ -413,6 +413,7 @@ async def _download_manifest_mods(
     matched_names: list[str] = []
     disabled_client: list[str] = []
     wrong_loader_mods: list[str] = []
+    switched_off: list[str] = []
     blocked_out: list[dict] = []
     reasons = client_reasons or {}
 
@@ -511,8 +512,17 @@ async def _download_manifest_mods(
                             why = [f"built for {'/'.join(sorted(markers))}, "
                                    f"but this server runs {plan.loader}"]
 
+                    # "required": false is how a CurseForge export records a
+                    # mod its owner switched OFF in their profile. Installing it
+                    # enabled is installing a mod the pack does not run --
+                    # 2BROKE4LORE marks Ars Elemental so because Ars Nouveau is
+                    # not in the pack, and enabling it crashed the server.
+                    switched_off_here = not entry.get("required", True)
+                    if switched_off_here:
+                        switched_off.append(disk_name)
                     target = disk_name + (
-                        ".disabled" if client_only or wrong_loader else "")
+                        ".disabled" if client_only or wrong_loader or switched_off_here
+                        else "")
                     if client_only:
                         disabled_client.append(disk_name)
                     if wrong_loader:
@@ -558,6 +568,7 @@ async def _download_manifest_mods(
                         "client_only": client_only,
                         "client_only_reasons": why if client_only else [],
                         "wrong_loader": wrong_loader,
+                        "switched_off_in_pack": switched_off_here,
                         "wrong_loader_reason": why[0] if wrong_loader else None,
                         "identified_at": time.time(),
                     })
@@ -594,6 +605,11 @@ async def _download_manifest_mods(
             + ", ".join(sorted(client_only_disabled)[:8])
             + ("..." if len(client_only_disabled) > 8 else "")
         )
+    if switched_off:
+        job.log_line(
+            f"{len(switched_off)} mod(s) are switched off in the pack itself and were "
+            "installed disabled, as the pack has them: " + ", ".join(sorted(switched_off)[:8])
+            + ("..." if len(switched_off) > 8 else ""))
     if problems:
         job.log_line(f"{len(problems)} mods could not be downloaded", "warn")
         for p in problems[:10]:

@@ -35,6 +35,11 @@ def _norm(name: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
 
+def _unbracket(name: str) -> str:
+    """'Aquaculture Delight (A Farmer's Delight Add-on)' -> 'Aquaculture Delight'."""
+    return re.sub(r"\s*[\(\[][^)\]]*[\)\]]", "", name or "").strip()
+
+
 def record(meta: dict, project: dict | None = None, *,
            required_by: str | None = None) -> dict:
     """The entry shown wherever a blocked file has to be explained."""
@@ -128,6 +133,42 @@ async def substitutes(
             best = _pick_slug_build(versions, meta)
             if best:
                 found[meta.get("file_id")] = {**best, "substitute_via": "slug"}
+
+        # The same project often lives under a different slug on Modrinth
+        # ("ars-nouveau" vs "ars-nouveau-mod"). A search by name for this
+        # version and loader finds it -- accepted only when the name matches
+        # exactly AND an author is shared, because a name alone is something
+        # two unrelated projects can have.
+        for meta in todo:
+            if meta.get("file_id") in found:
+                continue
+            project = projects.get(meta.get("mod_id")) or {}
+            name = project.get("name") or ""
+            if not name:
+                continue
+            try:
+                hits = (await modrinth.search(query=name, game_version=mc_version or None,
+                                              loader=loader or None, page_size=8))["items"]
+            except Exception:
+                continue
+            cf_authors = {_norm(a) for a in project.get("authors") or [] if a}
+            for hit in hits:
+                if _norm(hit.get("name")) not in (_norm(name), _norm(_unbracket(name))):
+                    continue
+                mr_authors = {_norm(a) for a in (hit.get("authors") or [])
+                              if isinstance(a, str)}
+                if cf_authors and mr_authors and not (cf_authors & mr_authors):
+                    continue
+                try:
+                    versions = await modrinth.list_versions(
+                        hit["slug"] or hit["id"], game_version=mc_version or None,
+                        loader=(loader or None))
+                except Exception:
+                    continue
+                best = _pick_slug_build(versions, meta)
+                if best:
+                    found[meta.get("file_id")] = {**best, "substitute_via": "name"}
+                    break
 
     blocked = [record(m, projects.get(m.get("mod_id")))
                for m in todo if m.get("file_id") not in found]
