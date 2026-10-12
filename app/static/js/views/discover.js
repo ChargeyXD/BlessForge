@@ -266,12 +266,20 @@ export async function render() {
       candidates.length
         ? frag(
           h('h4.h-num', { style: { marginBottom: '6px' } },
-            `${candidates.length} mods look client-only`),
+            review.review?.policy === 'server_pack'
+              ? `${candidates.length} mods in this server pack look client-side`
+              : `${candidates.length} mods look client-only`),
           h('p.muted', { style: { fontSize: '13px', marginBottom: '10px' } },
-            'Ticked mods are installed but left disabled — the jar is written '
-            + 'as .jar.disabled, tagged on the Mods tab with the reason, and '
-            + 'is one click from coming back. Untick the lot and the pack '
-            + 'installs exactly as published.'),
+            review.review?.policy === 'server_pack'
+              ? 'This is the pack’s own server pack, so it installs exactly '
+                + 'as its author shipped it — some of these are there because '
+                + 'a server mod needs them. The first boot decides: if one of '
+                + 'them breaks the server, BlessForge disables it then and says '
+                + 'so. Tick one only if you want it off regardless.'
+              : 'Ticked mods are installed but left disabled — the jar is '
+                + 'written as .jar.disabled, tagged on the Mods tab with the '
+                + 'reason, and is one click from coming back. Untick the lot and '
+                + 'the pack installs exactly as published.'),
           h('div.modlist', { style: { maxHeight: '340px', overflow: 'auto' } },
             ...candidates.map((c) => reviewRow(c, disable, exclude, paint))))
         : h('div.note.ok',
@@ -332,9 +340,10 @@ export async function render() {
   }
 
   function reviewRow(c, disable, exclude, paint) {
-    const tone = { remove: 'bad', review: 'warn', keep: 'plum' }[c.recommendation];
+    const tone = { remove: 'bad', review: 'warn', keep: 'plum',
+      shipped: 'ghost' }[c.recommendation];
     const label = { remove: 'client-only', review: 'worth a look',
-      keep: 'protected' }[c.recommendation];
+      keep: 'protected', shipped: 'in the server pack' }[c.recommendation];
     return h('div.modrow',
       h('input', {
         type: 'checkbox', checked: disable.has(c.file_name),

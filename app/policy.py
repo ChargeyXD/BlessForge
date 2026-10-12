@@ -169,6 +169,8 @@ RULES: list[Rule] = [
     _r("GET", "/api/instances/{server_id}/crash-review", "server.view", True),
     _r("POST", "/api/instances/{server_id}/deep-scan", "server.view", True),
     _r("POST", "/api/instances/{server_id}/smoke-test", "server.power", True),
+    _r("POST", "/api/instances/{server_id}/repair", "mods.manage", True),
+    _r("POST", "/api/instances/{server_id}/fix/dependency", "mods.manage", True),
     _r("GET", "/api/instances/{server_id}/optimize", "server.view", True),
     _r("POST", "/api/instances/{server_id}/optimize", "tune.apply", True),
     _r("POST", "/api/instances/{sid}/optimize/advice", "server.view", True),

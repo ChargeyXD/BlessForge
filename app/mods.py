@@ -540,12 +540,14 @@ async def identify_mods(
     await asyncio.gather(*(fetch(m) for m in unknown))
 
     job.set_step("Matching against CurseForge", 55)
+    # Hashed in worker processes, not on the event loop: it is minutes of CPU
+    # for a big pack, and the API stopped answering while it ran.
+    names = list(blobs)
     fingerprints = {}
-    for fname, blob in blobs.items():
-        try:
-            fingerprints[curseforge.fingerprint(blob)] = fname
-        except Exception:
-            pass
+    for fname, fp in zip(names, await curseforge.fingerprint_many(
+            [blobs[n] for n in names])):
+        if fp is not None:
+            fingerprints[fp] = fname
 
     matched: dict[str, dict] = {}
     try:

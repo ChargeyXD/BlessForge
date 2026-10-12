@@ -50,7 +50,8 @@ async def source_for(c, spec: str) -> tuple[dict, str]:
     return {"mod_id": pack, "file_id": newest["file_id"]}, newest.get("display_name") or spec
 
 
-async def one(c, spec: str, mem: int, boot_timeout: int, keep: bool) -> dict:
+async def one(c, spec: str, mem: int, boot_timeout: int, keep: bool,
+              reboot: bool = False) -> dict:
     row: dict = {"spec": spec}
     try:
         body, label = await source_for(c, spec)
@@ -79,24 +80,40 @@ async def one(c, spec: str, mem: int, boot_timeout: int, keep: bool) -> dict:
         row["error"] = snap.get("error")
         return row
 
-    # The install may already have booted it (and repaired it); boot once more
-    # regardless, from cold, exactly as an operator pressing Start would.
-    t1 = time.time()
-    r = await c.post(f"/api/instances/{sid}/smoke-test", json={"timeout": boot_timeout})
-    boot = await follow(c, r.json()["job_id"], boot_timeout + 300)
-    br = boot.get("result") or {}
-    row.update(boot=br.get("outcome") or boot.get("status"),
-               boot_seconds=br.get("seconds") or int(time.time() - t1),
-               findings=[{k: f.get(k) for k in ("severity", "title")}
-                         for f in br.get("findings") or []])
-    log(f"   boot {row['boot']} in {row['boot_seconds']}s")
+    # The install ends with a first boot and its repairs (app/repair.py); that
+    # verdict is the one that counts. --reboot boots once more from cold, as
+    # an operator pressing Start would.
+    first = result.get("boot") or {}
+    for rep in first.get("repairs") or []:
+        log(f"   repair: {rep['do']} {rep.get('file') or rep.get('name') or ''} -- "
+            f"{rep['why'][:150]}")
+    if first and not reboot:
+        row.update(boot=first.get("outcome"), boot_seconds=first.get("seconds"),
+                   boot_rounds=first.get("rounds"), boot_why=first.get("why"),
+                   failure_line=first.get("failure_line"))
+        log(f"   first boot {row['boot']} after {row['boot_rounds']} attempt(s)"
+            + (f" in {row['boot_seconds']}s" if row["boot"] == "ready" else
+               f": {first.get('why')}"))
+    else:
+        t1 = time.time()
+        r = await c.post(f"/api/instances/{sid}/smoke-test", json={"timeout": boot_timeout})
+        boot = await follow(c, r.json()["job_id"], boot_timeout + 300)
+        br = boot.get("result") or {}
+        row.update(boot=br.get("outcome") or boot.get("status"),
+                   boot_seconds=br.get("seconds") or int(time.time() - t1),
+                   failure_line=br.get("failure_line"),
+                   findings=[{k: f.get(k) for k in ("severity", "title")}
+                             for f in br.get("findings") or []])
+        log(f"   boot {row['boot']} in {row['boot_seconds']}s")
+    br = {"log_tail": ""}
     if row["boot"] != "ready":
         review = (await c.get(f"/api/instances/{sid}/crash-review")).json()
         row["culprits"] = [{k: x.get(k) for k in ("file", "confidence", "why")}
                            for x in review.get("culprits") or []][:6]
         row["crash_findings"] = [{k: f.get(k) for k in ("severity", "title", "detail")}
                                  for f in review.get("findings") or []][:6]
-        row["log_tail"] = (br.get("log_tail") or "")[-3000:]
+        ctx = (await c.get(f"/api/instances/{sid}/console", params={"source": "file"})).json()
+        row["log_tail"] = "\n".join((ctx.get("lines") or [])[-60:])[-4000:]
         for x in row["culprits"]:
             log(f"   culprit [{x['confidence']}] {x['file']}: {x['why'][:140]}")
         for f in row["crash_findings"]:
@@ -118,7 +135,7 @@ async def main(a) -> bool:
         log(f"panel {s.api}, agent {s.agent}, report {out}")
         for spec in a.packs:
             try:
-                row = await one(s.client, spec, a.mem, a.boot_timeout, a.keep)
+                row = await one(s.client, spec, a.mem, a.boot_timeout, a.keep, a.reboot)
             except Exception as e:      # noqa: BLE001 -- recorded, next pack runs
                 row = {"spec": spec, "stage": "crashed", "error": repr(e)}
                 log(f"   crashed: {e!r}")
@@ -138,7 +155,8 @@ if __name__ == "__main__":
     p.add_argument("packs", nargs="+", help="CurseForge modpack ids, or export .zip paths")
     p.add_argument("--docker", action="store_true")
     p.add_argument("--mem", type=int, default=5, help="max heap, GB")
-    p.add_argument("--boot-timeout", type=int, default=1500)
+    p.add_argument("--boot-timeout", type=int, default=2400)
     p.add_argument("--keep", action="store_true")
+    p.add_argument("--reboot", action="store_true", help="boot again from cold after install")
     p.add_argument("--report")
     sys.exit(0 if asyncio.run(main(p.parse_args())) else 1)

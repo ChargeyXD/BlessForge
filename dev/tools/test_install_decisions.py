@@ -148,7 +148,7 @@ async def run_install(**kwargs):
         job = Job("install", "test")
         result = await installer.install_modpack(
             job, mod_id=1, file_id=2, server_name="Test",
-            **{"optimize": False, **kwargs}
+            **{"optimize": False, "boot_check": False, **kwargs}
         )
     finally:
         (installer._load_plan, installer._wait_for_loader,
@@ -179,21 +179,34 @@ async def main():
           or "motd" not in fake.files.get("server.properties", ""))
     check("the summary reports the port", result.get("port") == 25580)
 
-    # --- client-only mods are disabled, not deleted ---------------------
-    check("the client-only mod is still installed",
+    # --- a server pack installs as its author shipped it -----------------
+    # A client-looking jar in a SERVER pack is often there because a server
+    # mod needs it; disabling it on a guess broke packs that would have
+    # booted. The first boot decides (app/repair.py), not the jar's name.
+    check("a server pack's client-looking mod is installed",
           any("clientmod" in u for u in fake.uploaded),
           ", ".join(u for u in fake.uploaded if u.endswith((".jar", ".disabled"))))
-    check("...but disabled",
-          any(u.endswith("clientmod-1.0.jar.disabled") for u in fake.uploaded))
+    check("...enabled, exactly as the pack ships it",
+          "mods/clientmod-1.0.jar" in fake.uploaded
+          and not any(u.endswith("clientmod-1.0.jar.disabled") for u in fake.uploaded))
     check("the server mod is untouched",
           "mods/goodmod-1.0.jar" in fake.uploaded)
-    check("the summary names what it disabled",
-          result.get("client_only_disabled") == ["clientmod-1.0.jar"],
+    check("nothing is reported as disabled on a guess",
+          result.get("client_only_disabled") == [],
           str(result.get("client_only_disabled")))
 
     records = {r["file"]: r for r in fake.manifest.get("mods", [])}
-    check("the manifest tags it client-only",
-          records.get("mods/clientmod-1.0.jar", {}).get("client_only") is True)
+    check("the manifest does not tag it client-only",
+          records.get("mods/clientmod-1.0.jar", {}).get("client_only") is False)
+
+    # An explicit choice in the review is still honoured, server pack or not.
+    fake, result = await run_install(port=25581, disable_files=["clientmod-1.0.jar"],
+                                     client_reasons={"clientmod-1.0.jar":
+                                                     ["the jar declares environment=client"]})
+    records = {r["file"]: r for r in fake.manifest.get("mods", [])}
+    check("a mod the operator ticks in the review is installed disabled",
+          any(u.endswith("clientmod-1.0.jar.disabled") for u in fake.uploaded)
+          and result.get("client_only_disabled") == ["clientmod-1.0.jar"])
     check("...and records why",
           "environment=client" in " ".join(
               records.get("mods/clientmod-1.0.jar", {}).get("client_only_reasons", [])))

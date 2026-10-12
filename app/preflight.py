@@ -288,6 +288,18 @@ async def analyse_server_pack_jars(job: Job, zf: zipfile.ZipFile,
     result = _split(items)
     # A server pack carries its jars; nothing in it is fetched from anyone.
     result["blocked_by_author"] = []
+    # A server pack is the author's own answer to "what does the server need",
+    # client-looking mods included -- some are there because a server mod
+    # depends on them. So nothing is recommended for removal on a guess: the
+    # pack installs as shipped, and a mod is disabled only if the first boot
+    # proves it breaks the server (app/repair.py). The scan stays visible so
+    # the operator can still choose to.
+    result["policy"] = "server_pack"
+    for c in result.get("candidates") or []:
+        if c.get("recommendation") in ("remove", "review"):
+            c["recommendation"] = "shipped"
+            c["note"] = ("kept: the server pack ships it -- disabled only if the "
+                         "first boot shows it breaks the server")
     job.log_line(
         f"{len(result['candidates'])} possible client-only jars in the server "
         f"pack"

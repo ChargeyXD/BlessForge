@@ -653,10 +653,15 @@ async def _push_batches(
     for i, batch in enumerate(batches, 1):
         zip_name = f".studio-batch-{int(time.time())}-{i}.zip"
         local = scratch / zip_name
-        try:
-            with zipfile.ZipFile(local, "w", zipfile.ZIP_STORED) as archive:
-                for entry in batch:
+        def build(path=local, entries=batch) -> None:
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+                for entry in entries:
                     entry.write_into(archive, source)
+
+        try:
+            # Decompressing and writing up to 64 MB is real work; on a thread
+            # it no longer stalls every other request the API is answering.
+            await asyncio.to_thread(build)
             size_mb = local.stat().st_size / 1048576
             pct = start_pct + (end_pct - start_pct) * ((i - 1) / len(batches))
             job.set_step(f"{label} ({i}/{len(batches)}, {size_mb:.0f} MB)", pct)
@@ -781,6 +786,7 @@ async def install_modpack(
     disable_files: list[str] | None = None,
     client_reasons: dict[str, list[str]] | None = None,
     optimize: bool = True,
+    boot_check: bool = True,
 ) -> dict:
     """Install a modpack into a new (or existing) server.
 
@@ -911,7 +917,12 @@ async def install_modpack(
                 why = reasons_by_file.get(base) or [
                     "flagged as client-only in the pre-install review"
                 ]
-            elif to_disable is None and skip_client_only:
+            elif to_disable is None and skip_client_only and plan.source != "server_pack":
+                # A server pack is installed as its author shipped it: a
+                # client-looking jar in one is often there because a server
+                # mod needs it, and disabling it on a guess broke packs that
+                # would have booted. The first boot decides (app/repair.py).
+                #
                 # No review to defer to: judge the jar on its own metadata,
                 # then on its name. Either way it is disabled, not deleted.
                 # Only mod jars are read here, and only one at a time --
@@ -1146,6 +1157,34 @@ async def install_modpack(
            if summary["client_only_disabled"] else "")
     )
 
+    # Installed is not running. Boot it once and fix what that boot proves
+    # broken -- a missing library, a client mod a server pack should not have
+    # shipped -- so the operator gets a server that starts, not a list of
+    # things to do first (app/repair.py).
+    if boot_check:
+        from app import repair
+        job.set_step("First boot", 97)
+        try:
+            boot = await repair.boot_and_repair(job, server_id)
+        except Exception as e:      # noqa: BLE001 -- the install itself succeeded
+            boot = {"outcome": "error", "why": str(e), "repairs": []}
+        summary["boot"] = boot
+        summary["repairs"] = boot.get("repairs") or []
+        try:
+            manifest = await engine.read_manifest(server_id)
+            manifest["boot_check"] = {k: boot.get(k) for k in
+                                      ("outcome", "rounds", "why", "seconds")} | {
+                "at": time.time()}
+            await engine.write_manifest(server_id, manifest)
+        except Exception:       # noqa: BLE001
+            pass
+        if boot["outcome"] == "ready":
+            job.log_line(f"First boot: up in {boot.get('seconds')}s"
+                         + (f" after {len(summary['repairs'])} repair(s)"
+                            if summary["repairs"] else ""))
+        else:
+            job.log_line(f"First boot: {boot['outcome']} -- {boot.get('why')}", "warn")
+
     # An install is the moment the cache has just grown, and the one moment
     # nothing else is reading it. Failing to prune must never fail an install
     # that otherwise worked.
@@ -1178,20 +1217,38 @@ async def _identify_overlay(job: Job, zf, records: list[dict]) -> None:
 
     by_fp: dict[int, dict] = {}
     by_sha: dict[str, dict] = {}
-    for r in todo:
-        try:
-            blob = zf.read(r["member"])
-        except Exception:
-            continue
-        try:
-            by_fp[curseforge.fingerprint(blob)] = r
-        except Exception:
-            pass
-        try:
-            by_sha[modrinth.sha1(blob)] = r
-        except Exception:
-            pass
-        del blob
+
+    def read_members(members: list[str]) -> list[bytes | None]:
+        out = []
+        for member in members:
+            try:
+                out.append(zf.read(member))
+            except Exception:       # noqa: BLE001
+                out.append(None)
+        return out
+
+    # In batches, off the event loop: decompression in a thread, CurseForge's
+    # fingerprint in worker processes. Both used to run inline, and on ATM10
+    # or Integrated MC that froze the whole API for minutes -- a client
+    # polling the install got a read timeout. A batch at a time keeps memory
+    # flat on a gigabyte pack.
+    batch = 16
+    for i in range(0, len(todo), batch):
+        chunk = todo[i:i + batch]
+        job.set_step(f"Identifying jars ({min(i + batch, len(todo))}/{len(todo)})",
+                     58 + 1.5 * i / max(len(todo), 1))
+        blobs = await asyncio.to_thread(read_members, [r["member"] for r in chunk])
+        fps = await curseforge.fingerprint_many([b or b"" for b in blobs])
+        for r, blob, fp in zip(chunk, blobs, fps):
+            if blob is None:
+                continue
+            if fp is not None:
+                by_fp[fp] = r
+            try:
+                by_sha[modrinth.sha1(blob)] = r
+            except Exception:       # noqa: BLE001
+                pass
+        del blobs
 
     matched = 0
     try:

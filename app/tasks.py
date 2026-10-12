@@ -122,6 +122,19 @@ async def client_scan(job: Job, server_id: str, directory: str = "mods") -> dict
     return await clientscan.scan_instance(job, server_id, directory)
 
 
+@task("boot_repair")
+async def boot_repair(job: Job, server_id: str) -> dict:
+    from app import repair
+    return await repair.boot_and_repair(job, server_id)
+
+
+@task("fix_dependency")
+async def fix_dependency(job: Job, server_id: str, mod_id: str,
+                         required_by: str | None = None) -> dict:
+    from app import repair
+    return await repair.fix_dependency(job, server_id, mod_id, required_by)
+
+
 @task("smoke_test")
 async def smoke_test(job: Job, server_id: str, timeout: int = 300) -> dict:
     from app import smoketest

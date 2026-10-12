@@ -1016,8 +1016,35 @@ async def restore_backup(server_id: str, snap_id: str) -> dict:
 async def smoke_test(server_id: str, timeout: int = Body(300, embed=True)) -> dict:
     """Boot once, watch, stop, and report -- for a server with no log yet."""
     job = await _job_for("smoke_test", "Boot test", server_id)
+    # Up to 40 minutes: a 450-mod pack's first boot on a modest node also
+    # generates the world, and 15 minutes cut real boots short.
     await registry.submit(job, "smoke_test", server_id=server_id,
-                          timeout=max(60, min(int(timeout), 900)))
+                          timeout=max(60, min(int(timeout), 2400)))
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/repair")
+async def boot_repair(server_id: str) -> dict:
+    """Boot, and fix what that boot proves broken, until it is up.
+
+    The same loop an install ends with (app/repair.py): a missing library is
+    enabled or installed, a client-side mod the crash names is disabled, the
+    wrong Java is swapped -- and nothing is changed on a guess.
+    """
+    job = await _job_for("boot_repair", "Boot and repair", server_id)
+    await registry.submit(job, "boot_repair", server_id=server_id)
+    return {"job_id": job.id}
+
+
+@app.post("/api/instances/{server_id}/fix/dependency")
+async def fix_dependency(server_id: str, body: dict = Body(...)) -> dict:
+    """Bring back a missing library: re-enable it, or install a compatible build."""
+    mod_id = str(body.get("mod_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", mod_id):
+        raise HTTPException(400, "a mod id is required")
+    job = await _job_for("fix_dependency", f"Fix the missing {mod_id}", server_id)
+    await registry.submit(job, "fix_dependency", server_id=server_id, mod_id=mod_id,
+                          required_by=(str(body.get("required_by") or "")[:64] or None))
     return {"job_id": job.id}
 
 
@@ -2403,6 +2430,7 @@ async def install_modpack(body: dict = Body(...)) -> dict:
             disable_files=body.get("disable_files"),
             client_reasons=body.get("client_reasons"),
             optimize=bool(body.get("optimize", True)),
+            boot_check=bool(body.get("boot_check", True)),
         ),
     )
     return {"job_id": job.id}
