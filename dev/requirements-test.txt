@@ -1,0 +1,9 @@
+# What the dev/tools tests need beyond the app and the agent:
+#
+#   pip install -r requirements.txt -r agent/requirements.txt \
+#               -r dev/requirements-test.txt
+#
+# fakeredis stands in for Redis in test_jobs_redis.py when REDIS_TEST_URL is
+# not set. The agent's own requirements bring psutil, and uvicorn[standard]
+# brings the websockets client test_agent_api.py uses.
+fakeredis==2.39.0

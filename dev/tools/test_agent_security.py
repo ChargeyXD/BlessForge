@@ -737,6 +737,72 @@ def test_containers():
         check(f"assert_safe refuses {label}", ok)
 
 
+async def test_graceful_stop():
+    """Stop is `stop` on the console, then a wait -- the signal only after.
+
+    Found on a real Docker node: Docker's own stop sends SIGTERM at once, and
+    sending it straight after `stop` raced the two; Paper took the signal.
+    """
+    section("8b. a Docker server is stopped by its own `stop` first")
+    from agent import containers
+
+    calls = []
+
+    class FakeDocker:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def post(self, url, **kw):
+            calls.append((url, kw.get("params")))
+
+    class Writer:
+        def __init__(self, on_line):
+            self.written, self.on_line = b"", on_line
+
+        def write(self, data):
+            self.written += data
+            self.on_line(data.decode().strip())
+
+        async def drain(self):
+            pass
+
+    real = containers._docker_client
+    containers._docker_client = FakeDocker
+    try:
+        # A server that saves and exits half a second after `stop`.
+        exited = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        writer = Writer(lambda ln: ln == "stop" and loop.call_later(0.5, exited.set))
+        pump = asyncio.create_task(exited.wait())
+        running = containers.DockerRunning(type("RT", (), {"cfg": None})(), "bf-x",
+                                           writer, pump)
+        await running.stop(timeout=10)
+        check("`stop` goes to the server's console first", writer.written == b"stop\n")
+        check("...and a server that exits by itself never gets Docker's stop (no signal)",
+              calls == [], calls)
+
+        # A server that ignores `stop`.
+        calls.clear()
+        hung = asyncio.create_task(asyncio.Event().wait())
+        running = containers.DockerRunning(type("RT", (), {"cfg": None})(), "bf-y",
+                                           Writer(lambda ln: None), hung)
+        t0 = time.time()
+        await running.stop(timeout=1)
+        check("one that does not exit gets Docker's stop only after the timeout",
+              calls == [("/containers/bf-y/stop", {"t": 10})] and time.time() - t0 >= 1,
+              calls)
+        check("...and waiting did not cancel the console pump", not hung.cancelled())
+        hung.cancel()
+    finally:
+        containers._docker_client = real
+
+
 # --- 9. config ------------------------------------------------------------------------
 
 
@@ -906,9 +972,13 @@ async def test_live():
           host_ok == [True] and any("fork" in ln.lower() or "resource" in ln.lower()
                                     for ln in lines), lines[-3:])
 
+    # 768 MB, not the 256 the others get: /tmp is tmpfs, and tmpfs pages
+    # count against the container's memory limit, so a 256 MB container
+    # filling a 256 MB /tmp is OOM-killed before it ever sees ENOSPC.
     code, lines, _ = await run(
         "sh -c 'dd if=/dev/zero of=/fill bs=1M count=50 2>&1; "
-        "dd if=/dev/zero of=/tmp/fill bs=1M count=400 2>&1; echo DONE'", seconds=60)
+        "dd if=/dev/zero of=/tmp/fill bs=1M count=400 2>&1; echo DONE'",
+        memory_mb=768, seconds=60)
     out = "\n".join(lines)
     check("LIVE the root filesystem cannot be filled, and /tmp stops at its size",
           "Read-only file system" in out and "No space left" in out, out[-300:])
@@ -926,6 +996,7 @@ async def main():
     await test_panel_side()
     test_api()
     test_containers()
+    await test_graceful_stop()
     test_config()
     await test_disk()
     if LIVE:

@@ -96,8 +96,11 @@ class Stack:
 
 
 @asynccontextmanager
-async def stack(tmp: pathlib.Path, extra_env: dict | None = None):
-    javas = {m: find_java(m) for m in (8, 17, 21, 25)}
+async def stack(tmp: pathlib.Path, extra_env: dict | None = None, runtime: str = "process"):
+    """`runtime="docker"` runs the servers in the agent's real containers
+    (the runtime images must be built: agent/images/build.sh), with game
+    ports on 127.0.0.1; "process" uses the local JREs, no isolation."""
+    javas = {m: find_java(m) for m in (8, 17, 21, 25)} if runtime == "process" else {}
     api_port, agent_port = free_port(), free_port()
     api = f"http://127.0.0.1:{api_port}"
     env = {**os.environ, "ENGINE": "agent",
@@ -122,13 +125,17 @@ async def stack(tmp: pathlib.Path, extra_env: dict | None = None):
                                                       "password": "live scripts passphrase"})
         await client.post("/api/auth/login", json={"username": "admin",
                                                    "password": "live scripts passphrase"})
+        agent_extra = {"listen_port": agent_port,
+                       "servers_root": str(tmp / "node/servers"),
+                       "state_dir": str(tmp / "node/state"), "stop_timeout": 60}
+        if runtime == "process":
+            agent_extra.update(allow_unsafe_process_runtime=True,
+                               java_paths={str(m): p for m, p in javas.items() if p})
+        else:
+            agent_extra.update(game_bind_ip="127.0.0.1")
         made = (await client.post("/api/admin/nodes", json={
             "name": "Live node", "fqdn": "127.0.0.1", "agent_port": agent_port,
-            "scheme": "http", "runtime": "process",
-            "agent": {"allow_unsafe_process_runtime": True, "listen_port": agent_port,
-                      "servers_root": str(tmp / "node/servers"),
-                      "state_dir": str(tmp / "node/state"), "stop_timeout": 60,
-                      "java_paths": {str(m): p for m, p in javas.items() if p}},
+            "scheme": "http", "runtime": runtime, "agent": agent_extra,
         })).json()
         cfg = tmp / "agent.toml"
         cfg.write_text(made["config"], encoding="utf-8")

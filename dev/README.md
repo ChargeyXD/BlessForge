@@ -33,7 +33,11 @@ skips the parse check rather than failing if node is absent.
 ## tools/ — offline Python tests
 
 No network and nothing outside a temp directory. The engine is the in-memory
-mock unless a file says otherwise.
+mock unless a file says otherwise. Setup, beyond the app's own requirements:
+
+```bash
+pip install -r requirements.txt -r agent/requirements.txt -r dev/requirements-test.txt
+```
 
 | file | what it covers |
 |---|---|
@@ -62,15 +66,15 @@ Offline, in the quick loop:
 | `test_jobs_redis.py` | the job queue: an API and a worker as separate processes, the API killed mid-job, a browser re-attaching with no gap and no repeat, cancel, orphaned jobs. fakeredis over TCP unless `REDIS_TEST_URL` is set. 25 checks, about 25 s. |
 | `test_templates.py` | the seven loader templates: well formed, the Java each version runs on, and each one created, tuned and boot-tested through the engine. 50 checks. |
 | `test_import_crafty.py` | `import_from_crafty.py` against the Crafty mock: through the API and from disk, re-runs, port clashes, a planted link, Crafty only ever read. 20 checks. |
-| `test_agent_security.py` | the node agent: the file jail (paths, links, junctions, a swap race, hard links), archives (zip slip, link members, bombs), browser and node tokens, one server's token against another, every container rule, the disk watchdog. 172 checks. `--live` adds real containers trying to get out — Linux and Docker only, **not yet run**. |
+| `test_agent_security.py` | the node agent: the file jail (paths, links, junctions, a swap race, hard links), archives (zip slip, link members, bombs), browser and node tokens, one server's token against another, every container rule, graceful stop, the disk watchdog. 176 checks on Windows. `--live` adds real containers trying to get out — Linux and Docker only; 189/189 on the CasaOS box (2026-10-12). |
 | `test_agent_api.py` | the panel and an agent as two processes: register a node, create → start → console websocket and a command → edit a file → crash → stop → delete, and both directions refusing the wrong credential. 30 checks. |
 
 Live, not in the quick loop (network, minutes, real servers):
 
 | file | what it does |
 |---|---|
-| `boot_templates.py` | downloads every loader from its own project and boots a real server for each, through a panel and a process-runtime agent with local JREs. |
-| `install_on_agent.py` | installs a CurseForge modpack on the agent, boots it, exports it, imports the export back as a second server, and boots that. Needs your key (environment or `.env`; never printed). |
+| `boot_templates.py` | downloads every loader from its own project and boots a real server for each, through a panel and an agent — the process runtime with local JREs, or `--docker` for the real containers — then starts it again, types `list` into its console, reads the answer, and checks it stops on its own `stop`. |
+| `install_on_agent.py` | **the CurseForge test, and it is not optional**: real packs through the real CurseForge API — NeoForge and Forge server packs, a Fabric pack built from its manifest — each installed and booted; on the first, a CurseForge mod with a required dependency added and booted, then the server exported, imported back and booted. `--docker` for the real containers, `--pack ID` for others. Needs your key (environment or `.env`; never printed). |
 | `_agentstack.py` | the disposable panel + agent both of the above stand up. |
 
 The importer itself:

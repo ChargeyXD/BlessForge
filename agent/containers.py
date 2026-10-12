@@ -279,14 +279,27 @@ class DockerRunning(Running):
         await self.writer.drain()
 
     async def stop(self, timeout: int) -> None:
+        """`stop` on the console, then wait for the server to save and exit.
+
+        Only if it has not exited after `timeout` seconds does Docker's own
+        stop follow. That is SIGTERM at once and SIGKILL ten seconds later --
+        sending it straight after `stop`, as this once did, raced the two
+        shutdowns, and on Paper the signal won: the world was saved by a
+        JVM shutdown hook instead of by the server's own stop.
+        """
         try:
             await self.send("stop")
-        except Exception:       # noqa: BLE001 -- the kill below still happens
+        except Exception:       # noqa: BLE001 -- the fallback below still happens
             pass
-        async with _docker_client(self.rt.cfg, timeout + 30) as c:
-            # Docker's own stop: SIGTERM, then SIGKILL after `t` seconds --
-            # by which time the "stop" above has usually saved and exited.
-            await c.post(f"/containers/{self.name}/stop", params={"t": timeout})
+        try:
+            # The pump ends when the attach stream closes -- the process is
+            # gone. shield(): a timeout here must not cancel the pump.
+            await asyncio.wait_for(asyncio.shield(self.reader_task), timeout)
+            return
+        except asyncio.TimeoutError:
+            pass
+        async with _docker_client(self.rt.cfg, 60) as c:
+            await c.post(f"/containers/{self.name}/stop", params={"t": 10})
 
     async def kill(self) -> None:
         async with _docker_client(self.rt.cfg) as c:

@@ -89,5 +89,5 @@ python dev/tools/test_agent_api.py               # panel + agent end to end (pro
 a disk filler, a read of a neighbour's folder, a write to the root
 filesystem, a look for the Docker socket — and checks each is contained.
 It needs the runtime images (`BF_TEST_IMAGES='{"21": "repo:tag"}'` to point it
-at others). **It has not been run yet**: the machine WP-05 was built on has
-no Docker. See NEXT-SESSION.md.
+at others). It passed 189/189 on a Debian 12 box with Docker 28 (2026-10-12),
+along with `boot_templates.py --docker` 8/8; see NEXT-SESSION.md §0.3.

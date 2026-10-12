@@ -1763,9 +1763,9 @@ curl -s http://127.0.0.1:8710/api/health | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/instances | python3 -m json.tool
 curl -s http://127.0.0.1:8710/api/ai/status | python3 -m json.tool
 
-# the whole suite (WP-06, 2026-10-12): 767 offline checks in 16 files, the
+# the whole suite (WP-06, 2026-10-12): 771 offline checks in 16 files, the
 # HTTP suite, and 219 front-end checks. `.venv/Scripts/python.exe` on Windows.
-#   46 10 38 76 26 36 86 34 41 50 27 25 50 20 172 30, then 219
+#   46 10 38 76 26 36 86 34 41 50 27 25 50 20 176 30, then 219
 cd ~/blessforge
 for t in test_loader_detection test_job_stream test_install_decisions \
          test_roulette test_boot_verdict test_fleet_state test_auth test_policy \

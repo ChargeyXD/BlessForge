@@ -91,74 +91,81 @@ Done-whens are met, is the user's call.
 
 ### 0.3 Verified
 
+Two machines: this Windows dev box (no Docker), and then — on 2026-10-12,
+with the user's go-ahead — the CasaOS box itself (Debian 12, 8 cores, 11 GB,
+Docker 28, cgroup v2 with AppArmor and seccomp), in a throwaway folder
+beside the live deployment, which was not touched.
+
 | what | evidence |
 |---|---|
-| The offline loop | 767 checks in 16 files, all green: 46 10 38 76 26 36 86 34 41 50 27 25 50 20 172 30 (HANDOVER §9) |
+| The offline loop (Windows) | 771 checks in 16 files, all green: 46 10 38 76 26 36 86 34 41 50 27 25 50 20 176 30 (HANDOVER §9) |
 | HTTP suite | `run_http_tests.py` 45/45, on SQLite and on Postgres |
 | Front end | `check_frontend.py` 219/219 |
-| Postgres | `test_fleet_state`, `test_auth`, `test_policy`, `test_db` and the HTTP suite against Postgres 16 (the pgserver binaries, on this Windows box) |
+| Postgres | `test_fleet_state`, `test_auth`, `test_policy`, `test_db` and the HTTP suite against Postgres 16 (the pgserver binaries, on the Windows box) |
 | Job queue | `test_jobs_redis` 25/25: an API and a worker as processes, the API killed mid-job, re-attach, cancel, orphans |
 | Panel ↔ agent | `test_agent_api` 30/30: two processes; register → create → start → console websocket + command → edit → crash audited → stop → delete; both directions refuse the wrong credential |
-| Agent security (offline) | `test_agent_security` 172/172 on the Windows jail path |
-| Every template, for real | `boot_templates.py`: downloaded from each project and booted through panel + agent, 8/8 — table below |
-| CurseForge pack + its export | `install_on_agent.py` — **both booted**: Just Create SMP 0.5 (NeoForge 1.21.1, its server pack, 54 mods) installed in 76 s and booted in 26 s; exported, uploaded back as an import and installed as a second server (50 mods) in 60 s, booted in 32 s. Why the import has four fewer mods was not checked — most likely the client-only mods the first install left disabled, which an export leaves out by default |
+| **Agent security on Linux** | `test_agent_security.py --live` **189/189 on the CasaOS box**: the openat/`O_NOFOLLOW` jail (the production path), real symlinks, the swap race, and the live tier against real Docker — memory hog OOM-killed inside its own 256 MB (`OOMKilled: true`, exit 137), fork bomb stopped at the PID limit (`Cannot fork`) while the host still forked, read-only root, noexec `/tmp` filled to its size, no Docker socket, `CapEff` all zero, `NoNewPrivs: 1`, uid 1000, a neighbour's folder unreachable |
+| **Every template, in Docker** | `boot_templates.py --docker` on the CasaOS box, 8/8 — each booted in its runtime image, then started again, sent `list` through the container attach, answered, and stopped by its own `stop` command (table below) |
+| Every template, process runtime | `boot_templates.py` on the Windows box, 8/8 |
+| **CurseForge packs, in Docker** | `install_on_agent.py --docker`, 3/3 on the CasaOS box, with the real CurseForge API: Just Create SMP (NeoForge 1.21.1, server pack, 54 mods, boot 91 s), Create: Perfect World (Forge 1.20.1, server pack, 114 mods, boot 197 s), Vanilla Perfected (Fabric 1.21, built from its manifest — every mod downloaded from CurseForge one by one, client-only ones stripped — 79 mods, boot 106 s) |
+| **A CurseForge mod, added** | Waystones added to the running NeoForge pack through `/mods/add`; its required dependency Balm came with it; both jars landed and the server booted again (70 s) |
+| **CurseForge export, re-imported** | that server exported as a CurseForge pack, uploaded as an import, installed as a second server (52 mods) and booted. Four fewer mods than went in: most likely the client-only mods the first install left disabled, which an export leaves out by default — not checked |
 | Importer | `test_import_crafty` 20/20 against `dev/mock/crafty.py` |
 
-| template | Minecraft | Java | install | boot |
+| template | Minecraft | Java | Docker: install / boot | process: install / boot |
 |---|---|---|---|---|
-| vanilla | 26.1 | 25 | 13 s | 19 s |
-| paper | 1.21.4 | 21 | 10 s | 37 s |
-| purpur | 1.21.1 | 21 | 127 s (slow mirror) | 31 s |
-| folia | 1.21.4 | 21 | 10 s | 27 s |
-| fabric | 1.20.1 | 17 | 8 s | 41 s |
-| forge | 1.20.1 | 17 | 38 s (installer) | 41 s |
-| forge | 1.12.2 | 8 | 25 s (installer, legacy jar) | 18 s |
-| neoforge | 1.21.1 | 21 | 47 s (installer) | 24 s |
+| vanilla | 26.1 | 25 | 8 s / 54 s | 13 s / 19 s |
+| paper | 1.21.4 | 21 | 8 s / 92 s | 10 s / 37 s |
+| purpur | 1.21.1 | 21 | 8 s / 106 s | 127 s (slow mirror) / 31 s |
+| folia | 1.21.4 | 21 | 8 s / 68 s | 10 s / 27 s |
+| fabric | 1.20.1 | 17 | 4 s / 148 s | 8 s / 41 s |
+| forge | 1.20.1 | 17 | 60 s (installer container) / 136 s | 38 s / 41 s |
+| forge | 1.12.2 | 8 | 38 s (installer container) / 44 s | 25 s / 18 s |
+| neoforge | 1.21.1 | 21 | 80 s (installer container) / 70 s | 47 s / 24 s |
+
+Boots are slower on the CasaOS box than on the Windows dev box: it is a
+smaller machine already running a dozen services. They are not limits.
+
+**Found by the Docker run, and fixed:** `DockerRunning.stop()` wrote `stop`
+to the console and then immediately called Docker's own stop, which sends
+SIGTERM at once — not after the timeout, as its comment assumed. The two
+shutdowns raced, and on Paper the signal won (the world saved by a JVM
+shutdown hook rather than the server's own stop). It now waits up to the stop
+timeout for the server to exit by itself and only then falls back; section
+8b of `test_agent_security.py` pins it, and Paper then stopped cleanly.
 
 ### 0.4 Unproven — the honest gaps
 
-This box has **no Docker, no Linux, no Redis server, and no access to the
-CasaOS box.** Everything below follows from that, and each is a named item,
-not a hedge:
-
-1. **Docker has never run a BlessForge container.** `DockerRuntime` (create,
-   the hijacked attach and its demux, start, stop, stats, wait, logs, pull)
-   and the installer container are written against the Engine API and
-   untested. The servers above booted on the agent's **process runtime**,
-   which has no isolation at all.
-2. **The isolation is checked on paper only.** `assert_safe` refuses every
-   rule broken one at a time, but nobody has looked at what Docker actually
-   applied. The `--live` tier of `test_agent_security.py` — memory hog, fork
-   bomb, disk filler, neighbour's folder, read-only root, noexec `/tmp`, no
-   socket, no capabilities — is written and **has never run**.
-3. **The runtime images have never been built**, and `bf-entry` never run.
-4. **The Linux jail has never executed.** The race-free path (openat,
-   `O_NOFOLLOW`, `fwalk`, `renameat`) is what production uses; every jail
-   test here ran the Windows development fallback. Running
-   `test_agent_security.py` on Linux exercises it — do that first.
-5. **Disk quotas are not implemented.** Plan step WP-05.3 asks for XFS/ext4
+1. **Disk quotas are not implemented.** Plan step WP-05.3 asks for XFS/ext4
    project quotas; there is only the watchdog, which checks every 60 s and
    stops a server after the fact. A fast filler can fill the disk between
-   checks.
-6. **The systemd unit has never been installed**; its hardening
+   checks. (The CasaOS box is ext4, no project quotas enabled.)
+2. **The systemd unit has never been installed**; its hardening
    (`ProtectSystem=strict` with the Docker socket writable, the capability
-   set) is unverified.
-7. **No WireGuard, no TLS on the agent.** Panel ↔ agent ran over plain HTTP
-   on localhost.
-8. **Redis has only ever been fakeredis over TCP.** arq's startup `INFO` call
+   set) is unverified. On the CasaOS box the agent ran as the `chargey` user
+   from a venv, not as the service.
+3. **No WireGuard, no TLS on the agent.** Panel ↔ agent ran over plain HTTP
+   on localhost, on both machines.
+4. **Redis has only ever been fakeredis over TCP.** arq's startup `INFO` call
    is stubbed in the test worker because fakeredis does not answer it.
-9. **The compose files have never been brought up** — neither the root one
-   nor `deploy/control-plane/`. Postgres here was the pgserver binaries, not
-   the `postgres:16-alpine` image.
-10. **The importer has never met the real Crafty.** It speaks the endpoints
-    the old client verified, and is tested against the mock only. No real
-    server has been imported and Crafty has not been uninstalled — the plan
-    says to; that is a manual step after a backup, and the report says when.
-11. **Nothing is deployed.** The CasaOS box still runs `v2.1-crafty`.
-12. **SFTP** (`/api/agent/sftp-auth` exists; the server is WP-11) and
-    **backups on the agent** (501) are not built.
-13. **There is no screen for nodes.** Registration is `POST /api/admin/nodes`;
-    the admin views are WP-08.
+5. **The compose files have never been brought up** — neither the root one
+   nor `deploy/control-plane/`. Postgres was the pgserver binaries, not the
+   `postgres:16-alpine` image.
+6. **The importer has never met the real Crafty.** It speaks the endpoints
+   the old client verified, and is tested against the mock only. No real
+   server has been imported and Crafty has not been uninstalled — the plan
+   says to; that is a manual step after a backup, and the report says when.
+7. **Nothing is deployed.** The CasaOS box still runs `v2.1-crafty`. The
+   tests there ran in `~/bf-wp06-test`, which was removed afterwards; the
+   four runtime images (`ghcr.io/chargeyxd/blessforge-runtime:java8/17/21/25`,
+   about 1.2 GB) were left built on the box for the next run.
+8. **SFTP** (`/api/agent/sftp-auth` exists; the server is WP-11) and
+   **backups on the agent** (501) are not built.
+9. **There is no screen for nodes.** Registration is `POST /api/admin/nodes`;
+   the admin views are WP-08.
+10. **The `test_agent_api` websocket path has not run against Docker** — its
+    stand-in server is a Python script and the runtime images have no Python.
+    The Docker console was proven instead by the `list` round trip above.
 
 ### 0.5 Where the build differs from the plan
 
@@ -175,11 +182,10 @@ not a hedge:
 
 ### 0.6 Where to pick up
 
-1. A Linux box with Docker: build the images (`agent/images/build.sh`), run
-   `test_agent_security.py` (Linux jail) and then `--live`, then point
-   `boot_templates.py` at a Docker-runtime node.
-2. Disk quotas (XFS project quotas), or accept the watchdog as the WP-05
-   answer — a decision for the user.
+1. Disk quotas (XFS project quotas on a node's servers volume), or accept the
+   watchdog as the WP-05 answer — a decision for the user.
+2. Install the agent as the systemd service on a node and rerun
+   `test_agent_security.py --live` and `boot_templates.py --docker` there.
 3. `import_from_crafty.py --dry-run` against the real Crafty, then for real
    with `--from-dir`, then the merge decision.
 4. WP-07 (public accounts) is next in the plan.
