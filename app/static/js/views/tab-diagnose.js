@@ -28,7 +28,11 @@ import { run, runAwait } from '../jobs.js';
 export async function render(ctx) {
   const node = h('div');
   const host = h('div');
-  mount(node, host, loadingFox('Running the checks'));
+  // The fox goes inside the host, which load() repaints. Beside it, it
+  // stayed under every view for good: "Running the checks" with nothing
+  // running.
+  mount(node, host);
+  mount(host, loadingFox('Running the checks'));
 
   let diag = null;
   let ai = null;

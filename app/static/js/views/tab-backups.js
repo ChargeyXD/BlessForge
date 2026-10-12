@@ -17,7 +17,10 @@ import {
 export async function render(ctx) {
   const node = h('div');
   const host = h('div');
-  mount(node, host, loadingFox('Reading snapshots'));
+  // Inside the host, which the first paint replaces; beside it, the
+  // loading line stayed on the page for good.
+  mount(node, host);
+  mount(host, loadingFox('Reading snapshots'));
 
   let data = null;
 

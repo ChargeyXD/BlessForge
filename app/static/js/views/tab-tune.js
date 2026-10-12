@@ -43,7 +43,10 @@ import { runAwait } from '../jobs.js';
 export async function render(ctx) {
   const node = h('div');
   const host = h('div');
-  mount(node, host, loadingFox('Measuring the host'));
+  // Inside the host, which the first paint replaces; beside it, the
+  // loading line stayed on the page for good.
+  mount(node, host);
+  mount(host, loadingFox('Measuring the host'));
 
   let plan = null;
   let props = null;
@@ -683,7 +686,6 @@ export async function render(ctx) {
       touchedHeap = false;
       touchedFlags = false;
       await load();
-  loadPerf();
       askAdvice();
     } catch (e) { toastError(e, 'Could not apply'); }
   }
@@ -748,6 +750,7 @@ export async function render(ctx) {
 
   await load();
   if (plan) askAdvice();          // after the first paint, never before it
+  loadPerf();                     // its own host; never holds the tab up
   return { node };
 }
 

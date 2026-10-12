@@ -341,11 +341,13 @@ class Supervisor:
         if m:
             srv.players.add(m.group(1))
             srv.sessions[m.group(1)] = {"since": time.time(), "exact": True}
+            self._players_moved(srv)
             return
         m = _LEFT.search(line)
         if m:
             srv.players.discard(m.group(1))
             srv.sessions.pop(m.group(1), None)
+            self._players_moved(srv)
             return
         m = _LIST.search(line)
         if m:
@@ -356,6 +358,17 @@ class Supervisor:
                 return
             names = {n.strip() for n in tail.split(",") if n.strip()}
             srv.set_players({n for n in names if _PLAYER.match(n)}, "list")
+
+    @staticmethod
+    def _players_moved(srv: Server) -> None:
+        """Someone joined or left: the last ping's count is now wrong. It
+        is marked stale, and the next look asks the server again. Kept, it read
+        "0 online" for up to 30 seconds beside the names of two players."""
+        if srv.ping:
+            # Its slots and version still hold; only its count is stale.
+            srv.ping = {**srv.ping, "stale": True}
+        srv.pinged_at = 0.0
+        srv.player_source = "log"
 
     async def _reconcile_players(self, srv: Server) -> None:
         """Ask the server itself, and settle any drift from missed join lines."""
@@ -394,7 +407,9 @@ class Supervisor:
                 await self._reconcile_players(srv)
             except Exception:       # noqa: BLE001 -- stats must still answer
                 pass
-        online = (srv.ping or {}).get("online", len(srv.players))
+        ping = srv.ping or {}
+        online = (len(srv.players) if not ping or ping.get("stale")
+                  else ping.get("online", len(srv.players)))
         if srv.ping and srv.ping["online"] != len(srv.players) and srv.player_source == "list":
             online = len(srv.players)       # a fresh `list` beats an older ping
         out: dict[str, Any] = {"running": srv.running is not None,

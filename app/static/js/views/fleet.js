@@ -253,10 +253,12 @@ function card(s) {
         + 'files or is not answering. It will keep failing until the folder '
         + 'is restored, the node comes back, or the record is deleted.')
       : h('div.gauges',
-        gauge('CPU', s.cpu, s.cpu_allowance && s.cpu_cores != null
-          ? `${(s.cpu_cores).toFixed(1)} of ${s.cpu_allowance} cores`
-          : `${(s.cpu ?? 0).toFixed?.(0) ?? 0}%`,
-          s.cpu > 85 ? 'bad' : s.cpu > 60 ? 'warn' : ''),
+        // A share of the cores this server may use; the counts are a hover away.
+        gauge('CPU', s.cpu, `${(s.cpu ?? 0).toFixed?.(0) ?? 0}%`,
+          s.cpu > 85 ? 'bad' : s.cpu > 60 ? 'warn' : '',
+          s.cpu_allowance && s.cpu_cores != null
+            ? `${s.cpu_cores.toFixed(1)} of the ${s.cpu_allowance} cores it may use are busy`
+            : ''),
         gauge('RAM', s.mem, s.mem_bytes ? bytes(s.mem_bytes) : `${s.mem ?? 0}%`,
           s.mem > 88 ? 'bad' : s.mem > 70 ? 'warn' : ''),
         s.running
@@ -305,9 +307,9 @@ async function hang(s) {
   }
 }
 
-function gauge(label, percent, text, tone = '') {
+function gauge(label, percent, text, tone = '', title = '') {
   const pct = Math.max(0, Math.min(100, Number(percent) || 0));
-  return h('div.gauge',
+  return h('div.gauge', title ? { title } : null,
     h('span', label),
     bar(pct, `thin ${tone}`),
     h('span.tnum', { style: { textAlign: 'right' } }, text));

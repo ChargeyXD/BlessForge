@@ -20,7 +20,10 @@ import {
 export async function render(ctx) {
   const node = h('div');
   const host = h('div');
-  mount(node, host, loadingFox('Reading the player files'));
+  // Inside the host, which the first paint replaces; beside it, the
+  // loading line stayed on the page for good.
+  mount(node, host);
+  mount(host, loadingFox('Reading the player files'));
 
   let data = null;
   let filter = 'all';
