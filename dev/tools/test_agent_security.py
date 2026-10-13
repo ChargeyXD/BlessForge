@@ -1109,7 +1109,7 @@ async def test_live():
         (folder / "probe.txt").write_text("own file")
         lines, done = [], asyncio.get_running_loop().create_future()
 
-        async def on_exit(code):
+        async def on_exit(code, info=None):
             if not done.done():
                 done.set_result(code)
         server = {"uuid": sid, "port": 40000 + int(sid[:3], 16) % 9000, "java_major": 21,

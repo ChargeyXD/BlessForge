@@ -484,7 +484,9 @@ class Supervisor:
             return
         await self._checks(srv)
         if self.boot_slots.locked():
-            n = len(self.booting)
+            # Locked means every slot is held. Counting `booting` said "0
+            # servers booting" when the holders were still mid-launch.
+            n = max(1, int(self.cfg.max_concurrent_boots))
             srv.state = "queued"
             srv.console.feed(f"[BlessForge] Waiting to start ({n} server"
                              f"{'' if n == 1 else 's'} booting)")
