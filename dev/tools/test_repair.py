@@ -445,6 +445,36 @@ async def main():
     finally:
         _os.environ.pop("HOST_RAM_GB", None)
 
+    # --- a boot that waits for a slot on its node has not exited ---------------------------
+    class QueuedFirst(MockEngine):
+        """Two other servers are booting on the node: this one waits its turn."""
+        polls = 0
+
+        async def power(self, server_id, action):
+            await super().power(server_id, action)
+            if action == "start":
+                self.held = dict(self.stats[server_id])
+                self.stats[server_id].update(running=False, state="queued")
+                self._put(server_id, "logs", "latest.log", b"")     # nothing yet
+
+        async def get_stats(self, server_id):
+            QueuedFirst.polls += 1
+            if QueuedFirst.polls == 3 and getattr(self, "held", None):
+                self.stats[server_id].update(self.held, state="running")
+                self._put(server_id, "logs", "latest.log",
+                          b'[Server thread/INFO]: Done (1.0s)! For help, type "help"\n')
+            return await super().get_stats(server_id)
+
+    queued = QueuedFirst(seed=False)
+    engine.configure("mock", drivers={"local": queued})
+    sid = await engine.create_server(name="Queued", port=25706, memory_mb=4096,
+                                     mc_version="1.20.1", loader="fabric")
+    await engine.update_server(sid, {"execution_command": "java -jar s.jar nogui"})
+    from app import smoketest
+    verdict = await smoketest.run(Job("t", "t"), sid, timeout=60)
+    check("a boot that waits in its node's queue first is not called exited",
+          verdict["outcome"] == "ready", verdict.get("outcome"))
+
     # --- a client class in a content mod's failure is not proof --------------------------------
     actions, why = await decide_for({
         "create-1.20.1-6.0.8.jar": content_jar("create"),

@@ -279,6 +279,10 @@ class AgentEngine:
     async def power(self, server_id: str, action: str) -> None:
         await self._call("POST", f"/v1/servers/{server_id}/power",
                          json={"action": power_action(action)}, timeout=180)
+        # Whatever the node said a moment ago is about to be wrong.
+        held = _stats.get(self.node_id)
+        if held is not None:
+            held["at"] = -1e9
 
     async def install(self, server_id: str, spec: dict) -> dict:
         job = await self._call("POST", f"/v1/servers/{server_id}/install", json=spec)

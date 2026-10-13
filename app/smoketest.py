@@ -166,7 +166,10 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             stats = {}
             try:
                 stats = await engine.get_stats(server_id)
-                running = bool(stats.get("running")) and not stats.get("crashed")
+                # Waiting for a boot slot on its node is not having exited.
+                running = (bool(stats.get("running"))
+                           or stats.get("state") in ("queued", "starting")) \
+                    and not stats.get("crashed")
             except Exception:
                 pass
             if not running:
