@@ -34,6 +34,7 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     agent in a container, not its own 127.0.0.1 (6.4);
   * the disk watchdog walks on a thread, and walks a server far from its
     limit less often (6.7);
+  * reading a server's add-on configs at start is off the loop too (6.11);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1204,6 +1205,34 @@ async def test_disk_watchdog():
           walks[len(first):] == [near], walks)
 
 
+# --- 6.11 add-on detection off the loop ----------------------------------------------------
+
+
+async def test_addons_off_loop():
+    section("6.11 reading the add-ons' configs at start is off the loop")
+    from agent import addons
+    sid = "a11a11a1-0000-0000-0000-000000000001"
+    real = addons.detect
+
+    def slow_detect(folder, port):
+        time.sleep(0.4)          # a folder with many configs, on a slow disk
+        return real(folder, port)
+
+    async with Agent(process_cfg("addons")) as a:
+        await fake_server(a, sid, 30501)
+        addons.detect = slow_detect
+        try:
+            with LoopProbe() as probe:
+                r = await a.client.post(f"/v1/servers/{sid}/power", json={"action": "start"})
+        finally:
+            addons.detect = real
+        check("a start reads the add-on configs on a thread: the loop never waits on it",
+              r.status_code == 200 and probe.worst < 0.2, f"worst {probe.worst * 1000:.0f} ms")
+        await until(lambda: a.sup.servers[sid].state == "running")
+        await a.client.post(f"/v1/servers/{sid}/power", json={"action": "stop"})
+        await until(lambda: a.sup.servers[sid].running is None)
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1219,6 +1248,7 @@ async def main():
     await test_event_drops()
     await test_ping_target()
     await test_disk_watchdog()
+    await test_addons_off_loop()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

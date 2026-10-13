@@ -397,9 +397,10 @@ class Supervisor:
         tmp.write_text(json.dumps(spec, indent=1), encoding="utf-8")
         tmp.replace(self.specs_dir / f"{uuid}.json")
 
-    def _ports_of(self, srv: Server) -> tuple[list[dict], set[int]]:
+    async def _ports_of(self, srv: Server) -> tuple[list[dict], set[int]]:
         game_port = int(srv.spec["port"])
-        extra = addons.detect(self.folder(srv.uuid), game_port)
+        # Reads config files out of the folder: on a thread, like all file work.
+        extra = await asyncio.to_thread(addons.detect, self.folder(srv.uuid), game_port)
         return extra, {game_port} | {int(a["port"]) for a in extra}
 
     async def power(self, uuid: str, action: str) -> dict:
@@ -407,7 +408,7 @@ class Supervisor:
         if action == "switch":
             # Stop whichever server holds this one's port -- the normal stop,
             # with its save timeout -- wait for it to exit, then start this.
-            _extra, ports = self._ports_of(srv)
+            _extra, ports = await self._ports_of(srv)
             for other, _port in self.holders(srv, ports):
                 await self.power(other.uuid, "stop")
             action = "start"
@@ -526,7 +527,7 @@ class Supervisor:
         # Another server on this node holding its port (or an add-on's)
         # refuses the start, naming it -- servers may share a port, one at
         # a time.
-        _extra, ports = self._ports_of(srv)
+        _extra, ports = await self._ports_of(srv)
         held = self.holders(srv, ports)
         if held:
             other, port = held[0]
@@ -541,7 +542,7 @@ class Supervisor:
         """The container start itself, with a boot slot held."""
         # The ports its add-ons open (Geyser, Voice Chat, a web map), read
         # from the folder at every start so a mod added since is picked up.
-        extra, ports = self._ports_of(srv)
+        extra, ports = await self._ports_of(srv)
         srv.stopping = False
         srv.last_exit = None
         srv.state = "starting"
