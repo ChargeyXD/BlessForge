@@ -29,15 +29,19 @@ export async function render() {
 
   let catalogue;
   let hostSpecs = null;
+  let takenByApps = [];
   try {
     // The host is asked for alongside the catalogue, and failing to answer
-    // is not fatal: it only decides how far the heap rope runs.
-    const [data, specs] = await Promise.all([
+    // is not fatal: it only decides how far the heap rope runs, and which
+    // ports another app on the machine holds.
+    const [data, specs, ports] = await Promise.all([
       api.get('/api/loaders'),
       api.get('/api/host/specs').catch(() => null),
+      api.get('/api/nodes/ports').catch(() => null),
     ]);
     catalogue = data.items || [];
     hostSpecs = specs;
+    takenByApps = ports?.taken_by_apps || [];
   } catch (e) {
     mount(node, bannerIfUnhealthy() || null,
       empty('chargey-failed.png', 'Could not read the loader catalogue',
@@ -86,6 +90,8 @@ export async function render() {
 
   const usedPorts = new Set(state.instances.map((s) => s.port).filter(Boolean));
   const sharedWith = (port) => {
+    const app = takenByApps.find((r) => r.from <= port && port <= r.to);
+    if (app) return `Taken by another app on this machine (${app.by}).`;
     const names = state.instances.filter((s) => s.port === port).map((s) => s.name);
     return names.length
       ? `Also used by ${names.join(', ')} (only one can run at a time).` : '';

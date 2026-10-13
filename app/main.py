@@ -663,6 +663,13 @@ async def _overcommit(server_id: str) -> dict | None:
     return {"committed_mb": committed, "server_mb": mine, "total_mb": total}
 
 
+@app.get("/api/nodes/ports")
+async def nodes_ports() -> dict:
+    """Host ports other apps hold on the machine a new server would go to,
+    as runs ("25500-25600, big-bear-crafty"), for the new-server form."""
+    return {"taken_by_apps": await properties.taken_by_apps()}
+
+
 @app.get("/api/nodes/memory")
 async def nodes_memory() -> dict:
     """Committed memory per node -- the running servers' limits -- against

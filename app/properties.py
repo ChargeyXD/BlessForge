@@ -336,11 +336,14 @@ async def save(server_id: str, updates: dict) -> dict:
 PUBLISHED_RANGE = config.GAME_PORT_RANGE
 
 
-async def _taken_by_apps(server_id: str) -> list[dict]:
+async def _taken_by_apps(server_id: str | None) -> list[dict]:
     """Host ports another app on this machine holds (its containers' published
-    ports, another panel's whole range among them), as runs: [{"from", "to", "by"}]."""
+    ports, another panel's whole range among them), as runs: [{"from", "to", "by"}].
+    No server: the machine a new server would go to."""
     try:
-        held = [p for p in await engine.host_ports(server_id) if not p.get("server")]
+        held = [p for p in (await engine.host_ports(server_id) if server_id
+                            else await engine.node_host_ports())
+                if not p.get("server")]
     except Exception:       # noqa: BLE001 -- a node that cannot say is not a refusal
         return []
     runs: list[dict] = []
@@ -350,6 +353,11 @@ async def _taken_by_apps(server_id: str) -> list[dict]:
         else:
             runs.append({"from": p["port"], "to": p["port"], "by": p["by"]})
     return runs
+
+
+async def taken_by_apps() -> list[dict]:
+    """For the new-server form: what other apps hold where it would go."""
+    return await _taken_by_apps(None)
 
 
 async def port_status(server_id: str) -> dict:

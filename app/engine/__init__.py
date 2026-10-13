@@ -442,6 +442,15 @@ async def host_ports(server_id: str) -> list[dict]:
     return [] if fn is None else await fn(server_id)
 
 
+async def node_host_ports(node: str | None = None) -> list[dict]:
+    """host_ports for a node rather than a server: where a new server would
+    go (the default node) when no node is named."""
+    _ensure()
+    drv = _drivers.get(node or default_node()) if _drivers else None
+    fn = getattr(drv, "host_ports", None)
+    return [] if fn is None else await fn("")
+
+
 async def console_since(server_id: str, after: int | None) -> dict | None:
     """The numbered console after `after`, or None for a driver whose
     console is not numbered (the in-memory engine)."""

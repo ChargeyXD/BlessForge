@@ -130,6 +130,23 @@ async def main():
               for w in moved["warnings"]), moved["warnings"])
     await engine.update_server(s1, {"auto_start": False})
     await engine.delete_server(dup)
+
+    real_ports = engine.node_host_ports
+
+    async def crafty_holds(node=None):
+        return ([{"port": p, "by": "big-bear-crafty", "server": None}
+                 for p in range(25500, 25601)]
+                + [{"port": 8123, "by": "big-bear-crafty", "server": None},
+                   {"port": 25572, "by": "Files", "server": s1}])
+    engine.node_host_ports = crafty_holds
+    try:
+        runs = await properties.taken_by_apps()
+    finally:
+        engine.node_host_ports = real_ports
+    check("the new-server form is told which ports other apps hold, as ranges, and not "
+          "BlessForge's own servers", runs == [
+              {"from": 8123, "to": 8123, "by": "big-bear-crafty"},
+              {"from": 25500, "to": 25600, "by": "big-bear-crafty"}], runs)
     for bad in ("../etc/passwd", "/etc/passwd", "a/../../b", "x\x00y", "C:/Windows"):
         check(f"a path outside the folder is refused: {bad!r}",
               await refused(engine.read_file(s1, bad), 400))
