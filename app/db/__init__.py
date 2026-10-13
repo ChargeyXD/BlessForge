@@ -128,9 +128,21 @@ def _upgrade(connection) -> None:
     command.upgrade(_alembic_config(connection), "head")
 
 
+# Held for the length of a migration, so the panel and the worker -- which
+# both migrate on start, at the same moment on a fresh install -- take turns.
+# Racing, one crashed creating alembic_version beside the other, Docker
+# restarted it, and `docker compose up --wait` (how CasaOS installs) caught
+# the restart and failed the install with "container is unhealthy".
+MIGRATE_LOCK = 0x426C657373467267     # "BlessFrg"
+
+
 async def migrate() -> None:
-    """Run every migration up to head, on this app's own connection."""
+    """Run every migration up to head, on this app's own connection. On
+    Postgres, one process at a time: the second finds nothing left to do."""
     async with engine().begin() as conn:
+        if dialect() == "postgresql":
+            await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                               {"key": MIGRATE_LOCK})
         await conn.run_sync(_upgrade)
 
 

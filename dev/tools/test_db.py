@@ -92,6 +92,33 @@ async def main():
     await db.migrate()
     check("migrating again is a no-op", True)
 
+    # --- 1b. the panel and the worker migrating one blank database at once ----------
+    # Postgres only (that is where they share one): on a fresh install both
+    # start together, and racing, one died on alembic_version.
+    if _dbtest.label() == "postgres":
+        import os
+        import subprocess
+        from sqlalchemy import text as _text
+        from sqlalchemy.ext.asyncio import create_async_engine as _cae
+        await db.dispose()
+        blank = _cae(url)
+        async with blank.begin() as conn:
+            await conn.execute(_text("DROP SCHEMA public CASCADE"))
+            await conn.execute(_text("CREATE SCHEMA public"))
+        await blank.dispose()
+        code = ("import asyncio; from app import db; "
+                f"asyncio.run(db.init({url!r})); print('migrated')")
+        env = {**os.environ, "DATABASE_URL": url}
+        procs = [subprocess.Popen([sys.executable, "-c", code], cwd=str(_dbtest.ROOT), env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                 for _ in range(3)]
+        outs = [p.communicate(timeout=120)[0] for p in procs]
+        check("three processes migrating one blank database at once all succeed "
+              "(one used to die on alembic_version)",
+              all(p.returncode == 0 for p in procs) and all("migrated" in o for o in outs),
+              [o.strip().splitlines()[-1:] for o in outs])
+        await db.init(url)
+
     # --- 2. a fresh install ------------------------------------------------------
     clear_state_dir()
     url = await _dbtest.fresh()
