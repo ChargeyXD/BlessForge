@@ -891,6 +891,40 @@ async def test_ports():
           and err.extra.get("next_free") == 25601 and "25601" in str(err),
           getattr(err, "extra", err))
 
+    # The default range is Crafty's own 25500-25600, all of it published:
+    # inside it there is nothing, so the search carries on past it.
+    whole_id, whole_fixed = ("abababab-0000-0000-0000-00000000000c",
+                             "abababab-0000-0000-0000-00000000000d")
+    sup.put(whole_id, {"name": "Whole range", "port": 25565, "port_auto": True,
+                       "execution_command": "java -jar s.jar"})
+    sup.put(whole_fixed, {"name": "Whole fixed", "port": 25560,
+                          "execution_command": "java -jar s.jar"})
+    (sup.folder(whole_id) / "server.properties").write_text("server-port=25565\n",
+                                                            encoding="utf-8")
+    runtime.tried.clear()
+    await sup.power(whole_id, "start")
+    srv = sup.servers[whole_id]
+    check("with every port in the range taken, Port: automatic runs on the nearest free "
+          "one past it (not 'every port is in use')",
+          srv.running is not None and srv.spec["port"] == 25603, (srv.spec["port"],
+                                                                  runtime.tried))
+    check("...and the console says it is outside the forwarded range",
+          any("outside 25500-25600" in ln for ln in srv.console.lines),
+          [ln for ln in srv.console.lines if "runs on" in ln])
+    # Both boot slots are held by servers still "starting" here, so this one
+    # would only be queued; with them up, its start is tried (and refused).
+    for held in (auto_id, whole_id):
+        sup.servers[held].state = "running"
+    await asyncio.sleep(0.6)
+    try:
+        await sup.power(whole_fixed, "start")
+        err = None
+    except Exception as e:      # noqa: BLE001
+        err = e
+    check("a fixed port in a fully taken range is offered one past it, said to be outside",
+          err is not None and err.extra.get("next_free") == 25601
+          and "outside the forwarded range" in str(err), str(err))
+
     async with Agent(process_cfg("ports-api")) as a:
         a.sup.runtime.host_ports = runtime.host_ports
         await fake_server(a, auto_id, 30081, name="Up")

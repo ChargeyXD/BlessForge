@@ -383,13 +383,28 @@ class Supervisor:
 
     async def next_free_port(self, srv: Server, taken: dict[int, str] | None = None
                              ) -> int | None:
-        """The first free port in this server's range, preferring ports no
-        other server on this node is set to."""
+        """The first free port: in this server's range if any is free there,
+        otherwise the nearest free one above it, then below it -- preferring
+        ports no other server on this node is set to.
+
+        Only inside the range used to count. Crafty publishes all of
+        25500-25600 whether its servers use them or not, which is also
+        BlessForge's default range, so on a machine still running Crafty
+        there was never a port to offer and Port: automatic always failed.
+        A port outside the range runs; whether players outside can reach it
+        is a forwarding question, and the console says so."""
         taken = taken if taken is not None else await self.taken_ports(srv)
         lo, hi = srv.spec.get("port_range") or [25500, 25600]
         assigned = {int(o.spec["port"]) for o in self.servers.values() if o.uuid != srv.uuid}
-        free = [p for p in range(lo, hi + 1) if p not in taken]
-        return next((p for p in free if p not in assigned), free[0] if free else None)
+        for ports in (range(lo, hi + 1), range(hi + 1, 65536), range(lo - 1, 1023, -1)):
+            free = [p for p in ports if p not in taken]
+            if free:
+                return next((p for p in free if p not in assigned), free[0])
+        return None
+
+    def outside_range(self, srv: Server, port: int) -> bool:
+        lo, hi = srv.spec.get("port_range") or [25500, 25600]
+        return not lo <= port <= hi
 
     async def _choose_port(self, srv: Server) -> None:
         """Port: automatic. The last port if it is free, otherwise the first
@@ -401,13 +416,16 @@ class Supervisor:
             return
         chosen = await self.next_free_port(srv, taken)
         if chosen is None:
-            lo, hi = srv.spec.get("port_range") or [25500, 25600]
-            raise RuntimeError_(f"Every port in {lo}-{hi} is in use on this machine.", 409)
+            raise RuntimeError_("Every port from 1024 up is in use on this machine.", 409)
         await asyncio.to_thread(set_properties_port, self.folder(srv.uuid), current, chosen)
         srv.spec = {**srv.spec, "port": chosen}
         self._save(srv.uuid, srv.spec)
+        lo, hi = srv.spec.get("port_range") or [25500, 25600]
         srv.console.feed(f"[BlessForge] Port {current} is taken (by {taken[current]}); "
-                         f"this server runs on {chosen} instead.")
+                         f"this server runs on {chosen} instead."
+                         + (f" That is outside {lo}-{hi}, the ports forwarded to this "
+                            "machine: forward it too for players outside your network."
+                            if self.outside_range(srv, chosen) else ""))
         self.events.emit("port_changed", srv.uuid, port=chosen, previous=current)
 
     def _save(self, uuid: str, spec: dict) -> None:
@@ -590,7 +608,9 @@ class Supervisor:
                 nxt = await self.next_free_port(srv)
                 if nxt:
                     e.extra["next_free"] = nxt
-                    e.args = (f"{e} The next free port is {nxt}.",)
+                    e.args = (f"{e} The next free port is {nxt}"
+                              + (" (outside the forwarded range)"
+                                 if self.outside_range(srv, nxt) else "") + ".",)
             raise
         except Exception:
             srv.state = "offline"
