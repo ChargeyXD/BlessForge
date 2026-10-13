@@ -43,7 +43,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
   * the node downloads a pack's mods itself (fetch_many): in parallel, only
     from the hosts it allows (redirects too), checked by SHA-1 and size
     before anything lands, retried, written through the jail as copies of
-    its own cache, never links (3a);
+    its own cache, never links (3a) -- and ten servers on the same pack cost
+    one download (7.8);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1744,6 +1745,45 @@ async def test_fetch_many():
         cdn.close()
 
 
+async def test_one_download_per_node():
+    section("7.8 ten servers on the same pack cost one download")
+    import random
+    cdn = CDN()
+    rng = random.Random(8)
+    names = [f"pack{i:02d}.jar" for i in range(20)]
+    for name in names:
+        cdn.files[name] = rng.randbytes(60_000 + rng.randrange(40_000))
+    pack = [cdn.entry("f", n) for n in names]
+    sids = [f"abababab-0000-0000-0000-0000000000{i:02d}" for i in range(11)]
+    cdn.delay = 0.05
+    try:
+        cfg = dict(download_hosts=["127.0.0.1"], max_concurrent_installs=10)
+        async with Agent(process_cfg("dedupe", **cfg)) as a:
+            c = a.client
+            for i, sid in enumerate(sids[:10]):
+                await c.put(f"/v1/servers/{sid}", json={"name": f"D{i}", "port": 30500 + i})
+            recs = await asyncio.gather(*(fetch(c, sid, pack) for sid in sids[:10]))
+            check("ten servers installing the same pack at once: each file is downloaded "
+                  "once", all(r.get("status") == "done" for r in recs)
+                  and len(cdn.hits) == len(names) and all(v == 1 for v in cdn.hits.values()),
+                  f"{cdn.total()} requests for {len(names)} files"
+                  + "".join(f"; {r['failed']}" for r in recs if r.get("failed")))
+            check("...the other nine copy what the first fetched",
+                  sum(r["progress"]["downloaded"] for r in recs) == len(names)
+                  and sum(r["progress"]["cached"] for r in recs) == 9 * len(names))
+            check("...and every server has every file, a copy of its own",
+                  all(lands(a.sup.folder(sid), e, cdn.files[e["url"].rsplit("/", 1)[1]])
+                      for sid in sids[:10] for e in pack))
+        async with Agent(process_cfg("dedupe", **cfg)) as a:
+            await a.client.put(f"/v1/servers/{sids[10]}", json={"name": "D10", "port": 30510})
+            rec = await fetch(a.client, sids[10], pack)
+            check("the cache outlives an agent restart: an eleventh server costs nothing",
+                  rec.get("status") == "done" and cdn.total() == len(names)
+                  and rec["progress"]["cached"] == len(names), cdn.total())
+    finally:
+        cdn.close()
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1763,6 +1803,7 @@ async def main():
     await test_runtime_images()
     await test_image_cache()
     await test_fetch_many()
+    await test_one_download_per_node()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()
