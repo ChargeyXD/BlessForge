@@ -56,7 +56,32 @@ GAME_PORT_RANGE = _port_range(os.environ.get("GAME_PORT_RANGE", "") or "25500-25
 # postgresql+asyncpg://user:password@host:5432/blessforge in production.
 # Blank falls back to a SQLite file under STATE_DIR, for a node-less dev run
 # and the offline tests; /api/health says which is in use.
-DATABASE_URL = (os.environ.get("DATABASE_URL", "") or "").strip()
+#
+# POSTGRES_PASSWORD, when set, is the password: it replaces whatever the URL
+# carries. The one-box compose sets the same field on the postgres service,
+# the panel and the worker, so the password is typed once per service rather
+# than also hidden inside two URLs that are easy to miss in the CasaOS dialog.
+
+
+def _with_password(url: str, password: str) -> str:
+    """`url` with its password replaced by `password`, URL-encoded.
+
+    Only for postgres URLs; anything else (SQLite, blank) comes back as is.
+    """
+    if not password or not url.startswith("postgres") or "://" not in url:
+        return url
+    from urllib.parse import quote
+    scheme, rest = url.split("://", 1)
+    creds, at, host = rest.rpartition("@")
+    if not at:
+        return url
+    user = creds.split(":", 1)[0]
+    return f"{scheme}://{user}:{quote(password, safe='')}@{host}"
+
+
+DATABASE_URL = _with_password(
+    (os.environ.get("DATABASE_URL", "") or "").strip(),
+    os.environ.get("POSTGRES_PASSWORD", "") or "")
 
 # --- Nodes ----------------------------------------------------------------------
 # Encrypts what BlessForge stores for its nodes (their tokens) and the key it

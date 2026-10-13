@@ -141,7 +141,17 @@ async def init(database_url: str | None = None) -> None:
         configure(database_url)
         if _ready:
             return
-        await migrate()
+        try:
+            await migrate()
+        except Exception as e:
+            if "password authentication failed" in str(e):
+                log.error(
+                    "The database refused the password. Postgres keeps the "
+                    "password it was first created with, so POSTGRES_PASSWORD "
+                    "has to be the same value on the postgres service, the "
+                    "panel (blessforge) and the worker -- set all three to "
+                    "the original password, or reset it inside Postgres.")
+            raise
         _ready = True
         log.info("database ready: %s", redacted_url())
 

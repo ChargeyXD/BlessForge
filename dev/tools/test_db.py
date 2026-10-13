@@ -231,6 +231,25 @@ async def main():
                            or db.redacted_url()))
     await db.dispose()
 
+    # --- POSTGRES_PASSWORD: typed once per service, not hidden in two URLs ----
+    wp = config._with_password
+    check("POSTGRES_PASSWORD fills a URL that has no password",
+          wp("postgresql+asyncpg://blessforge@postgres:5432/blessforge", "pw")
+          == "postgresql+asyncpg://blessforge:pw@postgres:5432/blessforge")
+    check("...and replaces one that has",
+          wp("postgresql+asyncpg://u:old@h:5432/d", "new")
+          == "postgresql+asyncpg://u:new@h:5432/d")
+    odd = wp("postgresql+asyncpg://blessforge@postgres/blessforge", "p@ss w:rd/%")
+    check("...URL-encoded, so @ : / % and spaces survive",
+          odd == "postgresql+asyncpg://blessforge:p%40ss%20w%3Ard%2F%25@postgres/blessforge",
+          odd)
+    from sqlalchemy.engine import make_url
+    check("...and the driver reads back exactly what was typed",
+          make_url(odd).password == "p@ss w:rd/%")
+    check("blank leaves the URL alone, and SQLite is never touched",
+          wp("postgresql+asyncpg://u:keep@h/d", "") == "postgresql+asyncpg://u:keep@h/d"
+          and wp("sqlite+aiosqlite:///x.db", "pw") == "sqlite+aiosqlite:///x.db")
+
     passed = sum(out)
     print(f"\n{passed}/{len(out)} checks passed")
     return passed == len(out)

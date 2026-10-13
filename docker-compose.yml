@@ -89,10 +89,14 @@ services:
 
       # ---- The database --------------------------------------------------
       # Accounts, sessions, the audit log, racks and decisions live in the
-      # Postgres service below. Change POSTGRES_PASSWORD in BOTH places
-      # before the first start; the database is never published outside
+      # Postgres service below. POSTGRES_PASSWORD must be the same value on
+      # all three services (this one, the worker and postgres); BlessForge
+      # puts it into DATABASE_URL itself, so the URL carries no password.
+      # Postgres keeps the password it was first created with: change it
+      # before the first start. The database is never published outside
       # this compose project.
-      DATABASE_URL: "postgresql+asyncpg://blessforge:CHANGE-ME@postgres:5432/blessforge"
+      DATABASE_URL: "postgresql+asyncpg://blessforge@postgres:5432/blessforge"
+      POSTGRES_PASSWORD: "CHANGE-ME"
 
       # ---- The job queue ----------------------------------------------------
       # Installs, provisioning and the update sweep run in the worker service
@@ -198,8 +202,9 @@ services:
         before_install:
           en_us: >-
             Paste your own CurseForge key, base64 encoded (echo -n KEY |
-            base64 -w0), as CURSEFORGE_API_KEY_B64, and change the Postgres
-            password in both places. BlessForge runs its game servers itself
+            base64 -w0), as CURSEFORGE_API_KEY_B64, and change
+            POSTGRES_PASSWORD -- the same value on all three (blessforge,
+            worker and postgres). BlessForge runs its game servers itself
             (the agent service); nothing else needs setting up. Leave the
             /data folder pointing at /DATA/AppData/blessforge/data -- it is
             BlessForge's own folder, not Crafty's.
@@ -207,6 +212,9 @@ services:
         - container: CURSEFORGE_API_KEY_B64
           description:
             en_us: "CurseForge API key, base64 encoded: echo -n '<key>' | base64 -w0"
+        - container: POSTGRES_PASSWORD
+          description:
+            en_us: "Database password: the same value on all three (blessforge, worker and postgres). Postgres keeps the one it was first created with."
         - container: OLLAMA_URL
           description:
             en_us: "Ollama endpoint for the AI assistant (blank to disable)"
@@ -253,7 +261,9 @@ services:
         condition: service_healthy
     environment:
       ENGINE: "agent"
-      DATABASE_URL: "postgresql+asyncpg://blessforge:CHANGE-ME@postgres:5432/blessforge"
+      DATABASE_URL: "postgresql+asyncpg://blessforge@postgres:5432/blessforge"
+      # The same value as on the panel and on postgres.
+      POSTGRES_PASSWORD: "CHANGE-ME"
       REDIS_URL: "redis://redis:6379/0"
       CURSEFORGE_API_KEY_B64: "JDJhJDEwJEQzQm9OUjFQLkZYNGJ3OEVTeU1XUXVVVHFkZlJaU2ZiZ1p3UUFYOHhyYk5Vd3lZT0FYdnNx"
       MODRINTH_ENABLED: "true"
@@ -356,7 +366,8 @@ services:
       - blessforge
     environment:
       POSTGRES_USER: "blessforge"
-      # Must match the password in DATABASE_URL above.
+      # The same value as POSTGRES_PASSWORD on the panel and the worker.
+      # Only read when the database is first created.
       POSTGRES_PASSWORD: "CHANGE-ME"
       POSTGRES_DB: "blessforge"
     volumes:
@@ -401,7 +412,8 @@ x-casaos:
   tips:
     before_install:
       en_us: >-
-        Set your CurseForge key (base64) and the Postgres password, then open
+        Set your CurseForge key (base64) and POSTGRES_PASSWORD -- the same
+        value on all three (blessforge, worker and postgres) -- then open
         the app -- it runs its own game servers and tells you on the first
         screen if anything is still missing. Crafty is not needed; servers
         already in Crafty can be moved across (README, "Updating from 2.1").

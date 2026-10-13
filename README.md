@@ -687,6 +687,7 @@ report says every server booted here.
 |---|---|---|
 | `ENGINE` | `mock` | What runs the servers: `agent` (BlessForge node agents) or `mock` (in memory) |
 | `DATABASE_URL` | *(empty — SQLite in the state dir)* | Postgres for anything real: `postgresql+asyncpg://user:pass@host/db`. Migrated on start |
+| `POSTGRES_PASSWORD` | *(empty)* | Replaces the password in a postgres `DATABASE_URL`. The one-box compose sets it on `postgres`, `blessforge` and `worker`: the same value on all three. Postgres keeps the password it was first created with |
 | `REDIS_URL` | *(empty — jobs run in the panel)* | The job queue. With it set, installs run on the worker and survive a panel restart |
 | `WORKER_CONCURRENCY` | `3` | Jobs one worker runs at once |
 | `JOB_TIMEOUT_SECONDS` | `21600` | The longest one job may run |
