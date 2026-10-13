@@ -166,6 +166,16 @@ async def run(job: Job, server_id: str, *, timeout: int = 300,
             stats = {}
             try:
                 stats = await engine.get_stats(server_id)
+                if stats.get("node_down"):
+                    # The node did not answer in time and this is its last
+                    # reading -- from before the start, as often as not. It
+                    # says nothing about this boot. Trusted, it stopped
+                    # Prominence II 28 seconds into a boot that had not failed
+                    # (exit 137, and no OOM: the test's own stop -- a 450-mod
+                    # load is when a node answers slowest), and re-read an
+                    # earlier boot's OOM flag three times over on ATM10.
+                    stats = {}
+                    raise LookupError("no fresh reading")
                 # Waiting for a boot slot on its node is not having exited.
                 running = (bool(stats.get("running"))
                            or stats.get("state") in ("queued", "starting")) \

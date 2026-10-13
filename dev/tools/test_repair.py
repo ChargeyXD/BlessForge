@@ -508,6 +508,41 @@ async def main():
           "ClassMetadataNotFoundException" in (result["failure_line"] or ""),
           result["failure_line"])
 
+    # --- a node that answers late is not a server that exited -----------------------------------
+    class SlowNode(MockEngine):
+        """Prominence II on the box: under a 450-mod load the node missed the
+        3 s stats timeout, and the panel's fallback -- the last reading,
+        from before this start, an earlier boot's OOM kill in it -- was taken
+        as the truth. The boot was stopped 28 s in and an OOM was "seen"."""
+        polls = 0
+
+        async def power(self, server_id, action):
+            await super().power(server_id, action)
+            if action == "start":
+                self._put(server_id, "logs", "latest.log",
+                          b"[main/INFO]: Loading 450 mods\n")
+
+        async def get_stats(self, server_id):
+            SlowNode.polls += 1
+            if SlowNode.polls <= 3:
+                return {"running": False, "crashed": True, "state": "crashed",
+                        "last_exit": {"code": 137, "oom": True}, "node_down": True}
+            self._put(server_id, "logs", "latest.log",
+                      b'[main/INFO]: Loading 450 mods\n'
+                      b'[Server thread/INFO]: Done (61.0s)! For help, type "help"\n')
+            return await super().get_stats(server_id)
+
+    slow = SlowNode(seed=False)
+    engine.configure("mock", drivers={"local": slow})
+    sid = await engine.create_server(name="Slow node", port=25707, memory_mb=6144,
+                                     mc_version="1.20.1", loader="fabric")
+    await engine.update_server(sid, {"execution_command": "java -jar server.jar nogui"})
+    result = await smoketest.run(Job("t", "t"), sid, timeout=120)
+    check("a node that answers late with an old reading does not fail a healthy boot",
+          result["outcome"] == "ready" and SlowNode.polls > 3, (result["outcome"], SlowNode.polls))
+    check("...and an earlier boot's OOM in that old reading is not this boot's",
+          not result.get("oom"), result.get("oom"))
+
     # --- slow is not dead; silent after an error is hung -------------------------------------------
     class Writes(MockEngine):
         """A boot that logs a fatal-looking line and then either keeps
