@@ -108,6 +108,9 @@ RULES: list[Rule] = [
     _r("GET", "/api/instances/{server_id}/console", "console.read", True),
     _r("GET", "/api/instances/{server_id}/console/socket", "console.read", True),
     _r("GET", "/api/instances/{server_id}/console/stream", "console.read", True),
+    # The websocket the browser follows the console on (checked in the
+    # handler itself: a websocket never passes through the http guard).
+    _r("GET", "/api/instances/{server_id}/console/ws", "console.read", True),
     _r("GET", "/api/instances/{server_id}/logs", "console.read", True),
     _r("POST", "/api/instances/{server_id}/command", "console.command", True),
 

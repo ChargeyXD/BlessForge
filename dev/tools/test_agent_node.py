@@ -11,6 +11,9 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     a new connection (and a 60-100 ms SSL context) per call (6.3);
   * an agent restart takes back the servers that kept running, and never
     force-deletes a running container: a start refuses instead (7.1);
+  * the console is numbered, so a follower asks only for what is new even
+    once the ring is full, and the panel's relay follows each server once
+    for every viewer (2; the end-to-end relay is in test_agent_api.py);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -567,11 +570,136 @@ async def test_readopt_live():
         await clients.close_all()
 
 
+# --- 2. the console: numbered lines, and the panel's relay -------------------------------
+
+
+async def test_console():
+    section("2. the console: numbered, and relayed once per server")
+    from agent.servers import CONSOLE_LINES, Console
+    con = Console()
+    for i in range(CONSOLE_LINES + 500):
+        con.feed(f"line {i + 1}")
+    fresh, reset = con.since(con.seq - 3)
+    check("with the ring full, a follower gets only the three lines it has not seen",
+          fresh == [f"line {con.seq - 2}", f"line {con.seq - 1}", f"line {con.seq}"]
+          and not reset, fresh)
+    check("...nothing at all when it is up to date", con.since(con.seq) == ([], False))
+    fresh, reset = con.since(con.seq - CONSOLE_LINES - 1)
+    check("...and the whole ring with reset only once its line has left the ring",
+          reset and len(fresh) == CONSOLE_LINES)
+    check("a number from before an agent restart (ahead of the count) is a reset too",
+          con.since(con.seq + 10)[1])
+
+    sid = "eeeeeeee-0000-0000-0000-000000000001"
+    async with Agent(process_cfg("console")) as a:
+        await fake_server(a, sid, 30041)
+        await a.client.post(f"/v1/servers/{sid}/power", json={"action": "start"})
+        await until(lambda: a.sup.servers[sid].state == "running")
+        first = (await a.client.get(f"/v1/servers/{sid}/console")).json()
+        await a.client.post(f"/v1/servers/{sid}/command", json={"command": "say one"})
+        await until(lambda: any("ran: say one" in ln
+                                for ln in a.sup.servers[sid].console.lines))
+        after = (await a.client.get(f"/v1/servers/{sid}/console",
+                                    params={"after": first["seq"]})).json()
+        check("GET /v1/servers/{id}/console?after=<seq> returns only the newer lines",
+              after["lines"] == ["> say one", after["lines"][-1]]
+              and "ran: say one" in after["lines"][-1] and not after["reset"]
+              and after["seq"] == first["seq"] + 2, after)
+        await a.client.post(f"/v1/servers/{sid}/power", json={"action": "stop"})
+        await until(lambda: a.sup.servers[sid].running is None)
+
+    # The relay, with a fake agent socket.
+    from app import console_hub
+
+    class FakeSocket:
+        def __init__(self, frames):
+            self.frames = frames
+            self.closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            self.closed = True
+
+        async def recv(self):
+            frame = await self.frames.get()
+            if frame is None:
+                raise ConnectionError("the agent went away")
+            return __import__("json").dumps(frame)
+
+    opened = []
+
+    async def connect(server_id):
+        frames = asyncio.Queue()
+        frames.put_nowait({"type": "backlog", "lines": ["a", "b"], "seq": 2,
+                           "state": "running"})
+        opened.append(frames)
+        return FakeSocket(frames)
+
+    old_grace, old_queue = console_hub.GRACE, console_hub.VIEWER_QUEUE
+    console_hub.GRACE, console_hub.VIEWER_QUEUE = 0.3, 5
+    hub = console_hub.Hub(connect)
+    try:
+        one, two = hub.join(sid), hub.join(sid)
+        b1 = await asyncio.wait_for(one.get(), 2)
+        b2 = await asyncio.wait_for(two.get(), 2)
+        check("every viewer starts from the backlog, from one upstream socket",
+              b1["type"] == b2["type"] == "backlog" and b1["lines"] == ["a", "b"]
+              and len(opened) == 1)
+        opened[0].put_nowait({"type": "lines", "lines": ["c"], "seq": 3})
+        l1 = await asyncio.wait_for(one.get(), 2)
+        l2 = await asyncio.wait_for(two.get(), 2)
+        check("each new line goes to every viewer", l1["lines"] == l2["lines"] == ["c"])
+        late = hub.join(sid)
+        b3 = await asyncio.wait_for(late.get(), 2)
+        check("a viewer joining later gets the backlog so far, still one upstream",
+              b3["lines"] == ["a", "b", "c"] and len(opened) == 1)
+        hub.leave(sid, late)
+        got = []
+
+        async def keep_up():
+            while True:
+                got.extend((await one.get())["lines"])
+        reader = asyncio.create_task(keep_up())
+        for i in range(8):          # `one` keeps up; `two` reads nothing
+            opened[0].put_nowait({"type": "lines", "lines": [f"x{i}"], "seq": 4 + i})
+            await asyncio.sleep(0.02)
+        await until(lambda: len(got) >= 8, 2)
+        reader.cancel()
+        frames = []
+        while not two.empty():
+            frames.append(two.get_nowait())
+        feed = hub.feeds[sid]
+        check("a slow viewer never holds up the others", got == [f"x{i}" for i in range(8)])
+        check("...it is sent the backlog afresh instead of a console with a hole, "
+              "and the drop is counted",
+              frames and frames[0]["type"] == "backlog" and feed.dropped > 0
+              and frames[-1].get("lines", [None])[-1] in ("x7",), frames[:1])
+        opened[0].put_nowait(None)          # the agent restarts
+        back = await asyncio.wait_for(one.get(), 5)
+        while back["type"] != "backlog":
+            back = await asyncio.wait_for(one.get(), 5)
+        check("when the agent goes away the relay reconnects while anybody watches",
+              len(opened) == 2 and back["type"] == "backlog")
+        hub.leave(sid, one)
+        hub.leave(sid, two)
+        await asyncio.sleep(0.2)
+        check("the upstream stays open for a moment after the last viewer leaves",
+              sid in hub.feeds)
+        await until(lambda: sid not in hub.feeds, 10)
+        check("...then closes", sid not in hub.feeds and len(opened) == 2)
+    finally:
+        console_hub.GRACE, console_hub.VIEWER_QUEUE = old_grace, old_queue
+        await hub.close()
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
     await test_shared_clients()
     await test_readopt()
+    await test_console()
     if LIVE:
         await test_readopt_live()
     else:

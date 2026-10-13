@@ -1,11 +1,12 @@
 /* ============================================================
    Console — the server's output, live, with a command box.
 
-   On a node running the BlessForge agent the browser talks to
-   the node itself over a websocket, with a five-minute token the
-   panel signs: lines arrive as they are written, and commands go
-   back the same way. Where there is no agent (the in-memory
-   engine) it falls back to the panel's polled stream. Two
+   On a node running the BlessForge agent the browser follows the
+   panel's own websocket, on this page's origin (so wss:// behind a
+   proxy or tunnel), which relays the node's: lines arrive as they
+   are written, and commands go back the same way. If the socket
+   cannot open -- or there is no agent (the in-memory engine) -- it
+   falls back to the panel's polled stream. Two
    behaviours matter either way, both about reading scrollback on
    a chatty server: following pauses the moment you scroll up and
    resumes at the bottom, and the filter never discards lines, it
@@ -166,9 +167,10 @@ export async function render(ctx) {
       : 'The server is not running';
   }
 
-  /* The node's own socket. A token is good for one connection; a dropped
-     socket asks for a fresh one rather than reusing it, and two failures
-     in a row fall back to the polled stream for the rest of the visit. */
+  /* The live socket. A dropped socket connects again; two failures in a
+     row fall back to the polled stream for the rest of the visit. A socket
+     that cannot even be made (the constructor throws: a ws:// address from
+     an https page) counts as a failure, never as a hang. */
   async function connectSocket() {
     let info;
     try {
@@ -178,14 +180,22 @@ export async function render(ctx) {
     }
     if (!info?.available || closed) return false;
     mayType = info.may_type !== false;
+    const url = info.url
+      || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${info.path}`;
     return new Promise((resolve) => {
       let opened = false;
-      socket = new WebSocket(info.url);
+      try {
+        socket = new WebSocket(url);
+      } catch {
+        socket = null;
+        resolve(false);
+        return;
+      }
       socket.onopen = () => {
         opened = true;
         socketFailures = 0;
         sourcePill.textContent = 'live from the node';
-        sourcePill.title = 'Straight from the node, over a websocket';
+        sourcePill.title = 'Live from the node, relayed over a websocket';
         resolve(true);
       };
       socket.onmessage = (event) => {
@@ -216,8 +226,9 @@ export async function render(ctx) {
   }
 
   async function connect() {
-    if (socketFailures < 2 && await connectSocket()) return;
-    if (closed) return;
+    let live = false;
+    if (socketFailures < 2) live = await connectSocket().catch(() => false);
+    if (live || closed) return;
     connectStream();
   }
 

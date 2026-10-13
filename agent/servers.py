@@ -72,19 +72,42 @@ def check_uuid(value: str) -> str:
 
 
 class Console:
-    """A ring buffer of output lines and the websockets following it."""
+    """A ring buffer of output lines and the websockets following it.
+
+    Every line is numbered: `seq` is the number of the newest, counting from
+    1 since the agent started. A follower that knows the last number it saw
+    asks for what came after it (`since`), so a full ring no longer means
+    the whole ring again on every poll -- only when the follower has fallen
+    so far behind that its line has left the ring.
+    """
 
     def __init__(self):
         self.lines: collections.deque[str] = collections.deque(maxlen=CONSOLE_LINES)
         self.subscribers: set[asyncio.Queue] = set()
+        self.seq = 0
+        # A follower too slow to keep up loses lines rather than holding the
+        # server up: counted, and that follower is sent the ring afresh.
+        self.dropped = 0
+        self.overflowed: set[asyncio.Queue] = set()
+
+    def since(self, after: int) -> tuple[list[str], bool]:
+        """The lines numbered after `after`, and whether the follower has to
+        start over (its line has left the ring, or it is from before a
+        restart of the agent and ahead of the count)."""
+        new = self.seq - after
+        if after < 0 or new < 0 or new > len(self.lines):
+            return list(self.lines), True
+        return (list(self.lines)[-new:] if new else []), False
 
     def feed(self, line: str) -> None:
         self.lines.append(line)
+        self.seq += 1
         for q in list(self.subscribers):
             try:
-                q.put_nowait(line)
+                q.put_nowait((self.seq, line))
             except asyncio.QueueFull:
-                pass
+                self.dropped += 1
+                self.overflowed.add(q)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=5000)
@@ -93,6 +116,7 @@ class Console:
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self.subscribers.discard(q)
+        self.overflowed.discard(q)
 
 
 class Server:
@@ -225,7 +249,11 @@ class Supervisor:
                 "running": srv.running is not None,
                 "started_at": srv.started_at,
                 "players": sorted(srv.players),
-                "sessions": {n: srv.sessions.get(n) for n in sorted(srv.players)}}
+                "sessions": {n: srv.sessions.get(n) for n in sorted(srv.players)},
+                # Sockets following its console; the panel relays one per
+                # server however many people are watching.
+                "console_followers": len(srv.console.subscribers),
+                "console_dropped": srv.console.dropped}
 
     # --- power ------------------------------------------------------------------
 

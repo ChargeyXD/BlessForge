@@ -410,6 +410,14 @@ async def console_lines(server_id: str, *, from_file: bool = False) -> list[str]
     return await (await _driver(server_id)).console_lines(server_id, from_file=from_file)
 
 
+async def console_since(server_id: str, after: int | None) -> dict | None:
+    """The numbered console after `after`, or None for a driver whose
+    console is not numbered (the in-memory engine)."""
+    drv = await _driver(server_id)
+    fn = getattr(drv, "console_since", None)
+    return None if fn is None else await fn(server_id, after)
+
+
 async def send_command(server_id: str, command: str) -> dict:
     line = (command or "").strip()
     if not line:

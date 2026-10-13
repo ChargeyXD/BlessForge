@@ -1,5 +1,8 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+# The panel follows each server's console over the agent's websocket and
+# relays it to the browser (app/console_hub.py).
+websockets==17.2
 httpx==0.28.1
 python-multipart==0.0.20
 # The database (WP-03). Pinned to the versions the test suite ran against;

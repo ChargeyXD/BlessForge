@@ -202,9 +202,16 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         return {"sent": body.get("command")}
 
     @app.get("/v1/servers/{uuid}/console")
-    async def console(uuid: str, lines: int = 500):
+    async def console(uuid: str, lines: int = 500, after: int | None = None):
+        """The last `lines` lines, or with `after` only the lines numbered
+        after it (and `reset` when that one has left the ring). `seq` is the
+        newest line's number, for the next `after`."""
         srv = sup().get(uuid)
-        return {"lines": list(srv.console.lines)[-max(1, min(lines, 2000)):]}
+        if after is not None:
+            fresh, reset = srv.console.since(after)
+            return {"lines": fresh, "seq": srv.console.seq, "reset": reset}
+        return {"lines": list(srv.console.lines)[-max(1, min(lines, 2000)):],
+                "seq": srv.console.seq}
 
     @app.post("/v1/servers/{uuid}/install")
     async def install(uuid: str, spec: dict = Body(...)):
@@ -300,7 +307,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     # --- what a browser reaches directly ------------------------------------------------
 
     @app.websocket("/v1/servers/{uuid}/ws")
-    async def ws(socket: WebSocket, uuid: str, token: str = ""):
+    async def ws(socket: WebSocket, uuid: str, token: str = "", backlog: int = 500):
         try:
             claims = state["tokens"].verify(token, server_uuid=uuid, perm="console.read")
             srv = sup().get(uuid)
@@ -311,22 +318,38 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         may_type = "console.command" in (claims.get("perm") or [])
         await socket.accept()
         q = srv.console.subscribe()
-        await socket.send_json({"type": "backlog", "lines": list(srv.console.lines)[-500:],
+        await socket.send_json({"type": "backlog",
+                                "lines": list(srv.console.lines)[-max(1, min(backlog, 2000)):],
+                                "seq": srv.console.seq,
                                 "state": srv.state, "may_type": may_type})
 
         async def outbound():
-            last_stats = 0.0
+            last_stats, last_state = 0.0, srv.state
             while True:
                 try:
-                    line = await asyncio.wait_for(q.get(), 1.0)
+                    seq, line = await asyncio.wait_for(q.get(), 1.0)
                     batch = [line]
                     while not q.empty() and len(batch) < 200:
-                        batch.append(q.get_nowait())
-                    await socket.send_json({"type": "lines", "lines": batch})
+                        seq, line = q.get_nowait()
+                        batch.append(line)
+                    if q in srv.console.overflowed:
+                        # It fell behind and lines were dropped: the ring
+                        # afresh rather than a console with a hole in it.
+                        srv.console.overflowed.discard(q)
+                        while not q.empty():
+                            q.get_nowait()
+                        await socket.send_json({"type": "backlog",
+                                                "lines": list(srv.console.lines),
+                                                "seq": srv.console.seq,
+                                                "state": srv.state, "may_type": may_type})
+                        continue
+                    await socket.send_json({"type": "lines", "lines": batch, "seq": seq})
                 except asyncio.TimeoutError:
                     pass
-                if time.time() - last_stats > 5:
-                    last_stats = time.time()
+                # Every five seconds, and at once when the state changes, so
+                # a console shows "running" as the server comes up.
+                if time.time() - last_stats > 5 or srv.state != last_state:
+                    last_stats, last_state = time.time(), srv.state
                     await socket.send_json({"type": "stats", **await sup().stats(uuid)})
 
         sender = asyncio.create_task(outbound())

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import (Body, FastAPI, File, HTTPException, Query, Request,
-                     UploadFile)
+                     UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
                                Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
@@ -98,6 +98,8 @@ async def _lifespan(_app: FastAPI):
         await db.dispose()
         curseforge.shutdown_pool()
         from app.engine.agent import close_clients
+        from app.console_hub import hub as console_hub
+        await console_hub.close()
         await close_clients()
 
 
@@ -1379,11 +1381,13 @@ async def _console_snapshot(server_id: str, source: str = "auto",
 
 @app.get("/api/instances/{server_id}/console/socket")
 async def console_socket(server_id: str, request: Request) -> dict:
-    """A short-lived token for the agent's console websocket.
+    """Where the browser follows the console live: this panel's own
+    websocket (`path`, on the page's origin), which relays the node's.
 
-    The browser talks to the node directly for the console -- no poll, no
-    hop through this API -- with a token signed here that the agent checks
-    against this panel's public key. Only an agent engine has one; on the
+    The browser used to be sent to the node itself. In the one-box install
+    that address (http://agent:8443) only resolves inside Docker, and from
+    an https page a ws:// address throws outright -- so the console never
+    went live behind a tunnel. Only an agent engine has a socket; on the
     in-memory engine the console falls back to /console/stream.
     """
     from app.engine.agent import AgentEngine
@@ -1391,12 +1395,95 @@ async def console_socket(server_id: str, request: Request) -> dict:
     if not isinstance(drv, AgentEngine):
         return {"available": False}
     user = request.state.user
-    perms = ["console.read"] + (["console.command"]
-                                if auth.may(user, "console.command") else [])
-    token, expires = await nodes.sign_browser_token(
-        user=user, server_uuid=server_id, node_id=drv.node_id, perms=perms)
-    return {"available": True, "url": drv.socket_url(server_id, token, drv.url),
-            "expires": expires, "may_type": "console.command" in perms}
+    return {"available": True, "url": None,
+            "path": f"/api/instances/{server_id}/console/ws",
+            "may_type": auth.may(user, "console.command")}
+
+
+def _same_origin(socket: WebSocket) -> bool:
+    """A websocket carries the session cookie whoever opened it, so one
+    opened by another site's page is refused here (the http guard's
+    SameSite=Lax defence does not cover a websocket handshake everywhere)."""
+    origin = socket.headers.get("origin")
+    if not origin:
+        return True             # not a browser
+    from urllib.parse import urlsplit
+    netloc = urlsplit(origin).netloc.lower()
+    hosts = {socket.headers.get("host", "").lower(),
+             socket.headers.get("x-forwarded-host", "").split(",")[0].strip().lower()}
+    return netloc in hosts - {""}
+
+
+async def _socket_user(socket: WebSocket, server_id: str) -> dict | None:
+    """The http guard's checks, for a websocket (which never passes through
+    it): signed in, password not pending, console.read, the server in scope.
+    Closes the socket and returns None when any of them fails."""
+    path = socket.url.path
+    if not _same_origin(socket):
+        await socket.close(code=4403, reason="cross-site")
+        return None
+    user = await auth.session_user(socket.cookies.get(COOKIE))
+    if not user:
+        await socket.close(code=4401, reason="sign in to continue")
+        return None
+    permission, scoped = policy.required("GET", path)
+    if user.get("must_change") or permission == policy.DENY or (
+            permission not in (policy.ANY,) and not auth.may(user, permission)):
+        await auth.audit(actor=user["username"], action="denied.permission",
+                         detail=f"WS {path} needs {permission}", ok=False)
+        await socket.close(code=4403, reason="forbidden")
+        return None
+    if scoped and not auth.in_scope(user, server_id, _rack_of):
+        await auth.audit(actor=user["username"], action="denied.scope",
+                         server_id=server_id, detail=f"WS {path}", ok=False)
+        await socket.close(code=4404, reason="not found")
+        return None
+    return user
+
+
+@app.websocket("/api/instances/{server_id}/console/ws")
+async def console_ws(socket: WebSocket, server_id: str) -> None:
+    """The console, live, relayed from the node (app/console_hub.py: one
+    upstream socket per server, shared by every viewer). Commands typed here
+    are checked against console.command for this user and sent as a normal
+    command, so an error goes back to whoever typed it."""
+    from app.console_hub import hub
+    user = await _socket_user(socket, server_id)
+    if user is None:
+        return
+    may_type = auth.may(user, "console.command")
+    await socket.accept()
+    q = hub.join(server_id)
+
+    async def outbound():
+        while True:
+            frame = await q.get()
+            if frame.get("type") == "backlog":
+                frame = {**frame, "may_type": may_type}
+            await socket.send_json(frame)
+
+    sender = asyncio.create_task(outbound())
+    try:
+        while True:
+            msg = await socket.receive_json()
+            if msg.get("type") != "command":
+                continue
+            if not may_type:
+                await socket.send_json({"type": "error",
+                                        "message": "You cannot type commands here "
+                                                   "(console.command)."})
+                continue
+            try:
+                await engine.send_command(server_id, str(msg.get("command") or ""))
+                await auth.audit(actor=user["username"], action="console.command",
+                                 server_id=server_id, detail="console websocket")
+            except Exception as e:      # noqa: BLE001 -- told to the one who typed it
+                await socket.send_json({"type": "error", "message": str(e)[:300]})
+    except (WebSocketDisconnect, RuntimeError, json.JSONDecodeError):
+        pass
+    finally:
+        sender.cancel()
+        hub.leave(server_id, q)
 
 
 @app.post("/api/instances/{server_id}/files/transfer")
@@ -1441,85 +1528,95 @@ async def console(server_id: str, source: str = "auto") -> dict:
 
 @app.get("/api/instances/{server_id}/console/stream")
 async def console_stream(server_id: str, source: str = "auto") -> StreamingResponse:
-    """Follow the console live.
+    """Follow the console live, polled: the fallback for a browser whose
+    websocket did not open, and for a driver with no socket of its own.
 
-    The fallback for a driver with no console socket of its own: this polls
-    and forwards only what is new. The diff is done here rather than in the
-    browser so a reconnect does not repaint the whole buffer, and so the
-    wire carries one line rather than the last five hundred every second.
+    On a node's numbered console (the agent) each poll asks only for the
+    lines after the last one sent, and `reset` is sent only when that line
+    has left the node's ring. Before, the panel asked for all 2000 lines
+    five times a second and diffed them here; once the ring was full every
+    new line slid the window, no prefix matched, and each poll sent reset
+    plus all 2000 lines -- about 200 KB per poll per viewer. A log file, and
+    the in-memory engine, are still diffed.
+
+    Whether the server is running is watched on its own clock beside the
+    lines, so output never waits behind it.
     """
     async def stream():
-        seen: list[str] = []
+        status = {"running": None, "changed": False}
+
+        async def watch_running():
+            while True:
+                try:
+                    running = bool((await engine.get_stats(server_id)).get("running"))
+                except Exception:
+                    running = False
+                if running != status["running"]:
+                    status.update(running=running, changed=True)
+                await asyncio.sleep(config.CONSOLE_STATS_EVERY)
+
+        watcher = asyncio.create_task(watch_running())
+        cursor: int | None = None       # the newest numbered line sent
+        seen: list[str] = []            # what a diffed source last showed
         idle = 0
-        running = False
-        # Adaptive. A flat 1.5s interval is why output arrived in clumps:
-        # a booting server writes hundreds of lines into a window where
-        # nothing is sent at all, so the console caught up in jumps rather
-        # than following. This runs fast while output is flowing and backs
-        # off when it stops, which puts the cost exactly where the value
-        # is -- and with the node on the same network, one poll is a few
-        # milliseconds and under a kilobyte.
+        # Adaptive: fast while output flows, easing off when it stops.
         delay = config.CONSOLE_POLL_FAST
-        stats_at = 0.0
         try:
             while True:
-                # Running/stopped changes on the scale of minutes, so it is
-                # asked for on a CLOCK rather than every Nth poll -- at the
-                # fast interval, every fifth pass would be once a second.
-                now = time.monotonic()
-                want_stats = now - stats_at >= config.CONSOLE_STATS_EVERY
-                if want_stats:
-                    stats_at = now
+                fresh: list[str] = []
+                used = source
+                reset = False
                 try:
-                    snap = await _console_snapshot(server_id, source,
-                                                   with_stats=want_stats)
-                    if snap["running"] is not None:
-                        running = snap["running"]
-                    snap["running"] = running
+                    numbered = None
+                    if source in ("auto", "buffer"):
+                        try:
+                            numbered = await engine.console_since(server_id, cursor)
+                        except engine.EngineError:
+                            numbered = None
+                    if numbered is not None and (numbered["lines"] or cursor is not None
+                                                 or source == "buffer"):
+                        reset = cursor is None or numbered["reset"]
+                        fresh, cursor, used = numbered["lines"], numbered["seq"], "buffer"
+                    else:
+                        snap = await _console_snapshot(server_id, source, with_stats=False)
+                        lines, used = snap["lines"], snap["source"]
+                        if lines[: len(seen)] == seen:
+                            fresh = lines[len(seen):]
+                        else:
+                            fresh, reset = lines, True
+                        seen = lines
                 except Exception as e:
                     yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
                     await asyncio.sleep(5)
                     continue
 
-                lines = snap["lines"]
-                # The buffer is a ring: when it wraps, the tail no longer
-                # starts where we left off, so fall back to sending the lot
-                # rather than silently dropping output.
-                if lines[: len(seen)] == seen:
-                    fresh = lines[len(seen):]
-                else:
-                    fresh = lines
+                if reset:
                     yield f"data: {json.dumps({'event': 'reset'})}\n\n"
-                seen = lines
-
-                if fresh:
+                if fresh or status["changed"]:
+                    status["changed"] = False
                     idle = 0
-                    # Straight back to the fast interval: output arrives
-                    # in bursts, so the line that ends a quiet spell is
-                    # the best predictor there is of the next one.
-                    delay = config.CONSOLE_POLL_FAST
+                    if fresh:
+                        delay = config.CONSOLE_POLL_FAST
                     yield "data: " + json.dumps({
                         "event": "lines", "lines": fresh,
-                        "running": snap["running"], "source": snap["source"],
+                        "running": status["running"], "source": used,
                     }) + "\n\n"
                 else:
                     idle += 1
-                    # Ease off rather than drop straight to idle, so a
-                    # pause between two lines of one burst is not paid for
-                    # at the full idle interval.
                     delay = min(config.CONSOLE_POLL_IDLE, delay * 1.6)
-                    # A heartbeat about every 15s of quiet, whatever the
-                    # interval happens to be, so the pane can tell
-                    # "nothing is happening" from "the stream died".
+                    # A heartbeat about every 15s of quiet, so the pane can
+                    # tell "nothing is happening" from "the stream died".
                     if idle * delay >= 15:
                         idle = 0
                         yield "data: " + json.dumps({
-                            "event": "idle", "running": snap["running"],
-                            "source": snap["source"],
+                            "event": "idle", "running": status["running"],
+                            "source": used,
                         }) + "\n\n"
                 await asyncio.sleep(delay)
         except asyncio.CancelledError:
             return
+        finally:
+            watcher.cancel()
 
     return StreamingResponse(
         stream(),

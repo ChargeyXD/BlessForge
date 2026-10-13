@@ -364,6 +364,15 @@ class AgentEngine:
                                params={"lines": 2000})
         return out["lines"]
 
+    async def console_since(self, server_id: str, after: int | None) -> dict:
+        """The node's numbered console: with `after`, only the lines after
+        that number ({"lines", "seq", "reset"}); without, its last 2000."""
+        params = {"lines": 2000} if after is None else {"after": int(after)}
+        out = await self._call("GET", f"/v1/servers/{server_id}/console",
+                               params=params, timeout=10)
+        return {"lines": list(out.get("lines") or []), "seq": int(out.get("seq") or 0),
+                "reset": bool(out.get("reset"))}
+
     async def send_command(self, server_id: str, command: str) -> dict:
         await self._call("POST", f"/v1/servers/{server_id}/command",
                          json={"command": command})

@@ -8,8 +8,11 @@ real processes -- the panel (ENGINE=agent) and the agent -- talking HTTP:
   * the node is registered through the admin API, and the config file the
     panel hands back is the one the agent is started with;
   * the agent reconciles from the panel and reports in (events);
-  * the browser's console is the agent's websocket, opened with a token the
-    panel signed -- and a token for one server cannot open another's;
+  * the browser's console is the panel's own websocket, relaying the
+    agent's: one upstream socket per server however many watch, and never
+    for a page from another site -- and a token for one server cannot open
+    another's on the agent;
+  * the polled fallback sends only the lines after the last one it sent;
   * neither side accepts the other without the node token, and a browser
     session cookie never opens /api/agent/*.
 
@@ -67,6 +70,10 @@ for line in sys.stdin:
         sys.exit(3)
     if line.startswith("join "):
         say(line[5:] + " joined the game")
+        continue
+    if line.startswith("spam "):
+        for i in range(int(line[5:])):
+            say("spam line %d" % (i + 1))
         continue
     say("ran: " + line)
 '''
@@ -201,13 +208,23 @@ async def main():
         r = await c.post(f"/api/instances/{sid}/action/start_server")
         check("the panel starts it", r.status_code == 200, r.text[:200])
         sock = (await c.get(f"/api/instances/{sid}/console/socket")).json()
-        check("the panel hands the browser a socket on the node, with a signed token",
-              sock.get("available") and sock["url"].startswith(f"ws://127.0.0.1:{AGENT_PORT}/v1/servers/{sid}/ws?token="),
-              sock.get("url", "")[:80])
+        check("the panel hands the browser its own socket, on the page's origin",
+              sock.get("available") and sock.get("path") == f"/api/instances/{sid}/console/ws"
+              and not sock.get("url"), sock)
+        ws_url = f"ws://127.0.0.1:{API_PORT}{sock['path']}"
+        cookie = "; ".join(f"{k}={v}" for k, v in c.cookies.items())
+        browser = {"Cookie": cookie, "Origin": API}
         lines = []
-        async with websockets.connect(sock["url"]) as ws:
+        async with websockets.connect(ws_url, additional_headers=browser) as ws, \
+                websockets.connect(ws_url, additional_headers=browser) as ws2:
             first = json.loads(await ws.recv())
+            second = json.loads(await ws2.recv())
             lines += first.get("lines", [])
+            check("each viewer starts from the backlog, and may type",
+                  first["type"] == second["type"] == "backlog" and first.get("may_type"))
+            live = await eng.for_server(sid)._call("GET", f"/v1/servers/{sid}")
+            check("two viewers in the panel are one socket on the node",
+                  live.get("console_followers") == 1, live.get("console_followers"))
 
             async def read_until(text, seconds=15):
                 deadline = time.time() + seconds
@@ -223,19 +240,87 @@ async def main():
 
             check("the console streams the server's output", await read_until("Done ("),
                   lines[-3:])
+            t0 = time.time()
             await ws.send(json.dumps({"type": "command", "command": "say hello"}))
             check("a command typed into the socket reaches the server",
                   await read_until("ran: say hello"), lines[-3:])
+            check("...and its output is back through the relay within 300 ms",
+                  time.time() - t0 < 0.3, f"{time.time() - t0:.3f}s")
             r = await c.post(f"/api/instances/{sid}/command", json={"command": "join Steve"})
             check("a command sent through the panel reaches it too",
                   r.status_code == 200 and await read_until("Steve joined the game"))
+            seen2 = []
+            deadline = time.time() + 5
+            while time.time() < deadline and not any("Steve joined" in ln for ln in seen2):
+                try:
+                    seen2 += json.loads(await asyncio.wait_for(ws2.recv(), 1)).get("lines", [])
+                except asyncio.TimeoutError:
+                    pass
+            check("...and the second viewer sees the same lines",
+                  any("ran: say hello" in ln for ln in seen2)
+                  and any("Steve joined" in ln for ln in seen2))
+
+            # A boot's worth of output, more than the node's 2000-line ring.
+            t0 = time.time()
+            await ws.send(json.dumps({"type": "command", "command": "spam 2500"}))
+            ok = await read_until("spam line 2500", 20)
+            took = time.time() - t0
+            spam = [ln for ln in lines if "spam line" in ln]
+            check("2500 lines in a burst all arrive, in order, none twice",
+                  ok and len(spam) == 2500
+                  and spam[-1].endswith("spam line 2500") and spam[0].endswith("spam line 1"),
+                  f"{len(spam)} lines")
+            check("...the last of them within a second of the command", took < 1.0,
+                  f"{took:.2f}s")
+
+        for label, headers in (
+                ("a page on another site", {"Cookie": cookie, "Origin": "http://evil.example"}),
+                ("no session", {"Origin": API})):
+            try:
+                async with websockets.connect(ws_url, additional_headers=headers) as ws:
+                    await ws.recv()
+                refused = False
+            except Exception:       # noqa: BLE001 -- refused before it was accepted
+                refused = True
+            check(f"the console socket refuses {label}", refused)
+
+        # --- the polled fallback: only what is new -----------------------------------------
+        async with c.stream("GET", f"/api/instances/{sid}/console/stream") as r:
+            frames = []
+            stream_lines = r.aiter_lines()
+
+            async def frame():
+                async for raw in stream_lines:
+                    if raw.startswith("data: "):
+                        return json.loads(raw[6:])
+
+            frames.append(await asyncio.wait_for(frame(), 10))
+            frames.append(await asyncio.wait_for(frame(), 10))
+            check("the stream opens with one reset and the node's whole ring",
+                  frames[0]["event"] == "reset" and frames[1]["event"] == "lines"
+                  and len(frames[1]["lines"]) == 2000
+                  and frames[1]["lines"][-1].endswith("spam line 2500"),
+                  len(frames[1].get("lines") or []))
+            await c.post(f"/api/instances/{sid}/command", json={"command": "say polled"})
+            got = []
+            deadline = time.time() + 5
+            while time.time() < deadline and not any("ran: say polled" in ln for ln in got):
+                f = await asyncio.wait_for(frame(), 5)
+                if f["event"] == "reset":
+                    break
+                got += f.get("lines") or []
+            check("...then only the lines after the last one it sent, with the ring full",
+                  any("ran: say polled" in ln for ln in got) and len(got) <= 3, got)
         stats = (await c.get(f"/api/instances/{sid}/stats")).json()
         check("stats come from the node: running, with the player who joined",
               stats.get("running") and stats.get("online") == 1, stats)
 
         # --- a token is for one server and one node -----------------------------------------
         other = await eng.create_server(name="Other", port=free_port(), memory_mb=1024)
-        wrong = sock["url"].replace(f"/servers/{sid}/", f"/servers/{other}/")
+        from app import nodes as panel_nodes
+        token, _exp = await panel_nodes.sign_browser_token(
+            user={"id": "1"}, server_uuid=sid, node_id="test-node", perms=["console.read"])
+        wrong = f"ws://127.0.0.1:{AGENT_PORT}/v1/servers/{other}/ws?token={token}"
         try:
             async with websockets.connect(wrong) as ws:
                 await ws.recv()
