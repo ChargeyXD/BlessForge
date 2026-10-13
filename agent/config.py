@@ -71,6 +71,13 @@ class AgentConfig:
     # its share when the machine has it, and the kernel decides when it does
     # not. Never on a node that hosts anybody else.
     memory_mode: str = "hard"
+    # How many servers boot at once (a slot is held from the container start
+    # until "Done", an exit, or boot_timeout seconds); the rest wait their
+    # turn. And how many installs -- loader installers, the node's own
+    # downloads -- run at once, separately, so neither holds up the other.
+    max_concurrent_boots: int = 2
+    boot_timeout: int = 900
+    max_concurrent_installs: int = 2
 
     # --- process runtime: development only -------------------------------------
     # Runs the server as a plain process with no isolation at all. Refused

@@ -205,6 +205,11 @@ class Supervisor:
         self.specs_dir = cfg.state_dir / "servers"
         # The sampler's latest CPU and memory reading per running server.
         self.samples: dict[str, dict] = {}
+        # The boot queue (see _start): servers booting now, each holding a
+        # slot, and servers waiting for one.
+        self.boot_slots = asyncio.Semaphore(max(1, int(cfg.max_concurrent_boots)))
+        self.booting: dict[str, asyncio.Task] = {}
+        self.queued: dict[str, asyncio.Task] = {}
 
     # --- desired state -----------------------------------------------------------
 
@@ -279,6 +284,9 @@ class Supervisor:
 
     async def delete(self, uuid: str, delete_files: bool) -> None:
         srv = self.get(uuid)
+        waiting = self.queued.pop(uuid, None)
+        if waiting is not None:
+            waiting.cancel()
         if srv.running is not None:
             srv.stopping = True
             await srv.running.kill()
@@ -412,18 +420,86 @@ class Supervisor:
         return self.describe(srv)
 
     async def _start(self, srv: Server) -> None:
-        if srv.running is not None:
+        """Start it now if a boot slot is free, otherwise queue it.
+
+        Five modded JVMs booting at once saturate the CPU and the disk of a
+        small box, and every one of them boots slower than it would one
+        after another. A node boots at most `max_concurrent_boots` servers
+        at a time: a slot is held from the container start until the server
+        says "Done" (or exits, or `boot_timeout` passes). A start with no
+        free slot is queued -- the request answers at once, the console says
+        it is waiting -- and the server starts when one frees up. Every
+        refusal (no command, a port another server holds) still comes back
+        on the request itself, checked before it queues.
+        """
+        if srv.running is not None or srv.uuid in self.queued:
             return
+        await self._checks(srv)
+        if self.boot_slots.locked():
+            n = len(self.booting)
+            srv.state = "queued"
+            srv.console.feed(f"[BlessForge] Waiting to start ({n} server"
+                             f"{'' if n == 1 else 's'} booting)")
+            self.events.emit("status", srv.uuid, state="queued")
+            self.queued[srv.uuid] = asyncio.create_task(self._start_queued(srv))
+            return
+        await self.boot_slots.acquire()
+        try:
+            await self._launch(srv)
+        except BaseException:
+            self.boot_slots.release()
+            raise
+        self._hold_slot(srv)
+
+    async def _start_queued(self, srv: Server) -> None:
+        try:
+            await self.boot_slots.acquire()
+        except asyncio.CancelledError:
+            return
+        self.queued.pop(srv.uuid, None)
+        held = False
+        try:
+            async with srv.lock:
+                if srv.state != "queued" or srv.running is not None:
+                    return
+                try:
+                    await self._checks(srv)     # things may have moved meanwhile
+                    await self._launch(srv)
+                    held = True
+                except Exception as e:      # noqa: BLE001 -- nobody is waiting on it
+                    srv.state = "offline"
+                    srv.console.feed(f"[BlessForge] Could not start: {e}")
+                    self.events.emit("status", srv.uuid, state="offline", error=str(e))
+        finally:
+            if held:
+                self._hold_slot(srv)
+            else:
+                self.boot_slots.release()
+
+    def _hold_slot(self, srv: Server) -> None:
+        """Keep the boot slot until it is up (or gone, or slow past the
+        timeout), then hand it to the next server waiting."""
+        async def hold():
+            deadline = time.time() + self.cfg.boot_timeout
+            try:
+                while srv.state == "starting" and srv.running is not None \
+                        and time.time() < deadline:
+                    await asyncio.sleep(0.25)
+            finally:
+                self.booting.pop(srv.uuid, None)
+                self.boot_slots.release()
+        self.booting[srv.uuid] = asyncio.create_task(hold())
+
+    async def _checks(self, srv: Server) -> None:
         if srv.state == "installing":
             raise RuntimeError_("an install is running on this server", 409)
         argv_of(srv.spec.get("execution_command") or "")      # 409 if none
         if srv.spec.get("port_auto"):
             await self._choose_port(srv)
-        # The ports its add-ons open (Geyser, Voice Chat, a web map), read
-        # from the folder at every start so a mod added since is picked up.
-        # Another server on this node holding one of them refuses the start,
-        # naming it -- servers may share a port, one at a time.
-        extra, ports = self._ports_of(srv)
+        # Another server on this node holding its port (or an add-on's)
+        # refuses the start, naming it -- servers may share a port, one at
+        # a time.
+        _extra, ports = self._ports_of(srv)
         held = self.holders(srv, ports)
         if held:
             other, port = held[0]
@@ -433,6 +509,12 @@ class Supervisor:
                 f"Port {port} is in use by {other.spec.get('name')}, which is running. "
                 "Only one of them can run at a time: switch to this server to stop it "
                 "and start this one.", 409, conflict=self._who(other, port))
+
+    async def _launch(self, srv: Server) -> None:
+        """The container start itself, with a boot slot held."""
+        # The ports its add-ons open (Geyser, Voice Chat, a web map), read
+        # from the folder at every start so a mod added since is picked up.
+        extra, ports = self._ports_of(srv)
         srv.stopping = False
         srv.last_exit = None
         srv.state = "starting"
@@ -456,7 +538,8 @@ class Supervisor:
                 # bind could say so. The next free one, then.
                 srv.port_tries += 1
                 srv.refused_ports.add(int(taken))
-                return await self._start(srv)
+                await self._checks(srv)
+                return await self._launch(srv)
             if taken:
                 nxt = await self.next_free_port(srv)
                 if nxt:
@@ -528,6 +611,10 @@ class Supervisor:
                     continue
                 srv.started_at = started or time.time()
                 srv.console.feed("[BlessForge] Console re-attached.")
+                if srv.state == "starting" and not self.boot_slots.locked():
+                    # Still booting: it counts against the boot queue too.
+                    await self.boot_slots.acquire()
+                    self._hold_slot(srv)
             self.events.emit("status", uuid, state=srv.state, adopted=True)
             adopted.append(uuid)
         return adopted
@@ -554,6 +641,13 @@ class Supervisor:
                 pass
 
     async def _stop(self, srv: Server) -> None:
+        waiting = self.queued.pop(srv.uuid, None)
+        if waiting is not None:
+            waiting.cancel()
+            srv.state = "offline"
+            srv.console.feed("[BlessForge] No longer waiting to start")
+            self.events.emit("status", srv.uuid, state="offline")
+            return
         if srv.running is None:
             return
         srv.stopping = True

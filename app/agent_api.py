@@ -35,7 +35,9 @@ LIVE: dict[str, dict] = {}
 # find out afterwards that a server crash-looped at 3am.
 _AUDITED = {"crash", "crash_loop", "disk_full", "drift", "agent_started",
             "port_changed"}
-_STATUS = {"starting": "running", "running": "running", "offline": "stopped"}
+_STATUS = {"starting": "running", "running": "running", "offline": "stopped",
+           # Waiting for a boot slot on its node: it will start by itself.
+           "queued": "running"}
 
 
 async def _node(authorization: str | None) -> Node:

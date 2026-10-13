@@ -20,6 +20,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
   * ports another app holds (Crafty's whole range): GET /v1/ports lists
     them, Port: automatic moves a server to a free one at start, and a
     fixed port that is taken says which port is free next (4);
+  * boots are queued: at most max_concurrent_boots at once, each holding a
+    slot until "Done", the rest waiting with a console line (7.2);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -899,6 +901,76 @@ async def test_ports_live():
             await c.delete(f"/containers/{name}", params={"force": "true"})
 
 
+# --- 7.2 a start queue with staggered boots ------------------------------------------------
+
+
+SLOW_BOOT = r'''
+import sys, time
+def say(m): print("[Server thread/INFO]: " + m, flush=True)
+say("Starting minecraft server version fake-1.0")
+time.sleep(float(sys.argv[1]))
+say('Done (1.0s)! For help, type "help"')
+for line in sys.stdin:
+    if line.strip() == "stop":
+        sys.exit(0)
+'''
+
+
+async def test_boot_queue():
+    section("7.2 a start queue: at most two boots at once")
+    script = TMP / "slow_boot.py"
+    script.write_text(SLOW_BOOT, encoding="utf-8")
+    ids = [f"babababa-0000-0000-0000-00000000000{i}" for i in range(4)]
+    async with Agent(process_cfg("queue", max_concurrent_boots=2)) as a:
+        c = a.client
+        for i, sid in enumerate(ids):
+            r = await c.put(f"/v1/servers/{sid}", json={
+                "name": f"Pack {i}", "port": 30100 + i,
+                "execution_command": f"{sys.executable} -u {script} 0.8"})
+            assert r.status_code == 200, r.text
+        t0 = time.perf_counter()
+        answers = [await c.post(f"/v1/servers/{sid}/power", json={"action": "start"})
+                   for sid in ids]
+        took = time.perf_counter() - t0
+        states = [a.sup.servers[sid].state for sid in ids]
+        check("four starts answer at once; two boot and two wait their turn",
+              all(r.status_code == 200 for r in answers) and took < 1.0
+              and states == ["starting", "starting", "queued", "queued"], (states, took))
+        check("...the waiting ones say so in their console",
+              any("Waiting to start (2 servers booting)" in ln
+                  for ln in a.sup.servers[ids[2]].console.lines))
+        peak = 0
+        done_at = {}
+        end = time.time() + 15
+        while time.time() < end and len(done_at) < 4:
+            booting = sum(1 for sid in ids if a.sup.servers[sid].state == "starting")
+            peak = max(peak, booting)
+            for sid in ids:
+                if a.sup.servers[sid].state == "running" and sid not in done_at:
+                    done_at[sid] = time.perf_counter() - t0
+            await asyncio.sleep(0.05)
+        check("never more than two boot at once, and all four come up",
+              peak <= 2 and len(done_at) == 4, (peak, done_at))
+        check("...the queued two after the first two were done",
+              min(done_at[ids[2]], done_at[ids[3]]) > max(done_at[ids[0]], done_at[ids[1]]),
+              done_at)
+        for sid in ids:
+            await c.post(f"/v1/servers/{sid}/power", json={"action": "stop"})
+        await until(lambda: all(a.sup.servers[s].running is None for s in ids), 20)
+
+        # A queued start can be called off.
+        for sid in ids[:3]:
+            await c.post(f"/v1/servers/{sid}/power", json={"action": "start"})
+        r = await c.post(f"/v1/servers/{ids[2]}/power", json={"action": "stop"})
+        await asyncio.sleep(2.0)
+        check("stopping a queued server takes it out of the queue; it never starts",
+              r.status_code == 200 and a.sup.servers[ids[2]].running is None
+              and a.sup.servers[ids[2]].state == "offline")
+        for sid in ids[:2]:
+            await c.post(f"/v1/servers/{sid}/power", json={"action": "stop"})
+        await until(lambda: all(a.sup.servers[s].running is None for s in ids), 20)
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -907,6 +979,7 @@ async def main():
     await test_console()
     await test_shared_port()
     await test_ports()
+    await test_boot_queue()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()
