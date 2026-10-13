@@ -38,6 +38,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
   * the runtime images its servers use -- only those Java versions -- are
     pulled (or built) in the background when the agent starts, and a start
     that has to wait on one says so in its console before it waits (6.8);
+  * each image is looked up once per process, not at every start, and one
+    pruned since is fetched again when a create cannot find it (6.10);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -48,6 +50,7 @@ PROCESS runtime; the Docker parts that need a daemon run with --live.
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import shutil
 import sys
@@ -1136,6 +1139,7 @@ class FakeImages:
         self.calls = []
         self.present: set[str] = set()
         self.pullable = True
+        self.buildable = True
         self.gate: asyncio.Event | None = None     # holds every pull while set
         self.on_pull = None
 
@@ -1159,19 +1163,30 @@ class FakeImages:
             self.present.add(f"{q['fromImage']}:{q['tag']}")
             return httpx.Response(200, text='{"status":"Downloaded newer image"}\n')
         if p == "/build":
+            if not self.buildable:
+                return httpx.Response(200, text='{"error":"base image not found"}\n')
             self.present.add(q["t"])
             return httpx.Response(200, text='{"stream":"Successfully built"}\n')
         if p == "/containers/create":
+            image = json.loads(request.content)["Image"]
+            if image not in self.present:
+                return httpx.Response(404, json={"message": f"No such image: {image}"})
             return httpx.Response(500, json={"message": "no containers in this test"})
         return httpx.Response(404, json={"message": "no such container"})
 
 
 async def test_runtime_images():
     section("6.8 runtime images: fetched ahead of a first start, and a wait is said")
-    import json
     from agent import containers
     from agent.servers import Supervisor
     fake = FakeImages()
+
+    def forget(image):
+        """Gone from the machine, and from what this process remembers."""
+        fake.present.discard(image)
+        containers._images_ready.discard(image)
+    # A fresh process, as far as images go (7.1's fake Docker had Java 21).
+    containers._images_ready.clear()
     real_client = containers._docker_client
     containers._docker_client = lambda cfg, timeout=60: httpx.AsyncClient(
         transport=httpx.MockTransport(fake), base_url="http://docker")
@@ -1233,7 +1248,7 @@ async def test_runtime_images():
               list(sup.servers[ids[1]].console.lines))
 
         # A start while the pre-pull is fetching its image waits for that pull.
-        fake.present.discard(cfg.images[17])
+        forget(cfg.images[17])
         fake.calls.clear()
         fake.gate = asyncio.Event()
         pre = asyncio.create_task(sup.prepare_images())
@@ -1259,13 +1274,92 @@ async def test_runtime_images():
               fake.made("/images/create"))
 
         # The loader installer waits on its image the same way.
-        fake.present.discard(cfg.images[17])
+        forget(cfg.images[17])
         job = sup.start_install(ids[0], {"run": ["java", "-jar", "installer.jar"],
                                          "java_major": 17})
         await until(lambda: sup.installs[job]["status"] in ("done", "error"))
         out = sup.installs[job]["output"]
         check("...and so does an install's loader installer, in the install's output",
               "preparing Java 17 (first time only)" in out, out)
+    finally:
+        containers._docker_client = real_client
+
+
+# --- 6.10 one image lookup per process ---------------------------------------------------
+
+
+async def test_image_cache():
+    section("6.10 each runtime image is looked up once per process, not per start")
+    from agent import containers
+    from agent.servers import Supervisor
+    containers._images_ready.clear()
+    fake = FakeImages()
+    real_client = containers._docker_client
+    containers._docker_client = lambda cfg, timeout=60: httpx.AsyncClient(
+        transport=httpx.MockTransport(fake), base_url="http://docker")
+
+    def asked(kind):
+        return [p for m, p, _q in fake.calls
+                if (kind == "lookup" and m == "GET" and p.startswith("/images/"))
+                or (kind != "lookup" and p == kind)]
+
+    async def start(sid):
+        try:
+            await sup.power(sid, "start")
+        except containers.RuntimeError_:
+            pass                        # this fake Docker creates no containers
+    try:
+        cfg = docker_cfg("imagecache")
+        sup = Supervisor(cfg, containers.DockerRuntime(cfg), FakeEvents())
+        ids = [f"edededed-0000-0000-0000-00000000000{i}" for i in range(3)]
+        for sid, port, java in ((ids[0], 30051, 21), (ids[1], 30052, 21),
+                                (ids[2], 30053, 17)):
+            sup.put(sid, {"name": f"s{port}", "port": port, "java_major": java,
+                          "execution_command": "java -jar server.jar"})
+        fake.present.add(cfg.images[21])          # already on this machine
+        for _ in range(3):
+            await start(ids[0])
+            await start(ids[1])
+        check("six starts of two servers on one image ask Docker for it once, "
+              "and an image already here is never pulled",
+              asked("lookup") == [f"/images/{cfg.images[21]}/json"]
+              and not asked("/images/create") and len(asked("/containers/create")) == 6,
+              asked("lookup"))
+
+        fake.calls.clear()
+        fake.pullable = fake.buildable = False
+        await start(ids[2])
+        await start(ids[2])
+        check("an image that could not be fetched is not remembered: the next start "
+              "tries again",
+              len(asked("lookup")) == 2 and len(asked("/images/create")) == 2
+              and len(asked("/build")) == 2 and not asked("/containers/create"),
+              fake.calls)
+        fake.calls.clear()
+        fake.pullable = True
+        await start(ids[2])
+        await start(ids[2])
+        await sup.prepare_images()
+        check("...one fetched once is: the next start and the pre-pull ask nothing",
+              len(asked("lookup")) == 1 and len(asked("/images/create")) == 1
+              and len(asked("/containers/create")) == 2, fake.calls)
+
+        # Pruned behind the agent's back: the create cannot find it.
+        fake.present.discard(cfg.images[21])
+        fake.calls.clear()
+        srv = sup.servers[ids[0]]
+        srv.console.lines.clear()
+        await start(ids[0])
+        check("an image removed since (a prune) is noticed by the create, fetched "
+              "again, saying so, and the create retried",
+              len(asked("/containers/create")) == 2
+              and fake.made("/images/create") == [cfg.images[21]]
+              and "[BlessForge] Preparing Java 21 (first time only)" in srv.console.lines,
+              (fake.calls, list(srv.console.lines)))
+        fake.calls.clear()
+        await start(ids[1])
+        check("...and is remembered again after", not asked("lookup")
+              and len(asked("/containers/create")) == 1, fake.calls)
     finally:
         containers._docker_client = real_client
 
@@ -1408,6 +1502,7 @@ async def main():
     await test_disk_watchdog()
     await test_addons_off_loop()
     await test_runtime_images()
+    await test_image_cache()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

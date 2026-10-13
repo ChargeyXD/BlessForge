@@ -344,6 +344,10 @@ def _docker_client(cfg: AgentConfig, timeout: float = 60) -> clients.Lent:
     return clients.Lent(clients.client(f"docker:{host}", make), timeout)
 
 
+# Images this process has found on the machine, pulled or built: each is
+# looked up once, not at every start. One that disappears afterwards (an
+# image prune) is noticed when a create cannot find it, and fetched again.
+_images_ready: set[str] = set()
 # One pull or build per image at a time: a start that needs an image the
 # startup pre-pull is fetching waits for that fetch instead of starting a
 # second one. By event loop, like agent/clients.py's clients.
@@ -510,15 +514,19 @@ class DockerRuntime:
         be. A first pull takes a while and a local build minutes, so
         `announce` is called once the image is known to be missing and
         BEFORE waiting on it -- a start never hangs saying nothing."""
+        if image in _images_ready:
+            return
         if (await c.get(f"/images/{image}/json")).status_code == 200:
+            _images_ready.add(image)
             return
         if announce is not None:
             announce()
         async with _image_lock(image):
             # Whoever held the lock may have just fetched it.
-            if (await c.get(f"/images/{image}/json")).status_code == 200:
+            if image in _images_ready:
                 return
             await self._fetch_image(c, image)
+            _images_ready.add(image)
 
     async def _fetch_image(self, c: clients.Lent, image: str) -> None:
         repo, _, tag = image.rpartition(":")
@@ -551,7 +559,8 @@ class DockerRuntime:
                                 f"{(failed[-1] if failed else r.text)[:300]}", 502)
 
     async def _recreate(self, c, name: str, spec: dict, *,
-                        refuse_running: bool = False) -> None:
+                        refuse_running: bool = False,
+                        announce: Callable[[], None] | None = None) -> None:
         if refuse_running:
             # A game server still running (an agent restart that did not
             # re-adopt it) is never force-deleted: that kills it unsaved.
@@ -560,6 +569,13 @@ class DockerRuntime:
                 raise RuntimeError_("This server is already running.", 409)
         await c.delete(f"/containers/{name}", params={"force": "true"})
         r = await c.post("/containers/create", params={"name": name}, json=spec)
+        if r.status_code == 404:
+            # No such image: removed since this process found it (an image
+            # prune). Fetch it again rather than refuse every start until
+            # the agent restarts.
+            _images_ready.discard(spec["Image"])
+            await self._ensure_image(c, spec["Image"], announce)
+            r = await c.post("/containers/create", params={"name": name}, json=spec)
         if r.status_code >= 400:
             raise RuntimeError_(f"Docker refused the container: {r.text[:300]}", 502)
 
@@ -572,10 +588,12 @@ class DockerRuntime:
             while True:
                 spec = container_spec(server, self.cfg, folder)
                 assert_safe(spec, self.cfg, folder)
-                await self._ensure_image(c, spec["Image"], lambda: on_output(
-                    f"[BlessForge] Preparing {self.java_name(spec['Image'])} "
-                    "(first time only)"))
-                await self._recreate(c, name, spec, refuse_running=True)
+
+                def say(image=spec["Image"]) -> None:
+                    on_output(f"[BlessForge] Preparing {self.java_name(image)} "
+                              "(first time only)")
+                await self._ensure_image(c, spec["Image"], say)
+                await self._recreate(c, name, spec, refuse_running=True, announce=say)
                 reader, writer = await self._attach(name)
                 r = await c.post(f"/containers/{name}/start")
                 if r.status_code < 400:
@@ -736,10 +754,12 @@ class DockerRuntime:
         fresh_native_tmp(folder)
         assert_safe(spec, self.cfg, folder)
         name = self.container(server["uuid"]) + "-install"
+
+        def say() -> None:
+            on_output(f"preparing {self.java_name(spec['Image'])} (first time only)")
         async with _docker_client(self.cfg, timeout + 60) as c:
-            await self._ensure_image(c, spec["Image"], lambda: on_output(
-                f"preparing {self.java_name(spec['Image'])} (first time only)"))
-            await self._recreate(c, name, spec)
+            await self._ensure_image(c, spec["Image"], say)
+            await self._recreate(c, name, spec, announce=say)
             await c.post(f"/containers/{name}/start")
             try:
                 w = await c.post(f"/containers/{name}/wait", timeout=timeout)
