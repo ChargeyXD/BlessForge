@@ -9,6 +9,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     Docker's stats, and GET /v1/stats answers for every server at once (6.2);
   * one long-lived client per target -- Docker, the panel, each node -- not
     a new connection (and a 60-100 ms SSL context) per call (6.3);
+  * an agent restart takes back the servers that kept running, and never
+    force-deletes a running container: a start refuses instead (7.1);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -338,10 +340,242 @@ async def test_shared_clients():
     check("...closed on shutdown", held.is_closed and not panel_side._clients)
 
 
+# --- 7.1 an agent restart re-adopts running servers ------------------------------------
+
+
+class FakeRunning:
+    def __init__(self, detachable=True):
+        self.calls = []
+        if not detachable:
+            self.detach = None
+
+    async def send(self, line):
+        self.calls.append(("send", line))
+
+    async def stop(self, timeout):
+        self.calls.append(("stop", timeout))
+
+    async def kill(self):
+        self.calls.append(("kill",))
+
+    async def stats(self):
+        return {}
+
+    async def detach(self):
+        self.calls.append(("detach",))
+
+
+class FakeDocker:
+    """The runtime interface, with servers that kept running while the agent
+    was away."""
+    name = "docker"
+
+    def __init__(self, running: dict[str, list[str]]):
+        self.running = running
+        self.started = []
+        self.handles = {}
+
+    async def running_servers(self):
+        return {u: {} for u in self.running}
+
+    async def adopt(self, server, on_output, on_exit, tail=2000):
+        for ln in self.running[server["uuid"]]:
+            on_output(ln)
+        self.handles[server["uuid"]] = h = FakeRunning()
+        return h, 1700000000.0
+
+    async def start(self, *a, **kw):
+        self.started.append(a)
+        return FakeRunning()
+
+    async def remove(self, uuid):
+        pass
+
+
+class FakeEvents:
+    def __init__(self):
+        self.sent = []
+
+    def emit(self, kind, server=None, **data):
+        self.sent.append((kind, server, data))
+
+
+async def test_readopt():
+    section("7.1 an agent restart takes back the servers that kept running")
+    from agent.servers import Supervisor
+    cfg = process_cfg("adopt")
+    a_id, b_id, ghost = ("cccccccc-0000-0000-0000-00000000000a",
+                         "cccccccc-0000-0000-0000-00000000000b",
+                         "cccccccc-0000-0000-0000-0000000000ff")
+    first = Supervisor(cfg, FakeDocker({}), FakeEvents())
+    first.put(a_id, {"name": "Survival", "port": 30021, "auto_start": True,
+                     "execution_command": "java -jar server.jar"})
+    first.put(b_id, {"name": "Creative", "port": 30022,
+                     "execution_command": "java -jar server.jar"})
+
+    runtime = FakeDocker({
+        a_id: ["[12:00:00] [Server thread/INFO]: Starting minecraft server",
+               '[12:00:09] [Server thread/INFO]: Done (9.1s)! For help, type "help"',
+               "[12:01:00] [Server thread/INFO]: Sakura joined the game"],
+        b_id: ["[12:00:00] [Server thread/INFO]: Loading 412 mods"],
+        ghost: ["not ours"]})
+    events = FakeEvents()
+    sup = Supervisor(cfg, runtime, events)
+    sup.load()
+    adopted = await sup.adopt_running()
+    a, b = sup.servers[a_id], sup.servers[b_id]
+    check("both servers that kept running are taken back",
+          sorted(adopted) == sorted([a_id, b_id])
+          and a.running is runtime.handles[a_id] and b.running is runtime.handles[b_id])
+    check("...the console seeded from what they printed while the agent was away",
+          any("Done (9.1s)" in ln for ln in a.console.lines)
+          and any("Loading 412 mods" in ln for ln in b.console.lines))
+    check("...one that had finished booting is running, one still booting is starting",
+          a.state == "running" and b.state == "starting", (a.state, b.state))
+    check("...with when it really started, and who joined",
+          a.started_at == 1700000000.0 and a.players == {"Sakura"})
+    check("a container for a server this node has no spec for is reported, not touched",
+          any(k == "drift" and srv == ghost for k, srv, _ in events.sent)
+          and ghost not in sup.servers)
+    await sup.power(a_id, "start")
+    check("auto-start after the restart does not start it again (its container is kept)",
+          runtime.started == [] and a.running is runtime.handles[a_id])
+
+    await sup.shutdown()
+    check("an agent shutting down lets its Docker servers run on (detach, no stop)",
+          runtime.handles[a_id].calls == [("detach",)]
+          and runtime.handles[b_id].calls == [("detach",)])
+    proc = Supervisor(cfg, FakeDocker({}), FakeEvents())
+    proc.load()
+    child = FakeRunning(detachable=False)
+    proc.servers[a_id].running = child
+    await proc.shutdown()
+    check("...but a process runtime's children, which die with it, are stopped first",
+          child.calls and child.calls[0][0] == "stop")
+
+    # The Docker runtime itself: a start never force-deletes a running container.
+    from agent import containers
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.url.path.startswith("/images/"):
+            return httpx.Response(200, json={})
+        if request.method == "GET" and request.url.path.endswith("/json"):
+            return httpx.Response(200, json={"State": {"Running": True}})
+        return httpx.Response(204)
+
+    real_client = containers._docker_client
+    containers._docker_client = lambda cfg, timeout=60: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://docker")
+    try:
+        dcfg = AgentConfig(node_id="node-test", token_id="t", token="t",
+                           panel_url="http://x", panel_public_key=PUB,
+                           servers_root=TMP / "docker" / "servers",
+                           state_dir=TMP / "docker" / "state", game_bind_ip="127.0.0.1")
+        folder = dcfg.server_dir(a_id)
+        folder.mkdir(parents=True)
+        rt = containers.DockerRuntime(dcfg)
+        try:
+            await rt.start({"uuid": a_id, "port": 30021,
+                            "execution_command": "java -jar server.jar"},
+                           folder, lambda ln: None, None)
+            status = None
+        except containers.RuntimeError_ as e:
+            status = (e.status, str(e))
+    finally:
+        containers._docker_client = real_client
+    check("a start whose container is still running is refused with 409 'already running'",
+          status and status[0] == 409 and "already running" in status[1], status)
+    check("...and the running container is never deleted",
+          not any(m == "DELETE" for m, _ in seen), seen)
+
+
+async def test_readopt_live():
+    section("7.1 LIVE: a real container survives an agent restart, console and all")
+    from agent.containers import _docker_client
+    image = "python:3.12-slim"
+    sid = "dddddddd-0000-0000-0000-000000000001"
+    cfg = AgentConfig(node_id="node-live-adopt", token_id="tid", token="secret",
+                      panel_url="http://127.0.0.1:9", panel_public_key=PUB,
+                      servers_root=TMP / "live" / "servers",
+                      state_dir=TMP / "live" / "state", game_bind_ip="127.0.0.1")
+    name = "bf-" + sid
+    loop_py = ("import sys,time,threading\n"
+               "def say(m): print('[Server thread/INFO]: '+m, flush=True)\n"
+               "say('Starting'); say('Done (0.1s)! For help, type \"help\"')\n"
+               "def tick():\n"
+               "    n=0\n"
+               "    while True:\n"
+               "        n+=1; say('tick %d' % n); time.sleep(0.2)\n"
+               "threading.Thread(target=tick, daemon=True).start()\n"
+               "for line in sys.stdin:\n"
+               "    line=line.strip()\n"
+               "    if line=='stop': say('Stopping the server'); sys.exit(0)\n"
+               "    say('ran: '+line)\n")
+    async with _docker_client(cfg, 60) as c:
+        await c.delete(f"/containers/{name}", params={"force": "true"})
+        r = await c.post("/containers/create", params={"name": name}, json={
+            "Image": image, "Cmd": ["python", "-u", "-c", loop_py],
+            "OpenStdin": True, "StdinOnce": False, "AttachStdin": True,
+            "AttachStdout": True, "AttachStderr": True, "Tty": False,
+            "Labels": {"io.blessforge.server": sid, "io.blessforge.node": cfg.node_id}})
+        assert r.status_code < 400, r.text
+        await c.post(f"/containers/{name}/start")
+        cid = (await c.get(f"/containers/{name}/json")).json()["Id"]
+    try:
+        async with Agent(cfg) as a:
+            await a.client.put(f"/v1/servers/{sid}", json={
+                "name": "kept", "port": 30031, "auto_start": True,
+                "execution_command": "java -jar server.jar"})
+        await asyncio.sleep(1.0)
+        async with Agent(cfg) as a:
+            srv = a.sup.servers[sid]
+            check("LIVE the restarted agent re-attaches the running container",
+                  srv.running is not None and srv.state == "running", srv.state)
+            check("LIVE ...its console seeded from docker logs",
+                  any("tick" in ln for ln in srv.console.lines))
+            before = len([ln for ln in srv.console.lines if "tick" in ln])
+            await asyncio.sleep(0.8)
+            after = len([ln for ln in srv.console.lines if "tick" in ln])
+            check("LIVE ...and following it live", after > before, (before, after))
+            r = await a.client.post(f"/v1/servers/{sid}/command",
+                                    json={"command": "say hello"})
+            ok = await until(lambda: any("ran: say hello" in ln for ln in srv.console.lines), 5)
+            check("LIVE ...and a command reaches it again", r.status_code == 200 and ok)
+            r = await a.client.post(f"/v1/servers/{sid}/power", json={"action": "start"})
+            async with _docker_client(cfg, 10) as c:
+                same = (await c.get(f"/containers/{name}/json")).json()["Id"] == cid
+            check("LIVE start on it is a no-op; the container is the same one",
+                  r.status_code == 200 and same)
+        async with _docker_client(cfg, 10) as c:
+            alive = ((await c.get(f"/containers/{name}/json")).json()
+                     .get("State") or {}).get("Running")
+        check("LIVE the agent stopping leaves the server running", alive)
+        async with Agent(cfg) as a:
+            srv = a.sup.servers[sid]
+            check("LIVE a second restart takes it back again", srv.running is not None)
+            r = await a.client.post(f"/v1/servers/{sid}/power", json={"action": "stop"})
+            ok = await until(lambda: srv.running is None, 15)
+            check("LIVE stop goes through its own stop and it exits cleanly",
+                  r.status_code == 200 and ok and (srv.last_exit or {}).get("code") == 0,
+                  srv.last_exit)
+    finally:
+        async with _docker_client(cfg, 30) as c:
+            await c.delete(f"/containers/{name}", params={"force": "true"})
+        from agent import clients
+        await clients.close_all()
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
     await test_shared_clients()
+    await test_readopt()
+    if LIVE:
+        await test_readopt_live()
+    else:
+        print("\n(the Docker tier was not run; add --live where Docker is available)")
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)

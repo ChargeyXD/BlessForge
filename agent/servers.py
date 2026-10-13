@@ -258,16 +258,7 @@ class Supervisor:
         srv.state = "starting"
         srv.clear_players()
         srv.console.feed(f"[BlessForge] Starting {srv.spec.get('name')}")
-
-        def on_output(line: str) -> None:
-            srv.console.feed(line)
-            if srv.state == "starting" and _DONE.search(line):
-                srv.state = "running"
-                self.events.emit("status", srv.uuid, state="running")
-            self._track_players(srv, line)
-
-        async def on_exit(code: int | None, info: dict | None = None) -> None:
-            await self._exited(srv, code, info or {})
+        on_output, on_exit = self._handlers(srv)
 
         # The ports its add-ons open (Geyser, Voice Chat, a web map), read
         # from the folder at every start so a mod added since is picked up.
@@ -286,6 +277,89 @@ class Supervisor:
             raise
         srv.started_at = time.time()
         self.events.emit("status", srv.uuid, state="starting")
+
+    def _handlers(self, srv: Server):
+        """The on_output and on_exit a runtime calls for this server."""
+        def on_output(line: str) -> None:
+            srv.console.feed(line)
+            if srv.state == "starting" and _DONE.search(line):
+                srv.state = "running"
+                self.events.emit("status", srv.uuid, state="running")
+            self._track_players(srv, line)
+
+        async def on_exit(code: int | None, info: dict | None = None) -> None:
+            await self._exited(srv, code, info or {})
+        return on_output, on_exit
+
+    # --- an agent restart --------------------------------------------------------
+
+    async def adopt_running(self) -> list[str]:
+        """Take back every server that kept running while the agent was away.
+
+        The game servers are containers of their own, so an agent update or
+        restart leaves them running. Before this, the agent knew nothing of
+        them: an auto-start server was "started" again, which force-deleted
+        its running container (killed unsaved), and the rest ran on with no
+        console, shown as offline. Each one is re-attached, its console
+        seeded from its last 2000 lines, and its state set from them.
+        """
+        find = getattr(self.runtime, "running_servers", None)
+        if find is None:
+            return []           # the process runtime: its children died with it
+        try:
+            found = await find()
+        except Exception as e:      # noqa: BLE001 -- reported; nothing is touched
+            log.warning("could not look for running servers: %s", e)
+            return []
+        adopted = []
+        for uuid in sorted(found):
+            srv = self.servers.get(uuid)
+            if srv is None:
+                self.events.emit("drift", uuid, problem="a container is running for a "
+                                 "server this node has no spec for; left alone")
+                continue
+            if srv.running is not None:
+                continue
+            async with srv.lock:
+                srv.state = "starting"
+                srv.stopping = False
+                srv.clear_players()
+                srv.console.feed("[BlessForge] The agent restarted; this server kept "
+                                 "running. Its console from before:")
+                on_output, on_exit = self._handlers(srv)
+                try:
+                    srv.running, started = await self.runtime.adopt(srv.spec, on_output,
+                                                                    on_exit)
+                except Exception as e:      # noqa: BLE001
+                    srv.state = "offline"
+                    self.events.emit("drift", uuid, problem=f"could not re-attach: {e}")
+                    continue
+                srv.started_at = started or time.time()
+                srv.console.feed("[BlessForge] Console re-attached.")
+            self.events.emit("status", uuid, state=srv.state, adopted=True)
+            adopted.append(uuid)
+        return adopted
+
+    async def shutdown(self) -> None:
+        """The agent is stopping. Docker servers are let go and keep running
+        (the next agent re-adopts them); a process runtime's children would
+        die with the agent, so those are stopped properly first."""
+        for srv in list(self.servers.values()):
+            running = srv.running
+            if running is None:
+                continue
+            detach = getattr(running, "detach", None)
+            if detach is not None:
+                try:
+                    await detach()
+                except Exception:       # noqa: BLE001
+                    pass
+                continue
+            srv.stopping = True
+            try:
+                await running.stop(min(self.cfg.stop_timeout, 30))
+            except Exception:       # noqa: BLE001
+                pass
 
     async def _stop(self, srv: Server) -> None:
         if srv.running is None:

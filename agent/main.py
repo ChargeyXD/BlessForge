@@ -10,10 +10,13 @@ short-lived token the panel signed (agent/auth.py):
     POST /v1/upload                   one file, into the path the token names
     GET  /v1/download                 one file, the one the token names
 
-On start the agent reads its specs from disk, then asks the panel for the
-desired state of every server on this node (`/api/agent/servers`) and
-creates what is missing -- reporting, never deleting, what the panel does
-not know about. Servers marked auto-start are started.
+On start the agent reads its specs from disk and takes back every server
+whose container kept running while it was away (an update or a restart
+never stops a Docker server; see Supervisor.adopt_running), then asks the
+panel for the desired state of every server on this node
+(`/api/agent/servers`) and creates what is missing -- reporting, never
+deleting, what the panel does not know about. Servers marked auto-start
+that are not already running are started.
 """
 from __future__ import annotations
 
@@ -74,6 +77,15 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         sup.load()
         state.update(cfg=c, events=events, sup=sup,
                      tokens=auth.BrowserTokens(c.panel_public_key, c.node_id))
+        # Before anything can auto-start them: the servers that kept running
+        # while this agent was away (an update, a restart) are taken back.
+        try:
+            adopted = await asyncio.wait_for(sup.adopt_running(), 60)
+        except asyncio.TimeoutError:
+            adopted = []
+            log.warning("re-attaching running servers took over 60 s; continuing")
+        if adopted:
+            log.info("re-attached %d running server(s)", len(adopted))
         tasks = [asyncio.create_task(events.run()),
                  asyncio.create_task(sup.watch_disks()),
                  asyncio.create_task(sup.sample_loop()),
@@ -85,13 +97,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         finally:
             for t in tasks:
                 t.cancel()
-            for srv in list(sup.servers.values()):
-                if srv.running is not None:
-                    srv.stopping = True
-                    try:
-                        await srv.running.stop(min(c.stop_timeout, 30))
-                    except Exception:       # noqa: BLE001
-                        pass
+            await sup.shutdown()
             await events.flush()
             await clients.close_all()
 

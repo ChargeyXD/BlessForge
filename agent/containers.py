@@ -317,6 +317,18 @@ def _docker_client(cfg: AgentConfig, timeout: float = 60) -> clients.Lent:
     return clients.Lent(clients.client(f"docker:{host}", make), timeout)
 
 
+def _docker_time(value: str | None) -> float | None:
+    """Docker's RFC 3339 time (nanoseconds, Z) as epoch seconds."""
+    if not value or value.startswith("0001-"):
+        return None
+    from datetime import datetime
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?", value)
+    if not m:
+        return None
+    base = datetime.fromisoformat(m.group(1) + "+00:00").timestamp()
+    return base + float(m.group(2) or 0)
+
+
 def demux(buffer: bytearray) -> list[tuple[int, bytes]]:
     """Split Docker's multiplexed attach stream into (stream, payload) frames.
 
@@ -341,6 +353,9 @@ class DockerRunning(Running):
         self.name = name
         self.writer = writer
         self.reader_task = reader_task
+        # Set when the agent lets go of a server that keeps running (its
+        # own shutdown): the end of the console stream is then not an exit.
+        self.detached = False
         # The previous reading's (container CPU, host CPU) totals: CPU use is
         # the change between two readings.
         self._cpu_before: tuple[int, int] | None = None
@@ -375,6 +390,21 @@ class DockerRunning(Running):
     async def kill(self) -> None:
         async with _docker_client(self.rt.cfg) as c:
             await c.post(f"/containers/{self.name}/kill")
+
+    async def detach(self) -> None:
+        """Let go of the console and leave the server running: the agent is
+        shutting down (an update, a restart), and the next one re-adopts it."""
+        self.detached = True
+        try:
+            self.writer.close()
+        except Exception:       # noqa: BLE001
+            pass
+        if self.reader_task is not None:
+            self.reader_task.cancel()
+            try:
+                await self.reader_task
+            except (asyncio.CancelledError, Exception):     # noqa: BLE001
+                pass
 
     async def stats(self) -> dict:
         """One quick reading. `one-shot`: without it Docker waits for a second
@@ -454,7 +484,14 @@ class DockerRuntime:
             raise RuntimeError_(f"could not build {image}: "
                                 f"{(failed[-1] if failed else r.text)[:300]}", 502)
 
-    async def _recreate(self, c, name: str, spec: dict) -> None:
+    async def _recreate(self, c, name: str, spec: dict, *,
+                        refuse_running: bool = False) -> None:
+        if refuse_running:
+            # A game server still running (an agent restart that did not
+            # re-adopt it) is never force-deleted: that kills it unsaved.
+            r = await c.get(f"/containers/{name}/json")
+            if r.status_code == 200 and ((r.json() or {}).get("State") or {}).get("Running"):
+                raise RuntimeError_("This server is already running.", 409)
         await c.delete(f"/containers/{name}", params={"force": "true"})
         r = await c.post("/containers/create", params={"name": name}, json=spec)
         if r.status_code >= 400:
@@ -470,7 +507,7 @@ class DockerRuntime:
                 spec = container_spec(server, self.cfg, folder)
                 assert_safe(spec, self.cfg, folder)
                 await self._ensure_image(c, spec["Image"])
-                await self._recreate(c, name, spec)
+                await self._recreate(c, name, spec, refuse_running=True)
                 reader, writer = await self._attach(name)
                 r = await c.post(f"/containers/{name}/start")
                 if r.status_code < 400:
@@ -497,6 +534,14 @@ class DockerRuntime:
                               "but something else on this machine already has it, so it "
                               f"is not published. Change its port {where} to a free one.")
 
+        return self._follow(name, reader, writer, on_output, on_exit)
+
+    def _follow(self, name: str, reader, writer, on_output: Output,
+                on_exit: Exited) -> "DockerRunning":
+        """A handle on a running container: its console pumped into
+        on_output, and on_exit called with how it ended."""
+        running = DockerRunning(self, name, writer, None)
+
         async def pump():
             buf = bytearray()
             pending = b""
@@ -512,6 +557,8 @@ class DockerRuntime:
                         for ln in lines:
                             on_output(ln.decode("utf-8", "replace").rstrip("\r"))
             finally:
+                if running.detached:
+                    return
                 code = None
                 oom = False
                 try:
@@ -527,8 +574,50 @@ class DockerRuntime:
                     pass
                 await on_exit(code, {"oom": oom})
 
-        task = asyncio.create_task(pump())
-        return DockerRunning(self, name, writer, task)
+        running.reader_task = asyncio.create_task(pump())
+        return running
+
+    async def running_servers(self) -> dict[str, dict]:
+        """This node's game servers whose containers are running right now,
+        by server id -- what an agent restart finds still going."""
+        async with _docker_client(self.cfg, 15) as c:
+            r = await c.get("/containers/json", params={"filters": json.dumps(
+                {"label": [f"io.blessforge.node={self.cfg.node_id}"],
+                 "status": ["running"]})})
+            if r.status_code >= 400:
+                raise RuntimeError_(f"Docker would not list containers: {r.text[:200]}", 502)
+            listed = r.json() or []
+        out = {}
+        for item in listed:
+            labels = item.get("Labels") or {}
+            uuid = labels.get("io.blessforge.server")
+            if not uuid or labels.get("io.blessforge.role"):
+                continue            # an installer, not a server
+            if f"/{self.container(uuid)}" in (item.get("Names") or []):
+                out[uuid] = item
+        return out
+
+    async def adopt(self, server: dict, on_output: Output, on_exit: Exited,
+                    tail: int = 2000) -> tuple["DockerRunning", float | None]:
+        """Take a running server back after an agent restart, without
+        touching it: its last `tail` lines go to on_output first, then the
+        console follows it live and commands reach its stdin again.
+        Returns the handle and when the container started."""
+        name = self.container(server["uuid"])
+        async with _docker_client(self.cfg, 30) as c:
+            r = await c.get(f"/containers/{name}/json")
+            state = ((r.json() or {}).get("State") or {}) if r.status_code == 200 else {}
+            if not state.get("Running"):
+                raise RuntimeError_(f"{name} is not running", 409)
+            logs = await c.get(f"/containers/{name}/logs",
+                               params={"stdout": 1, "stderr": 1, "tail": tail})
+        buf = bytearray(logs.content if logs.status_code == 200 else b"")
+        text = b"".join(payload for _s, payload in demux(buf))
+        for ln in text.decode("utf-8", "replace").splitlines()[-tail:]:
+            on_output(ln.rstrip("\r"))
+        reader, writer = await self._attach(name)
+        return self._follow(name, reader, writer, on_output, on_exit), \
+            _docker_time(state.get("StartedAt"))
 
     async def _attach(self, name: str):
         """A hijacked attach: stdin in, multiplexed stdout/stderr out."""
