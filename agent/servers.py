@@ -208,6 +208,7 @@ class Supervisor:
         # The boot queue (see _start): servers booting now, each holding a
         # slot, and servers waiting for one.
         self.boot_slots = asyncio.Semaphore(max(1, int(cfg.max_concurrent_boots)))
+        self.install_slots = asyncio.Semaphore(max(1, int(cfg.max_concurrent_installs)))
         self.booting: dict[str, asyncio.Task] = {}
         self.queued: dict[str, asyncio.Task] = {}
 
@@ -884,6 +885,18 @@ class Supervisor:
         srv.state = "installing"
         self.events.emit("install", srv.uuid, phase="start")
         folder = self.folder(srv.uuid)
+        # Installs (downloads, loader installer containers) take turns on a
+        # pool of their own, apart from the boot queue: an install never
+        # holds up a start, and a start never holds up an install.
+        if self.install_slots.locked():
+            record["status"] = "waiting"
+            out("waiting for another install on this node to finish")
+        async with self.install_slots:
+            record["status"] = "running"
+            await self._install_now(srv, spec, record, folder, out)
+
+    async def _install_now(self, srv: Server, spec: dict, record: dict, folder: Path,
+                           out) -> None:
         try:
             fetch = spec.get("fetch")
             if fetch:

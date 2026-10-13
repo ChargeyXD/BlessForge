@@ -22,6 +22,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     fixed port that is taken says which port is free next (4);
   * boots are queued: at most max_concurrent_boots at once, each holding a
     slot until "Done", the rest waiting with a console line (7.2);
+  * installs take turns on their own pool, so an install never holds up a
+    start, nor a start an install (7.3);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -971,6 +973,45 @@ async def test_boot_queue():
         await until(lambda: all(a.sup.servers[s].running is None for s in ids), 20)
 
 
+# --- 7.3 installs on their own pool -------------------------------------------------------
+
+
+async def test_install_slots():
+    section("7.3 installs take turns on their own pool, apart from boots")
+    ids = [f"cdcdcdcd-0000-0000-0000-00000000000{i}" for i in range(3)]
+    async with Agent(process_cfg("installs", max_concurrent_installs=1,
+                                 max_concurrent_boots=1)) as a:
+        c = a.client
+        for i, sid in enumerate(ids[:2]):
+            await c.put(f"/v1/servers/{sid}", json={"name": f"I{i}", "port": 30200 + i})
+        await fake_server(a, ids[2], 30202, name="Playing")
+        jobs = []
+        for sid in ids[:2]:
+            r = await c.post(f"/v1/servers/{sid}/install", json={
+                "run": [sys.executable, "-c", "import time; time.sleep(1.0)"], "timeout": 30})
+            jobs.append((sid, r.json()["job_id"]))
+        await asyncio.sleep(0.3)
+        first = (await c.get(f"/v1/servers/{jobs[0][0]}/install/{jobs[0][1]}")).json()
+        second = (await c.get(f"/v1/servers/{jobs[1][0]}/install/{jobs[1][1]}")).json()
+        check("with one install slot, the second install waits and says so",
+              first["status"] == "running" and second["status"] == "waiting"
+              and any("waiting for another install" in ln for ln in second["output"]),
+              (first["status"], second["status"]))
+        t0 = time.perf_counter()
+        r = await c.post(f"/v1/servers/{ids[2]}/power", json={"action": "start"})
+        up = await until(lambda: a.sup.servers[ids[2]].state == "running", 5)
+        check("...while a server starts and boots at once beside them",
+              r.status_code == 200 and up and time.perf_counter() - t0 < 0.9,
+              f"{time.perf_counter() - t0:.2f}s")
+        done = await until(lambda: all(
+            a.sup.installs[j]["status"] == "done" for _s, j in jobs), 10)
+        check("...and both installs finish, one after the other",
+              done and a.sup.installs[jobs[1][1]]["finished"]
+              >= a.sup.installs[jobs[0][1]]["finished"] + 0.9)
+        await c.post(f"/v1/servers/{ids[2]}/power", json={"action": "stop"})
+        await until(lambda: a.sup.servers[ids[2]].running is None)
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -980,6 +1021,7 @@ async def main():
     await test_shared_port()
     await test_ports()
     await test_boot_queue()
+    await test_install_slots()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

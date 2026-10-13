@@ -244,6 +244,10 @@ class AgentEngine:
             if rec["status"] == "error":
                 raise EngineError(rec.get("error") or "the install failed", 500,
                                   {"output": rec.get("output") or []})
+            if rec["status"] == "waiting":
+                # Queued behind another install on the node: its own clock
+                # starts when it does.
+                deadline = time.time() + int(spec.get("timeout") or 900) + 120
             await asyncio.sleep(1.0)
         raise EngineError("the install did not finish in time", 504)
 
