@@ -24,6 +24,7 @@ import os
 import platform
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -42,6 +43,23 @@ log = logging.getLogger("blessforge.agent")
 VERSION = "0.5.0"
 STATS_EVERY = 15
 BROWSER_PATHS = ("/v1/upload", "/v1/download")
+
+# Every file operation runs off the event loop -- a world delete or a backup
+# compress on it froze every console, stats call and event flush on the
+# node. Two small pools of their own: quick work (list, read, write, rename)
+# never queues behind heavy work (copy, delete, extract, compress, a tree
+# walk), and neither competes with the default executor uploads stream on.
+_QUICK = ThreadPoolExecutor(4, thread_name_prefix="bf-files")
+_HEAVY = ThreadPoolExecutor(2, thread_name_prefix="bf-files-heavy")
+HEAVY_OPS = {"copy", "delete", "extract", "compress"}
+
+
+async def quick(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(_QUICK, fn, *args)
+
+
+async def heavy(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(_HEAVY, fn, *args)
 
 
 def create_app(cfg: AgentConfig | None = None) -> FastAPI:
@@ -185,23 +203,24 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
 
     @app.get("/v1/servers/{uuid}/files")
     async def list_files(uuid: str, path: str = "."):
-        return {"entries": files.list_dir(folder(uuid), path)}
+        return {"entries": await quick(files.list_dir, folder(uuid), path)}
 
     @app.get("/v1/servers/{uuid}/files/content")
     async def read_content(uuid: str, path: str, tail: int = 0):
         if tail > 0:
-            return {"content": files.read_tail(folder(uuid), path, tail)}
-        return {"content": files.read_text(folder(uuid), path)}
+            return {"content": await quick(files.read_tail, folder(uuid), path, tail)}
+        return {"content": await quick(files.read_text, folder(uuid), path)}
 
     @app.put("/v1/servers/{uuid}/files/content")
     async def write_content(uuid: str, path: str, body: dict = Body(...)):
-        files.write_bytes(folder(uuid), path, str(body.get("content") or "").encode())
+        await quick(files.write_bytes, folder(uuid), path,
+                    str(body.get("content") or "").encode())
         return {"written": path}
 
     @app.get("/v1/servers/{uuid}/files/raw")
     async def read_raw(uuid: str, path: str):
         root = folder(uuid)
-        files.check_readable(root, path)
+        await quick(files.check_readable, root, path)
         return StreamingResponse(files.iter_file(root, path),
                                  media_type="application/octet-stream")
 
@@ -213,39 +232,42 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     @app.post("/v1/servers/{uuid}/files/{op}")
     async def file_op(uuid: str, op: str, body: dict = Body(...)):
         root = folder(uuid)
+        run = heavy if op in HEAVY_OPS else quick
         if op == "rename":
-            return {"path": files.rename(root, body["path"], body["name"])}
+            return {"path": await run(files.rename, root, body["path"], body["name"])}
         if op == "move":
-            return {"path": files.move(root, body["path"], body["dest"])}
+            return {"path": await run(files.move, root, body["path"], body["dest"])}
         if op == "copy":
-            return {"path": files.copy(root, body["path"], body.get("dest") or ".")}
+            return {"path": await run(files.copy, root, body["path"],
+                                      body.get("dest") or ".")}
         if op == "delete":
-            return {"deleted": files.delete(root, list(body.get("paths") or []))}
+            return {"deleted": await run(files.delete, root,
+                                         list(body.get("paths") or []))}
         if op == "mkdir":
-            files.mkdir(root, body.get("parent") or ".", body["name"])
+            await run(files.mkdir, root, body.get("parent") or ".", body["name"])
             return {"created": True}
         if op == "create":
-            files.create_file(root, body.get("parent") or ".", body["name"])
+            await run(files.create_file, root, body.get("parent") or ".", body["name"])
             return {"created": True}
         if op == "extract":
-            return {"written": len(files.extract(root, body["path"]))}
+            return {"written": len(await run(files.extract, root, body["path"]))}
         if op == "compress":
-            return {"path": files.compress(root, list(body.get("paths") or []),
-                                           body["dest"])}
+            return {"path": await run(files.compress, root,
+                                      list(body.get("paths") or []), body["dest"])}
         if op == "chmod":
-            files.chmod(root, body["path"], int(str(body["mode"]), 8))
+            await run(files.chmod, root, body["path"], int(str(body["mode"]), 8))
             return {"changed": True}
         raise RuntimeError_(f"unknown file operation {op!r}", 404)
 
     @app.get("/v1/servers/{uuid}/files/usage")
     async def usage(uuid: str, path: str = "."):
-        return await asyncio.to_thread(files.usage, folder(uuid), path)
+        return await heavy(files.usage, folder(uuid), path)
 
     @app.get("/v1/servers/{uuid}/files/search")
     async def search(uuid: str, q: str, path: str = ".", limit: int = 300):
         # A thread: a walk of a big pack's folder must not hold up every
         # other server's console on this node while it runs.
-        return {"results": await asyncio.to_thread(
+        return {"results": await heavy(
             files.search, folder(uuid), q, path, max(1, min(limit, 2000)))}
 
     # --- backups: WP-11 ------------------------------------------------------------
@@ -319,7 +341,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         claims = _browser(token, "files.read", request.query_params.get("server"),
                           request.query_params.get("path"))
         root = folder(claims["srv"])
-        files.check_readable(root, claims["path"])
+        await quick(files.check_readable, root, claims["path"])
         name = claims["path"].rsplit("/", 1)[-1]
         return StreamingResponse(files.iter_file(root, claims["path"]),
                                  media_type="application/octet-stream",
