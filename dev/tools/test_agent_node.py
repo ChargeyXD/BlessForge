@@ -26,6 +26,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     start, nor a start an install (7.3);
   * committed memory -- the running servers' limits -- is reported against
     the node's RAM, and only a node set to refuse overcommit refuses (7.5);
+  * the panel asks each node once per poll for every server's stats, and a
+    node that does not answer shows its last state, marked, in seconds (7.6);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1046,6 +1048,63 @@ async def test_committed_memory():
             await until(lambda: all(a.sup.servers[x].running is None for x in (big, small)))
 
 
+# --- 7.6 the panel stays fast with many servers and nodes -------------------------------
+
+
+async def test_panel_fleet():
+    section("7.6 one stats call per node, and a dead node never holds the page")
+    from types import SimpleNamespace
+    from app.engine import agent as panel_side
+    from app.engine.base import EngineError
+    calls = []
+    mode = {"down": False, "legacy": False}
+    ids = [f"0a0a0a0a-0000-0000-0000-00000000000{i}" for i in range(8)]
+
+    async def fake_call(method, path, *, timeout=60, **kw):
+        calls.append((path, timeout))
+        await asyncio.sleep(0.05)
+        if mode["down"]:
+            raise EngineError("node n1 is not answering (ConnectTimeout)", 503)
+        if path == "/v1/stats":
+            if mode["legacy"]:
+                raise EngineError("Not Found", 404)
+            return {"servers": {sid: {"running": True, "state": "running", "online": i}
+                                for i, sid in enumerate(ids)}}
+        return {"stats": {"running": False, "state": "offline"}}
+
+    drv = panel_side.AgentEngine(SimpleNamespace(id="n-fleet"), "http://n1:8443", "Bearer x.y")
+    drv._call = fake_call
+    got = await asyncio.gather(*(drv.get_stats(sid) for sid in ids))
+    check("eight servers' stats on one poll are one GET /v1/stats to their node",
+          [p for p, _t in calls] == ["/v1/stats"] and [g["online"] for g in got]
+          == list(range(8)), calls)
+    check("...asked with a short timeout (a few seconds, not 15)",
+          all(t <= 3 for _p, t in calls), calls)
+    await drv.get_stats(ids[0])
+    check("...and shared for a moment rather than asked again", len(calls) == 1)
+    mode["down"] = True
+    panel_side._stats["n-fleet"]["at"] = -1e9          # the next poll
+    t0 = time.perf_counter()
+    stale = await drv.get_stats(ids[3])
+    check("a node that stops answering gives its last reading, marked down, at once",
+          stale.get("node_down") and stale["online"] == 3
+          and time.perf_counter() - t0 < 1, stale)
+    try:
+        await drv.get_stats("0a0a0a0a-0000-0000-0000-0000000000ff")
+        unknown = None
+    except EngineError as e:
+        unknown = e.status
+    check("...and a server it never reported is plainly not answering (503)", unknown == 503)
+    mode.update(down=False, legacy=True)
+    panel_side._stats["n-fleet"]["at"] = -1e9
+    calls.clear()
+    old = await drv.get_stats(ids[1])
+    check("an older agent without /v1/stats is still asked per server",
+          [p for p, _t in calls] == ["/v1/stats", f"/v1/servers/{ids[1]}"]
+          and old["state"] == "offline", calls)
+    panel_side._stats.pop("n-fleet", None)
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1057,6 +1116,7 @@ async def main():
     await test_boot_queue()
     await test_install_slots()
     await test_committed_memory()
+    await test_panel_fleet()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

@@ -91,6 +91,16 @@ async def close_clients() -> None:
         _clients.pop(key, None)
 
 
+# The fleet page asks for every server's stats on each poll. One GET
+# /v1/stats per node answers all of them (the agent reads them from its own
+# sampler), kept for a moment and shared; a node that does not answer in a
+# few seconds leaves its last reading, marked down, rather than holding the
+# page for 15 s per server.
+STATS_TTL = 2.0
+NODE_TIMEOUT = 3.0
+_stats: dict[str, dict] = {}
+
+
 class AgentEngine:
     name = "agent"
 
@@ -145,9 +155,46 @@ class AgentEngine:
         async with db.session() as s:
             return record_of(await self._row(s, server_id))
 
+    async def _node_stats(self) -> dict:
+        """This node's GET /v1/stats, shared by every server on it for
+        STATS_TTL seconds and fetched once however many ask at the same
+        moment. A node that does not answer within NODE_TIMEOUT leaves the
+        last reading in place, marked down."""
+        loop = asyncio.get_running_loop()
+        ent = _stats.get(self.node_id)
+        if ent is None or ent["loop"] is not loop:
+            ent = _stats[self.node_id] = {"loop": loop, "at": -1e9, "servers": {},
+                                          "ok": None, "legacy": False, "task": None}
+        if time.monotonic() - ent["at"] < STATS_TTL:
+            return ent
+        if ent["task"] is None or ent["task"].done():
+            ent["task"] = asyncio.ensure_future(self._fetch_stats(ent))
+        await asyncio.shield(ent["task"])
+        return ent
+
+    async def _fetch_stats(self, ent: dict) -> None:
+        try:
+            out = await self._call("GET", "/v1/stats", timeout=NODE_TIMEOUT)
+            ent.update(servers=dict(out.get("servers") or {}), ok=True)
+        except EngineError as e:
+            ent["ok"] = False
+            ent["legacy"] = e.status == 404     # an agent from before /v1/stats
+        ent["at"] = time.monotonic()
+
     async def get_stats(self, server_id: str) -> dict:
-        live = await self._call("GET", f"/v1/servers/{server_id}", timeout=15)
-        stats = dict(live.get("stats") or {})
+        ent = await self._node_stats()
+        known = ent["servers"].get(server_id)
+        if ent["legacy"] or (ent["ok"] and known is None):
+            # An older agent, or a server the last reading did not have yet.
+            live = await self._call("GET", f"/v1/servers/{server_id}", timeout=NODE_TIMEOUT)
+            stats = dict(live.get("stats") or {})
+        elif known is not None:
+            stats = dict(known)
+            if not ent["ok"]:
+                # The node did not answer: its last reading, marked as such.
+                stats["node_down"] = True
+        else:
+            raise EngineError(f"node {self.node_id} is not answering", 503)
         stats.setdefault("max", None)
         stats.setdefault("world_name", "world")
         stats.setdefault("world_size", None)

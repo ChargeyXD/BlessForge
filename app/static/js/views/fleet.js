@@ -236,6 +236,8 @@ function card(s) {
       s.loader && h('span.pill.ghost', s.loader),
       s.minecraft && h('span.pill.ghost', s.minecraft),
       s.port && h('span.pill.ghost', `:${s.port}`),
+      s.node_down ? h('span.pill.warn', { title: 'Showing its last known state' },
+        'node not answering') : null,
       s.mod_count ? h('span.pill.ghost', `${s.mod_count} mods`) : null,
       (s.problems || 0) > 0
         ? h('span.pill.warn', `${s.problems} problem${s.problems > 1 ? 's' : ''}`)

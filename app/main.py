@@ -446,6 +446,13 @@ async def minecraft_versions() -> dict:
 # --- instances ---------------------------------------------------------
 
 
+# The fleet's per-server calls are held to this; a manifest that cannot be
+# read in time is the last one read (it changes only when something is
+# installed).
+_FLEET_TIMEOUT = 3.0
+_FLEET_MANIFESTS: dict[str, dict] = {}
+
+
 @app.get("/api/instances")
 async def instances(request: Request) -> dict:
     try:
@@ -477,11 +484,19 @@ async def instances(request: Request) -> dict:
         }
         # The manifest and the stats are two independent round trips to the
         # node, and this runs once per server on a poll. Sequentially that is
-        # two RTTs per server per refresh; concurrently it is one.
+        # two RTTs per server per refresh; concurrently it is one. The stats
+        # come from one shared GET /v1/stats per node (app/engine/agent.py).
+        # Each is held to a few seconds: a node that does not answer shows
+        # its last known state, marked, instead of holding the whole page.
         manifest_r, stats_r = await asyncio.gather(
-            engine.read_manifest(sid), engine.get_stats(sid),
+            asyncio.wait_for(engine.read_manifest(sid), _FLEET_TIMEOUT),
+            asyncio.wait_for(engine.get_stats(sid), _FLEET_TIMEOUT),
             return_exceptions=True,
         )
+        if isinstance(manifest_r, BaseException) and sid in _FLEET_MANIFESTS:
+            manifest_r = _FLEET_MANIFESTS[sid]
+        elif not isinstance(manifest_r, BaseException):
+            _FLEET_MANIFESTS[sid] = manifest_r
         try:
             if isinstance(manifest_r, BaseException):
                 raise manifest_r
@@ -530,6 +545,7 @@ async def instances(request: Request) -> dict:
             # reports on every card of a fleet list to find out.
             info["crashed"] = bool(stats.get("crashed"))
             info["reachable"] = True
+            info["node_down"] = bool(stats.get("node_down"))
         except Exception:
             # A server whose folder has gone, or whose node is not
             # answering, is a state worth naming rather than an error to

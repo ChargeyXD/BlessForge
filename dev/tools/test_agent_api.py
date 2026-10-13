@@ -328,7 +328,7 @@ async def main():
               and r.json()["conflict"].get("name") == "Agent Test", r.text[:300])
         r = await c.post(f"/api/instances/{twin}/action/switch_server")
         twin_up = await until(lambda: _running(c, twin), 20)
-        first_down = not (await c.get(f"/api/instances/{sid}/stats")).json().get("running")
+        first_down = await until(lambda: _stopped(c, sid), 10)
         check("switching stops the first and starts the second", r.status_code == 200
               and twin_up and first_down, r.text[:200])
         r = await c.post(f"/api/instances/{sid}/action/switch_server")

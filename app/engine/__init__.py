@@ -174,14 +174,18 @@ async def list_servers() -> list[dict]:
     _ensure()
     out: list[dict] = []
     errors: list[str] = []
-    for node, drv in _drivers.items():
-        try:
-            servers = await drv.list_servers()
-        except EngineError as e:
+    drivers = list(_drivers.items())
+    # Every node at once: one slow node costs its own wait, not everyone's.
+    found = await asyncio.gather(*(drv.list_servers() for _n, drv in drivers),
+                                 return_exceptions=True)
+    for (node, _drv), servers in zip(drivers, found):
+        if isinstance(servers, EngineError):
             if len(_drivers) == 1:
-                raise
-            errors.append(f"{node}: {e}")
+                raise servers
+            errors.append(f"{node}: {servers}")
             continue
+        if isinstance(servers, BaseException):
+            raise servers
         for s in servers:
             s.setdefault("node", node)
             remember(s.get("server_id"), node)
