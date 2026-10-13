@@ -54,6 +54,9 @@ def record(meta: dict, project: dict | None = None, *,
         # browser named the download.
         "sha1": meta.get("sha1"),
         "fingerprint": meta.get("fingerprint"),
+        # With the SHA-1, what lets a node that already has the jar -- brought
+        # by hand for another server -- put it in place without asking.
+        "size": meta.get("size"),
         "reason": ("its author does not allow third-party downloads -- "
                    "upload this jar yourself"),
     }

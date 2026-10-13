@@ -1784,6 +1784,55 @@ async def test_one_download_per_node():
         cdn.close()
 
 
+# --- 3b a jar brought by hand, kept on the node ------------------------------------------
+
+
+async def test_brought_jars():
+    section("3b a jar brought by hand is kept, and the next install takes it from there")
+    import hashlib
+    a_id, b_id = ("3b3b3b3b-0000-0000-0000-00000000000a", "3b3b3b3b-0000-0000-0000-00000000000b")
+    jar = b"PK\x03\x04 a mod whose author turned off third-party downloads" * 50
+    sha1 = hashlib.sha1(jar).hexdigest()
+    async with Agent(process_cfg("brought")) as a:
+        c = a.client
+        for sid in (a_id, b_id):
+            await c.put(f"/v1/servers/{sid}", json={"name": sid[:4], "port": 30600})
+        (a.sup.folder(a_id) / "mods").mkdir()
+        (a.sup.folder(a_id) / "mods" / "blocked-1.0.jar").write_bytes(jar)
+        r = await c.post(f"/v1/servers/{a_id}/cache", json={"path": "mods/wrong.jar",
+                                                           "sha1": sha1})
+        wrong = await c.post(f"/v1/servers/{a_id}/cache",
+                             json={"path": "mods/blocked-1.0.jar", "sha1": "ab" * 20})
+        check("a file that is not there, or not that SHA-1, is not kept",
+              r.status_code == 404 and wrong.status_code == 409, (r.text, wrong.text))
+        r = await c.post(f"/v1/servers/{a_id}/cache", json={"path": "mods/blocked-1.0.jar",
+                                                           "sha1": sha1})
+        check("a jar in a server's folder is kept in the node's cache, checked",
+              r.status_code == 200 and r.json()["size"] == len(jar)
+              and a.sup.cache.has(sha1, len(jar)), r.text)
+
+        async def install(spec):
+            job = (await c.post(f"/v1/servers/{b_id}/install", json=spec)).json()["job_id"]
+            await until(lambda: a.sup.installs[job]["status"] in ("done", "error"), 10)
+            return a.sup.installs[job]
+        rec = await install({"fetch_many": [
+            {"url": "", "cache_only": True, "path": "mods/blocked-1.0.jar",
+             "sha1": sha1, "size": len(jar)}]})
+        got = (a.sup.folder(b_id) / "mods" / "blocked-1.0.jar").read_bytes()
+        check("another server's install takes it from the cache (a copy, not a link)",
+              rec["status"] == "done" and got == jar
+              and (a.sup.folder(b_id) / "mods" / "blocked-1.0.jar").stat().st_nlink == 1,
+              rec.get("error"))
+        rec = await install({"fetch_many": [
+            {"url": "https://example.invalid/x.jar", "cache_only": True,
+             "path": "mods/never.jar", "sha1": "cd" * 20, "size": 10}]})
+        check("one the node does not hold is reported, never fetched from its URL",
+              rec["status"] == "error" and rec.get("failed")
+              and "not in this node's cache" in rec["failed"][0]["error"]
+              and not (a.sup.folder(b_id) / "mods" / "never.jar").exists(),
+              rec.get("failed"))
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1803,6 +1852,7 @@ async def main():
     await test_runtime_images()
     await test_image_cache()
     await test_fetch_many()
+    await test_brought_jars()
     await test_one_download_per_node()
     if LIVE:
         await test_readopt_live()

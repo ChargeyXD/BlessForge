@@ -91,12 +91,18 @@ def check_entries(entries) -> list[dict]:
         files.check_name(parts[-1])
         rel = "/".join(parts)
         url = str(e.get("url") or "")
+        # A file nobody may download (its author turned that off), brought
+        # by hand once on this node: from the cache if it is there, never
+        # from anywhere else.
+        cache_only = bool(e.get("cache_only"))
         sha1 = str(e.get("sha1") or "").lower()
         try:
             size = int(e.get("size"))
         except (TypeError, ValueError):
             raise RuntimeError_(f"{rel}: its size is not a number", 400)
-        if not url.startswith(("https://", "http://")):
+        if cache_only:
+            url = ""
+        elif not url.startswith(("https://", "http://")):
             raise RuntimeError_(f"{rel}: only http(s) downloads are allowed", 400)
         if not _SHA1.match(sha1):
             raise RuntimeError_(f"{rel}: a SHA-1 is required to fetch it", 400)
@@ -105,7 +111,8 @@ def check_entries(entries) -> list[dict]:
         if rel in seen:
             raise RuntimeError_(f"{rel} is in the list twice", 400)
         seen.add(rel)
-        out.append({"url": url, "path": rel, "sha1": sha1, "size": size})
+        out.append({"url": url, "path": rel, "sha1": sha1, "size": size,
+                    "cache_only": cache_only})
     return out
 
 
@@ -263,6 +270,9 @@ async def _fetch_one(cache: Cache, folder: Path, item: dict, allowed: set[str]) 
         fresh = False
         async with cache.claim(sha1):
             if not await asyncio.to_thread(cache.has, sha1, size):
+                if item.get("cache_only"):
+                    raise Refused("it is not in this node's cache, and it is not "
+                                  "fetched from anywhere else")
                 await _download(cache, item, allowed)
                 fresh = True
         try:
@@ -356,6 +366,39 @@ async def _receive(r: httpx.Response, part: Path, item: dict) -> None:
 def _sink(fh, h, chunk: bytes) -> None:
     h.update(chunk)
     fh.write(chunk)
+
+
+async def keep(cache: Cache, folder: Path, rel: str, sha1: str) -> int:
+    """A file already in a server folder -- a jar brought by hand -- into
+    the node's cache, so the next server or reinstall that wants it gets it
+    from here. Read through the jail and checked against `sha1`; returns its
+    size."""
+    sha1 = sha1.lower()
+    if not _SHA1.match(sha1):
+        raise RuntimeError_("a SHA-1 is required", 400)
+    async with cache.claim(sha1):
+        return await asyncio.to_thread(_keep, cache, folder, rel, sha1)
+
+
+def _keep(cache: Cache, folder: Path, rel: str, sha1: str) -> int:
+    cache.tmp.mkdir(parents=True, exist_ok=True)
+    part = cache.tmp / f"{sha1}.{os.getpid()}.{time.monotonic_ns()}.keep"
+    h, got = hashlib.sha1(), 0
+    try:
+        with files.open_file(folder, rel, "rb") as src, open(part, "xb") as dst:
+            while chunk := src.read(CHUNK):
+                h.update(chunk)
+                dst.write(chunk)
+                got += len(chunk)
+        if h.hexdigest() != sha1:
+            raise RuntimeError_(f"{rel} does not match that SHA-1", 409)
+        _place(part, cache.path(sha1))
+        return got
+    finally:
+        try:
+            part.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _place(part: Path, target: Path) -> None:

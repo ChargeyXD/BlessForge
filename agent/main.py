@@ -251,6 +251,16 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         return {"lines": list(srv.console.lines)[-max(1, min(lines, 2000)):],
                 "seq": srv.console.seq}
 
+    @app.post("/v1/servers/{uuid}/cache")
+    async def keep_in_cache(uuid: str, body: dict = Body(...)):
+        """Keep a file from this server's folder in the node's download cache
+        (a jar brought by hand), checked against its SHA-1, so a later
+        install on this node gets it from there."""
+        from agent import downloads
+        size = await downloads.keep(sup().cache, folder(uuid), str(body.get("path") or ""),
+                                    str(body.get("sha1") or ""))
+        return {"kept": True, "size": size}
+
     @app.post("/v1/servers/{uuid}/install")
     async def install(uuid: str, spec: dict = Body(...)):
         return {"job_id": sup().start_install(uuid, spec)}

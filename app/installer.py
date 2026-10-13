@@ -807,6 +807,44 @@ async def _fetch_on_node(job: Job, server_id: str, items: list[PackEntry],
     return {id(e) for e in items}
 
 
+async def _bring_from_node(job: Job, server_id: str, blocked_list: list[dict],
+                           records: list[dict]) -> list[dict]:
+    """Mods nobody may download, that this node already holds: a person
+    brought the jar by hand for another server (mods.accept_blocked keeps it
+    in the node's cache). Put in place from that cache -- never fetched from
+    anywhere -- and off the list of jars to bring. Returns what is left."""
+    known = [b for b in blocked_list if b.get("sha1") and b.get("size")
+             and b.get("file_name")]
+    if not known:
+        return blocked_list
+    spec = {"fetch_many": [{"url": "", "cache_only": True, "path": f"mods/{b['file_name']}",
+                            "sha1": b["sha1"], "size": int(b["size"])} for b in known]}
+    try:
+        result = await engine.install(server_id, spec)
+        missing: set = set()
+    except engine.EngineError as e:
+        failed = (e.body or {}).get("failed") if isinstance(e.body, dict) else None
+        if not isinstance(failed, list):
+            return blocked_list         # an agent without the cache, or a mock
+        missing = {f.get("path") for f in failed if isinstance(f, dict)}
+        result = {"fetched": len(known) - len(missing)}
+    if result.get("fetched") is None:
+        return blocked_list             # an agent from before fetch_many
+    brought = [b for b in known if f"mods/{b['file_name']}" not in missing]
+    for b in brought:
+        records.append({"file": f"mods/{b['file_name']}", "source": "curseforge",
+                        "project_id": b.get("project_id"), "file_id": b.get("file_id"),
+                        "name": b.get("name") or b["file_name"], "brought_by_hand": True,
+                        "from_node_cache": True, "required": b.get("required", True)})
+    if brought:
+        job.log_line(f"{len(brought)} mod{'' if len(brought) == 1 else 's'} its author "
+                     "keeps off third-party downloads came from this node's own cache "
+                     "(brought by hand for another server): "
+                     + ", ".join(b.get("name") or b["file_name"] for b in brought[:5]))
+    done = {id(b) for b in brought}
+    return [b for b in blocked_list if id(b) not in done]
+
+
 # The loader ladder -- "the server exists" is not the same as "this server
 # can start" -- lives in app/provision.py, because a blank server needs
 # exactly the same steps and a second copy of them would drift. This is the
@@ -1132,6 +1170,9 @@ async def install_modpack(
 
     await _push_batches(job, server_id, payload, upload_from, 92, "Uploading pack files",
                         source=zf)
+    if blocked_by_author:
+        blocked_by_author = await _bring_from_node(job, server_id, blocked_by_author,
+                                                   records)
     # Entries are references, not bytes, but dropping them still releases the
     # archive's member table for a pack with thousands of files. Counted
     # first: the summary is built much further down.

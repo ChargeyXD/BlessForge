@@ -466,6 +466,21 @@ async def main():
     check("...the last one does, once",
           last["waiting"] == 0 and last.get("resume_boot")
           and not (await engine.read_manifest(sid)).get("boot_pending"), last)
+    check("a jar brought by hand is kept in the node's cache",
+          hand.node_cache.get(hashlib.sha1(wanted).hexdigest()) == wanted)
+    second = await engine.create_server(name="Second", port=25707, memory_mb=4096,
+                                        mc_version="1.20.1", loader="fabric")
+    waiting = [{"name": "Waystones", "file_name": "waystones-fabric-1.20-14.1.3.jar",
+                "sha1": hashlib.sha1(wanted).hexdigest(), "size": len(wanted),
+                "project_id": 245755, "file_id": 5005, "required": True},
+               {"name": "Never brought", "file_name": "other-1.0.jar",
+                "sha1": "ab" * 20, "size": 10, "required": True}]
+    records = []
+    left = await installer._bring_from_node(Job("t", "t"), second, waiting, records)
+    check("another server's install puts that jar in place from the node, asking nobody",
+          (await engine.download_file(second, "mods/waystones-fabric-1.20-14.1.3.jar"))
+          == wanted and [b["name"] for b in left] == ["Never brought"]
+          and records and records[0]["from_node_cache"], left)
     source = (ROOT / "app" / "installer.py").read_text(encoding="utf-8")
     check("an install that leaves required mods to bring holds its first boot for them",
           "if boot_check and must_bring:" in source and 'manifest["boot_pending"] = True' in source)

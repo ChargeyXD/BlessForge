@@ -248,6 +248,12 @@ async def accept_blocked(server_id: str, filename: str, data: bytes) -> dict:
             + ", ".join(b["file_name"] for b in waiting[:6]))
     name = entry["file_name"]
     await engine.upload_file(server_id, "mods", name, data)
+    try:
+        # Into the node's download cache too: no other server or reinstall
+        # on this node has to ask for it again (installer: cache_only).
+        await engine.keep_in_cache(server_id, f"mods/{name}", sha1)
+    except Exception:       # noqa: BLE001 -- the jar is in place either way
+        pass
     await _remember_mod(server_id, {
         "file": f"mods/{name}", "source": "curseforge",
         "project_id": entry.get("project_id"), "file_id": entry.get("file_id"),

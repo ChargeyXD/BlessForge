@@ -87,6 +87,9 @@ class MockEngine:
         self.fetched: list[str] = []
         # fetch_many: what the "mod sites" serve, and the paths it placed.
         self.cdn: dict[str, bytes] = {}
+        # The node's download cache by SHA-1 (agent/downloads.py), for jars
+        # kept there with keep_in_cache.
+        self.node_cache: dict[str, bytes] = {}
         self.fetched_many: list[str] = []
         self.installs: list[dict] = []
         self.commands: list[tuple[str, str]] = []
@@ -296,7 +299,14 @@ class MockEngine:
         failed = []
         for item in items:
             url, rel = item.get("url") or "", item.get("path") or ""
-            data = self.cdn.get(url)
+            if item.get("cache_only"):
+                data = self.node_cache.get(str(item.get("sha1") or "").lower())
+                if data is None:
+                    failed.append({"path": rel, "url": "", "error":
+                                   "it is not in this node's cache"})
+                    continue
+            else:
+                data = self.cdn.get(url)
             if data is None:
                 failed.append({"path": rel, "url": url, "error": f"{url} answered 404"})
                 continue
@@ -315,6 +325,13 @@ class MockEngine:
             raise EngineError(f"{len(failed)} of {len(items)} files could not be fetched", 500,
                               {"output": output, "fetched": placed, "failed": failed})
         return placed
+
+    async def keep_in_cache(self, server_id: str, path: str, sha1: str) -> None:
+        parts = _clean(path)
+        data = await self.download_file(server_id, path)
+        if hashlib.sha1(data).hexdigest() != sha1.lower():
+            raise EngineError(f"{parts[-1]} does not match that SHA-1", 409)
+        self.node_cache[sha1.lower()] = data
 
     def _simulate_installer(self, server_id: str, spec: dict) -> list[str]:
         family = (spec.get("family") or "").lower()

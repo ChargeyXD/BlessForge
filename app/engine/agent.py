@@ -445,6 +445,11 @@ class AgentEngine:
                                params={"lines": 2000})
         return out["lines"]
 
+    async def keep_in_cache(self, server_id: str, path: str, sha1: str) -> None:
+        """A file in the server's folder into its node's download cache."""
+        await self._call("POST", f"/v1/servers/{server_id}/cache",
+                         json={"path": path, "sha1": sha1}, timeout=120)
+
     async def host_ports(self, server_id: str) -> list[dict]:
         """What holds host ports on this server's machine (GET /v1/ports)."""
         out = await self._call("GET", "/v1/ports", timeout=10)

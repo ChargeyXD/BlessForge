@@ -438,6 +438,17 @@ async def console_lines(server_id: str, *, from_file: bool = False) -> list[str]
     return await (await _driver(server_id)).console_lines(server_id, from_file=from_file)
 
 
+async def keep_in_cache(server_id: str, path: str, sha1: str) -> bool:
+    """Keep a file from the server's folder in its node's download cache, for
+    the next install there. False where the driver has no such cache."""
+    drv = await _driver(server_id)
+    fn = getattr(drv, "keep_in_cache", None)
+    if fn is None:
+        return False
+    await fn(server_id, path, sha1)
+    return True
+
+
 async def host_ports(server_id: str) -> list[dict]:
     """Host ports in use on the machine that runs this server, by anything
     (other apps' containers too); empty where the driver cannot say."""
