@@ -28,11 +28,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import httpx
 from fastapi import Body, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from agent import auth, files
+from agent import auth, clients, files
 from agent.config import AgentConfig, load
 from agent.containers import RuntimeError_, runtime_for
 from agent.events import Events
@@ -94,6 +93,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                     except Exception:       # noqa: BLE001
                         pass
             await events.flush()
+            await clients.close_all()
 
     app = FastAPI(title="BlessForge agent", version=VERSION, lifespan=lifespan)
 
@@ -431,9 +431,8 @@ async def _reconcile(cfg: AgentConfig, sup: Supervisor, events: Events) -> None:
     delay = 2.0
     while True:
         try:
-            async with httpx.AsyncClient(timeout=30, verify=cfg.verify_panel_tls) as c:
-                r = await c.get(f"{cfg.panel_url.rstrip('/')}/api/agent/servers",
-                                headers=events.headers())
+            r = await events.panel().get(f"{cfg.panel_url.rstrip('/')}/api/agent/servers",
+                                         headers=events.headers(), timeout=30)
             if r.status_code >= 400:
                 raise RuntimeError(f"the panel answered {r.status_code}")
             desired = r.json().get("servers") or []

@@ -33,7 +33,7 @@ from typing import Any
 
 import httpx
 
-from agent import addons, files
+from agent import addons, clients, files
 from agent.config import AgentConfig
 from agent.containers import RuntimeError_, argv_of, limits_of
 
@@ -568,18 +568,19 @@ class Supervisor:
         # Streamed into the jail's temp file; the checksum is compared before
         # the file is renamed into place, so a corrupt download never lands.
         with files.open_file(folder, name, "wb") as fh:
-            async with httpx.AsyncClient(timeout=600, follow_redirects=True,
-                                         headers={"User-Agent": "BlessForge-agent"}) as c:
-                async with c.stream("GET", url) as r:
-                    if r.status_code != 200:
-                        raise RuntimeError_(f"{url} answered {r.status_code}", 502)
-                    async for chunk in r.aiter_bytes(1024 * 1024):
-                        got += len(chunk)
-                        if got > MAX_DOWNLOAD:
-                            raise RuntimeError_("that download is over 1 GB", 413)
-                        sha1.update(chunk)
-                        sha256.update(chunk)
-                        fh.write(chunk)
+            c = clients.client("downloads", lambda: httpx.AsyncClient(
+                timeout=600, follow_redirects=True,
+                headers={"User-Agent": "BlessForge-agent"}))
+            async with c.stream("GET", url) as r:
+                if r.status_code != 200:
+                    raise RuntimeError_(f"{url} answered {r.status_code}", 502)
+                async for chunk in r.aiter_bytes(1024 * 1024):
+                    got += len(chunk)
+                    if got > MAX_DOWNLOAD:
+                        raise RuntimeError_("that download is over 1 GB", 413)
+                    sha1.update(chunk)
+                    sha256.update(chunk)
+                    fh.write(chunk)
             for algo, h in (("sha1", sha1), ("sha256", sha256)):
                 want = (fetch.get(algo) or "").lower()
                 if want and h.hexdigest() != want:

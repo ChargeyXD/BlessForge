@@ -46,6 +46,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
+from agent import clients
 from agent.config import AgentConfig
 
 CONTAINER_PREFIX = "bf-"
@@ -303,14 +304,17 @@ class Running:
 # --- Docker -------------------------------------------------------------------------
 
 
-def _docker_client(cfg: AgentConfig, timeout: float = 60) -> httpx.AsyncClient:
+def _docker_client(cfg: AgentConfig, timeout: float = 60) -> clients.Lent:
+    """The node's one Docker client, lent for an `async with` with `timeout`."""
     host = cfg.docker_host
-    if host.startswith("unix://"):
-        transport = httpx.AsyncHTTPTransport(uds=host[len("unix://"):])
-        return httpx.AsyncClient(transport=transport, base_url="http://docker",
-                                 timeout=timeout)
-    return httpx.AsyncClient(base_url=host.replace("tcp://", "http://"),
-                             timeout=timeout)
+
+    def make() -> httpx.AsyncClient:
+        if host.startswith("unix://"):
+            transport = httpx.AsyncHTTPTransport(uds=host[len("unix://"):])
+            return httpx.AsyncClient(transport=transport, base_url="http://docker",
+                                     timeout=60)
+        return httpx.AsyncClient(base_url=host.replace("tcp://", "http://"), timeout=60)
+    return clients.Lent(clients.client(f"docker:{host}", make), timeout)
 
 
 def demux(buffer: bytearray) -> list[tuple[int, bytes]]:
@@ -418,7 +422,7 @@ class DockerRuntime:
         return {"docker": v.get("Version"), "api": v.get("ApiVersion"),
                 "running_containers": len(listed)}
 
-    async def _ensure_image(self, c: httpx.AsyncClient, image: str) -> None:
+    async def _ensure_image(self, c: clients.Lent, image: str) -> None:
         if (await c.get(f"/images/{image}/json")).status_code == 200:
             return
         repo, _, tag = image.rpartition(":")
@@ -434,7 +438,7 @@ class DockerRuntime:
             raise RuntimeError_(f"could not pull {image}: {r.text[:200]}", 502)
         await self._build_runtime(c, image, int(java.group(1)))
 
-    async def _build_runtime(self, c: httpx.AsyncClient, image: str, java: int) -> None:
+    async def _build_runtime(self, c: clients.Lent, image: str, java: int) -> None:
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             for f in sorted(RUNTIME_CONTEXT.iterdir()):

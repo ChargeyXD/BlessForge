@@ -16,6 +16,7 @@ import time
 
 import httpx
 
+from agent import clients
 from agent.config import AgentConfig
 
 log = logging.getLogger("blessforge.agent.events")
@@ -38,6 +39,11 @@ class Events:
         if len(self.queue) >= FLUSH_AT:
             self.wake.set()
 
+    def panel(self) -> httpx.AsyncClient:
+        """The agent's one client towards its panel."""
+        return clients.client("panel", lambda: httpx.AsyncClient(
+            timeout=30, verify=self.cfg.verify_panel_tls))
+
     def headers(self) -> dict:
         return {"Authorization": f"Bearer {self.cfg.token_id}.{self.cfg.token}"}
 
@@ -46,10 +52,10 @@ class Events:
             return True
         batch = list(self.queue)[:500]
         try:
-            async with httpx.AsyncClient(timeout=15, verify=self.cfg.verify_panel_tls) as c:
-                r = await c.post(f"{self.cfg.panel_url.rstrip('/')}/api/agent/events",
-                                 json={"node": self.cfg.node_id, "events": batch},
-                                 headers=self.headers())
+            r = await self.panel().post(
+                f"{self.cfg.panel_url.rstrip('/')}/api/agent/events",
+                json={"node": self.cfg.node_id, "events": batch},
+                headers=self.headers(), timeout=15)
             if r.status_code >= 400:
                 raise RuntimeError(f"the panel answered {r.status_code}")
         except Exception as e:      # noqa: BLE001 -- kept and retried

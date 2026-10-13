@@ -97,6 +97,8 @@ async def _lifespan(_app: FastAPI):
         await jobs_close()
         await db.dispose()
         curseforge.shutdown_pool()
+        from app.engine.agent import close_clients
+        await close_clients()
 
 
 app = FastAPI(title="BlessForge", version="2.2.0", lifespan=_lifespan)

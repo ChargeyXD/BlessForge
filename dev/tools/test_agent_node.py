@@ -7,6 +7,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     event loop, and quick work never queues behind heavy work (6.1);
   * CPU and memory come from a background sampler: no request waits on
     Docker's stats, and GET /v1/stats answers for every server at once (6.2);
+  * one long-lived client per target -- Docker, the panel, each node -- not
+    a new connection (and a 60-100 ms SSL context) per call (6.3);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -192,8 +194,8 @@ async def test_file_ops_off_loop():
               listing.status_code == 200 and list_s < 0.3, f"{list_s:.3f}s")
         check("nor does reading a file", read.status_code == 200 and read_s < 0.3,
               f"{read_s:.3f}s")
-        check("the event loop never stalled for anything like a compress (1 s)",
-              probe.worst < 0.3, f"worst {probe.worst * 1000:.0f} ms")
+        check("the event loop never stalled for more than 100 ms",
+              probe.worst < 0.1, f"worst {probe.worst * 1000:.0f} ms")
         check("and the backups still finished",
               all(r.status_code == 200 for r in done)
               and all((folder / f"backup-{i}.zip").is_file() for i in range(3)))
@@ -298,9 +300,48 @@ async def test_stats_sampler():
               sid not in a.sup.samples and "mem" not in (await a.sup.stats(sid)))
 
 
+# --- 6.3 one client per target ------------------------------------------------------
+
+
+async def test_shared_clients():
+    section("6.3 one long-lived client per target")
+    from agent import clients
+    from agent.containers import _docker_client
+    from agent.events import Events
+    cfg = process_cfg("clients")
+    async with _docker_client(cfg, 5) as first:
+        pass
+    async with _docker_client(cfg, 120) as second:
+        pass
+    check("every Docker call shares one client, each with its own timeout",
+          first._c is second._c and not first._c.is_closed
+          and (first._timeout, second._timeout) == (5, 120))
+    ev = Events(cfg)
+    ev.emit("hello")
+    await ev.flush()            # the panel is not there: kept and retried
+    await ev.flush()
+    check("the events flush keeps one client towards the panel across retries",
+          ev.panel() is ev.panel() and not ev.panel().is_closed and len(ev.queue) == 1)
+    await clients.close_all()
+    check("...and shutdown closes them", first._c.is_closed)
+
+    from app.engine import agent as panel_side
+    from types import SimpleNamespace
+    node = SimpleNamespace(id="n1")
+    one = panel_side.AgentEngine(node, "http://agent:8443", "Bearer a.b")
+    two = panel_side.AgentEngine(node, "http://agent:8443/", "Bearer a.b")
+    other = panel_side.AgentEngine(SimpleNamespace(id="n2"), "http://other:8443", "Bearer c.d")
+    check("the panel keeps one client per node, even across load_nodes() rebuilding drivers",
+          one._client() is two._client() and one._client() is not other._client())
+    held = one._client()
+    await panel_side.close_clients()
+    check("...closed on shutdown", held.is_closed and not panel_side._clients)
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
+    await test_shared_clients()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)

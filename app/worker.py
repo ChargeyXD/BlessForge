@@ -82,6 +82,8 @@ async def shutdown(ctx) -> None:
     await db.dispose()
     from app import curseforge
     curseforge.shutdown_pool()
+    from app.engine.agent import close_clients
+    await close_clients()
 
 
 async def _watch_cancel(r, job_id: str, target: asyncio.Task) -> None:

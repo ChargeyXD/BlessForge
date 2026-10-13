@@ -59,6 +59,34 @@ def record_of(row: Server) -> dict:
             "mc_version": row.mc_version}
 
 
+# One long-lived client per node (per event loop): a new one per call cost a
+# TCP connection -- and a TLS handshake in production -- per request, five a
+# second per console viewer, and building one blocks the loop for 60-100 ms.
+# Keyed by URL and token rather than kept on the AgentEngine, because
+# load_nodes() rebuilds the drivers whenever a node is registered.
+_clients: dict[tuple[str, str], tuple[asyncio.AbstractEventLoop, httpx.AsyncClient]] = {}
+
+
+def _shared(url: str, header: str) -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    held = _clients.get((url, header))
+    if held and held[0] is loop and not held[1].is_closed:
+        return held[1]
+    made = httpx.AsyncClient(base_url=url, timeout=60,
+                             headers={"Authorization": header})
+    _clients[(url, header)] = (loop, made)
+    return made
+
+
+async def close_clients() -> None:
+    """On shutdown: close the clients this event loop opened."""
+    loop = asyncio.get_running_loop()
+    for key, (owner, c) in list(_clients.items()):
+        if owner is loop:
+            await c.aclose()
+        _clients.pop(key, None)
+
+
 class AgentEngine:
     name = "agent"
 
@@ -69,14 +97,13 @@ class AgentEngine:
 
     # --- plumbing --------------------------------------------------------------
 
-    def _client(self, timeout: float = 60) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=self.url, timeout=timeout,
-                                 headers={"Authorization": self.header})
+    def _client(self) -> httpx.AsyncClient:
+        """This node's one long-lived client (see _shared)."""
+        return _shared(self.url, self.header)
 
     async def _call(self, method: str, path: str, *, timeout: float = 60, **kw) -> Any:
         try:
-            async with self._client(timeout) as c:
-                r = await c.request(method, path, **kw)
+            r = await self._client().request(method, path, timeout=timeout, **kw)
         except httpx.HTTPError as e:
             raise EngineError(f"node {self.node_id} is not answering ({type(e).__name__})",
                               503)
@@ -307,14 +334,13 @@ class AgentEngine:
                                 params={"path": rel_path}, timeout=600)
 
     async def stream_file(self, server_id: str, rel_path: str) -> AsyncIterator[bytes]:
-        async with self._client(1800) as c:
-            async with c.stream("GET", f"/v1/servers/{server_id}/files/raw",
-                                params={"path": rel_path}) as r:
-                if r.status_code >= 400:
-                    await r.aread()
-                    raise EngineError(f"download {rel_path} failed", r.status_code)
-                async for chunk in r.aiter_bytes(256 * 1024):
-                    yield chunk
+        async with self._client().stream("GET", f"/v1/servers/{server_id}/files/raw",
+                                         params={"path": rel_path}, timeout=1800) as r:
+            if r.status_code >= 400:
+                await r.aread()
+                raise EngineError(f"download {rel_path} failed", r.status_code)
+            async for chunk in r.aiter_bytes(256 * 1024):
+                yield chunk
 
     # --- console ---------------------------------------------------------------------
 
