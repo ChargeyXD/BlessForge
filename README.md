@@ -582,6 +582,18 @@ it, because losing it means registering every node again.
 3. `systemctl enable --now blessforge-agent`. The node reports in and shows
    as online; servers can now be created on it.
 
+A few `agent.toml` settings change how a node behaves; the rest have
+defaults that are right for a Linux node running Docker (`agent/config.py`).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `max_concurrent_boots` | `2` | Servers booting at once; the rest wait their turn ("Waiting to start") |
+| `boot_timeout` | `900` | Seconds a boot holds its slot at most |
+| `max_concurrent_installs` | `2` | Installs at once, apart from boots |
+| `memory_mode` | `"hard"` | `"soft"`: a reservation and no hard memory limit, Crafty-like. Self-hosted only, never on a node that hosts others |
+| `refuse_overcommit` | `false` | Refuse a start that commits more memory than the node has, instead of asking |
+| `ping_host` | *(blank)* | Where player pings go. Blank: the game address, or this machine (`host.docker.internal` for an agent in a container) |
+
 ### Trying it on one box
 
 The root `docker-compose.yml` runs the whole control plane on one machine
