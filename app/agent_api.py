@@ -33,7 +33,8 @@ LIVE: dict[str, dict] = {}
 
 # Events worth a line in the audit log -- the operator needs to be able to
 # find out afterwards that a server crash-looped at 3am.
-_AUDITED = {"crash", "crash_loop", "disk_full", "drift", "agent_started"}
+_AUDITED = {"crash", "crash_loop", "disk_full", "drift", "agent_started",
+            "port_changed"}
 _STATUS = {"starting": "running", "running": "running", "offline": "stopped"}
 
 
@@ -61,6 +62,7 @@ async def agent_events(body: dict = Body(...),
     if not isinstance(events, list):
         raise HTTPException(400, "events must be a list")
     statuses: dict[str, str] = {}
+    moved: dict[str, int] = {}
     version = None
     for ev in events[:1000]:
         if not isinstance(ev, dict):
@@ -74,6 +76,9 @@ async def agent_events(body: dict = Body(...),
                                       "node": node.id}
         elif kind == "status" and server:
             statuses[str(server)] = _STATUS.get(str(ev.get("state")), "stopped")
+        elif kind == "port_changed" and server and isinstance(ev.get("port"), int):
+            # Port: automatic chose another port at this start.
+            moved[str(server)] = int(ev["port"])
         elif kind == "agent_started":
             version = str(ev.get("version") or "")[:32]
         if kind in _AUDITED:
@@ -93,6 +98,10 @@ async def agent_events(body: dict = Body(...),
             srv = await s.get(Server, sid)
             if srv is not None and srv.node_id == node.id and srv.status != "installing":
                 srv.status = status
+        for sid, port in moved.items():
+            srv = await s.get(Server, sid)
+            if srv is not None and srv.node_id == node.id and 1024 <= port <= 65535:
+                srv.port = port
     return {"accepted": len(events)}
 
 

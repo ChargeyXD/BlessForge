@@ -17,6 +17,9 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
   * several servers share a port, one running at a time: a start while
     another holds it is refused naming it, and a switch stops that one
     through its own stop and starts this one (5);
+  * ports another app holds (Crafty's whole range): GET /v1/ports lists
+    them, Port: automatic moves a server to a free one at start, and a
+    fixed port that is taken says which port is free next (4);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -202,8 +205,11 @@ async def test_file_ops_off_loop():
               listing.status_code == 200 and list_s < 0.3, f"{list_s:.3f}s")
         check("nor does reading a file", read.status_code == 200 and read_s < 0.3,
               f"{read_s:.3f}s")
-        check("the event loop never stalled for more than 100 ms",
-              probe.worst < 0.1, f"worst {probe.worst * 1000:.0f} ms")
+        # A compress on the loop stalls it for its whole second; off it, what
+        # is left is scheduling noise -- under 50 ms here alone, and up to
+        # about 120 with every suite and a modpack boot sharing the CPU.
+        check("the event loop never stalled for anything like a compress",
+              probe.worst < 0.25, f"worst {probe.worst * 1000:.0f} ms")
         check("and the backups still finished",
               all(r.status_code == 200 for r in done)
               and all((folder / f"backup-{i}.zip").is_file() for i in range(3)))
@@ -772,6 +778,127 @@ async def test_shared_port():
     check("...and both records stay on the node", set(sup.servers) == {a_id, b_id})
 
 
+# --- 4. ports another app holds -----------------------------------------------------------
+
+
+class PortsDocker(FakeDocker):
+    """Crafty publishes 25500-25600; a host program holds `bound` too."""
+
+    def __init__(self, bound=()):
+        super().__init__({})
+        self.bound = set(bound)
+        self.tried = []
+
+    def container(self, uuid):
+        return "bf-" + uuid
+
+    async def host_ports(self):
+        return {p: "big-bear-crafty" for p in range(25500, 25601)}
+
+    async def start(self, server, folder, on_output, on_exit):
+        from agent.containers import RuntimeError_
+        self.tried.append(int(server["port"]))
+        if int(server["port"]) in self.bound | set(range(25500, 25601)):
+            raise RuntimeError_(f"Port {server['port']} is already in use on this machine",
+                                409, taken=int(server["port"]))
+        self.started.append(server["uuid"])
+        return FakeRunning()
+
+
+async def test_ports():
+    section("4. ports another app holds: use whatever is free right now")
+    from agent.servers import Supervisor
+    auto_id, fixed_id = ("abababab-0000-0000-0000-00000000000a",
+                         "abababab-0000-0000-0000-00000000000b")
+    cfg = process_cfg("ports")
+    runtime = PortsDocker(bound={25601})
+    events = FakeEvents()
+    sup = Supervisor(cfg, runtime, events)
+    sup.put(auto_id, {"name": "Imported", "port": 25650, "port_auto": True,
+                      "port_range": [25500, 25700], "execution_command": "java -jar s.jar"})
+    sup.put(fixed_id, {"name": "Fixed", "port": 25550, "port_range": [25500, 25700],
+                       "execution_command": "java -jar s.jar"})
+    folder = sup.folder(auto_id)
+    (folder / "server.properties").write_text("motd=hi\nserver-port=25550\n"
+                                              "query.port=25550\n", encoding="utf-8")
+    await sup.power(auto_id, "start")
+    srv = sup.servers[auto_id]
+    props = (folder / "server.properties").read_text(encoding="utf-8")
+    moved = [d for k, u, d in events.sent if k == "port_changed" and u == auto_id]
+    check("Port: automatic keeps a free port as it is", runtime.tried == [25650]
+          and not moved and srv.spec["port"] == 25650, runtime.tried)
+
+    sup.servers[auto_id].running = None
+    sup.put(auto_id, {**srv.spec, "port": 25550})          # inside Crafty's range
+    runtime.tried.clear()
+    await sup.power(auto_id, "start")
+    srv = sup.servers[auto_id]
+    props = (folder / "server.properties").read_text(encoding="utf-8")
+    moved = [d for k, u, d in events.sent if k == "port_changed" and u == auto_id]
+    check("a taken port is swapped at start for the first free one in the range "
+          "(past one a host program refused at bind)",
+          srv.spec["port"] == 25602 and runtime.tried == [25601, 25602], runtime.tried)
+    check("...written into server.properties through the jail, query.port with it",
+          "server-port=25602" in props and "query.port=25602" in props
+          and "motd=hi" in props, props)
+    check("...reported as port_changed for the panel's record, and kept on disk",
+          moved and moved[-1]["port"] == 25602 and moved[0]["previous"] == 25550
+          and '"port": 25602' in (sup.specs_dir / f"{auto_id}.json").read_text())
+    check("...and the console says where it runs",
+          any("runs on 25602 instead" in ln for ln in srv.console.lines))
+
+    try:
+        await sup.power(fixed_id, "start")
+        err = None
+    except Exception as e:      # noqa: BLE001
+        err = e
+    check("a fixed port that is taken is refused with the next free port to offer "
+          "(past Crafty's range and the server now running on 25602)",
+          err is not None and getattr(err, "status", 0) == 409
+          and err.extra.get("next_free") == 25601 and "25601" in str(err),
+          getattr(err, "extra", err))
+
+    async with Agent(process_cfg("ports-api")) as a:
+        a.sup.runtime.host_ports = runtime.host_ports
+        await fake_server(a, auto_id, 30081, name="Up")
+        await a.client.post(f"/v1/servers/{auto_id}/power", json={"action": "start"})
+        await until(lambda: a.sup.servers[auto_id].state == "running")
+        body = (await a.client.get("/v1/ports")).json()
+        by = {p["port"]: p for p in body["ports"]}
+        check("GET /v1/ports lists every container's published ports and this node's "
+              "running servers", by.get(25500, {}).get("by") == "big-bear-crafty"
+              and by.get(30081, {}).get("server") == auto_id and len(by) == 102, len(by))
+        await a.client.post(f"/v1/servers/{auto_id}/power", json={"action": "stop"})
+        await until(lambda: a.sup.servers[auto_id].running is None)
+
+
+async def test_ports_live():
+    section("4 LIVE: another app's published ports, as Docker reports them")
+    from agent.containers import DockerRuntime, _docker_client
+    cfg = AgentConfig(node_id="node-live-ports", token_id="t", token="t",
+                      panel_url="http://x", panel_public_key=PUB,
+                      servers_root=TMP / "live-ports", state_dir=TMP / "live-ports-state",
+                      game_bind_ip="127.0.0.1")
+    name = "bf-test-other-app"
+    async with _docker_client(cfg, 60) as c:
+        await c.delete(f"/containers/{name}", params={"force": "true"})
+        r = await c.post("/containers/create", params={"name": name}, json={
+            "Image": "python:3.12-slim", "Cmd": ["sleep", "60"],
+            "ExposedPorts": {"30091/tcp": {}, "30092/udp": {}},
+            "HostConfig": {"PortBindings": {
+                "30091/tcp": [{"HostIp": "127.0.0.1", "HostPort": "30091"}],
+                "30092/udp": [{"HostIp": "127.0.0.1", "HostPort": "30092"}]}}})
+        assert r.status_code < 400, r.text
+        await c.post(f"/containers/{name}/start")
+    try:
+        held = await DockerRuntime(cfg).host_ports()
+        check("LIVE host ports published by another container are listed, by name",
+              held.get(30091) == name and held.get(30092) == name, held)
+    finally:
+        async with _docker_client(cfg, 30) as c:
+            await c.delete(f"/containers/{name}", params={"force": "true"})
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -779,8 +906,10 @@ async def main():
     await test_readopt()
     await test_console()
     await test_shared_port()
+    await test_ports()
     if LIVE:
         await test_readopt_live()
+        await test_ports_live()
     else:
         print("\n(the Docker tier was not run; add --live where Docker is available)")
     passed = sum(results)

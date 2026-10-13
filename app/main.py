@@ -667,8 +667,9 @@ async def instance_action(server_id: str, action: str) -> dict:
     except engine.EngineError as e:
         # Another server holds the port: say which, so the page can offer
         # "Switch to this server" rather than only an error.
-        if isinstance(e.body, dict) and e.body.get("conflict"):
-            return JSONResponse({"detail": str(e), "conflict": e.body["conflict"]},
+        if isinstance(e.body, dict) and (e.body.get("conflict") or e.body.get("next_free")):
+            return JSONResponse({"detail": str(e), **{k: e.body[k] for k in
+                                 ("conflict", "taken", "next_free") if k in e.body}},
                                 status_code=409)
         raise _err(e)
     except Exception as e:
@@ -1995,8 +1996,11 @@ async def get_port(server_id: str) -> dict:
 
 @app.post("/api/instances/{server_id}/port")
 async def set_port(server_id: str, body: dict = Body(...)) -> dict:
-    """Change the port in the server record and server.properties together."""
+    """Change the port in the server record and server.properties together,
+    or ({"auto": true|false}) turn Port: automatic on or off."""
     try:
+        if "auto" in body and body.get("port") is None:
+            return await properties.set_auto(server_id, bool(body["auto"]))
         return await properties.set_port(
             server_id,
             body.get("port"),

@@ -530,7 +530,8 @@ class DockerRuntime:
                     raise RuntimeError_(
                         f"Port {taken} is already in use on this machine -- by another "
                         "program or container (Crafty publishes 25500-25600, for one). "
-                        "Give this server a free port and start it again.", 409)
+                        "Give this server a free port and start it again.", 409,
+                        taken=taken)
                 # An add-on's port: start without it rather than not at all.
                 dropped = [a for a in server["addon_ports"] if int(a["port"]) == taken]
                 if not dropped:
@@ -586,6 +587,22 @@ class DockerRuntime:
 
         running.reader_task = asyncio.create_task(pump())
         return running
+
+    async def host_ports(self) -> dict[int, str]:
+        """Host ports every running container publishes -- Crafty's whole
+        range and any other app's -- by port, with who holds it."""
+        async with _docker_client(self.cfg, 15) as c:
+            r = await c.get("/containers/json")
+            if r.status_code >= 400:
+                raise RuntimeError_(f"Docker would not list containers: {r.text[:200]}", 502)
+            listed = r.json() or []
+        out: dict[int, str] = {}
+        for item in listed:
+            name = ((item.get("Names") or ["?"])[0] or "?").lstrip("/")
+            for p in item.get("Ports") or []:
+                if p.get("PublicPort"):
+                    out.setdefault(int(p["PublicPort"]), name)
+        return out
 
     async def running_servers(self) -> dict[str, dict]:
         """This node's game servers whose containers are running right now,
@@ -740,6 +757,9 @@ class ProcessRuntime:
     async def info(self) -> dict:
         return {"docker": None, "runtime": "process (no isolation)",
                 "running_containers": 0}
+
+    async def host_ports(self) -> dict[int, str]:
+        return {}               # no Docker to ask; a bind failure says the rest
 
     def _argv(self, server: dict, folder: Path, argv: list[str]) -> list[str]:
         if argv and argv[0] == "java":

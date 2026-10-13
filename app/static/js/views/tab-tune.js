@@ -327,6 +327,19 @@ export async function render(ctx) {
                   + port.in_use_by_others.map((o) => `${o.name} :${o.port}`)
                     .join(', '))
                 : null,
+              port.taken_by_apps?.length
+                ? h('p.muted', { style: { fontSize: '12px' } },
+                  'Taken by another app on this machine: '
+                  + port.taken_by_apps.map((r) => (r.from === r.to
+                    ? `${r.from}` : `${r.from}–${r.to}`) + ` (${r.by})`).join(', '))
+                : null,
+              h('label.check', { style: { display: 'flex', gap: '8px', margin: '8px 0' } },
+                h('input', {
+                  type: 'checkbox', checked: !!port.auto,
+                  onchange: (e) => setAutoPort(e.target.checked),
+                }),
+                h('span', 'Port: automatic — at each start, this port if it is '
+                  + 'free, otherwise the first free one in the range')),
               h('button.btn.sm.block', { onclick: savePort },
                 hl(), icon('save', 13), h('span', 'Set the port in both places')),
               h('p.muted', { style: { fontSize: '11.5px', marginTop: '10px' } },
@@ -745,6 +758,15 @@ export async function render(ctx) {
       propEdits.clear();
       await load();
       askAdvice();
+    } catch (e) { toastError(e); }
+  }
+
+  async function setAutoPort(auto) {
+    try {
+      await api.post(`/api/instances/${ctx.id}/port`, { auto });
+      toast(auto ? 'Port: automatic. A taken port is swapped for a free one at start.'
+        : 'Port: fixed.', 'ok');
+      await load();
     } catch (e) { toastError(e); }
   }
 

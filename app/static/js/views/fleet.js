@@ -353,6 +353,22 @@ export async function action(s, act) {
     setTimeout(() => refreshInstances({ quiet: true }), 1200);
     setTimeout(() => refreshInstances({ quiet: true }), 5000);
   } catch (e) {
+    // A fixed port another app holds: offer the next free one.
+    const nextFree = e?.body?.next_free;
+    if (e?.status === 409 && nextFree && act === 'start_server') {
+      const ok = await confirmDialog({
+        title: `Port ${e.body.taken} is taken`,
+        message: `${e.message} Use the next free port (${nextFree}) for ${s.name}?`,
+        confirmLabel: `Use port ${nextFree}`,
+      });
+      if (ok) {
+        try {
+          await api.post(`/api/instances/${s.server_id}/port`, { port: nextFree });
+          await action(s, 'start_server');
+        } catch (err) { toastError(err); }
+      }
+      return;
+    }
     // Another server holds the port: offer to switch rather than only fail.
     const other = e?.body?.conflict;
     if (e?.status === 409 && other && act !== 'switch_server') {

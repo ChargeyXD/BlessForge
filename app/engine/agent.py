@@ -35,10 +35,14 @@ _FIELD_COLUMNS = {"server_name": "name", "server_port": "port",
 def spec_of(row: Server) -> dict:
     """The desired state the agent builds a container from."""
     limits = dict(row.limits or {})
+    from app import config
     return {"uuid": row.uuid, "name": row.name, "port": row.port,
             "java_major": row.java_major, "execution_command": row.execution_command,
             "memory_mb": int(limits.get("memory_mb") or 2048), "limits": limits,
-            "auto_start": bool(row.auto_start)}
+            "auto_start": bool(row.auto_start),
+            # Port: automatic -- the node picks a free one at each start.
+            "port_auto": bool(limits.get("port_auto")),
+            "port_range": list(config.GAME_PORT_RANGE)}
 
 
 def record_of(row: Server) -> dict:
@@ -373,6 +377,11 @@ class AgentEngine:
         out = await self._call("GET", f"/v1/servers/{server_id}/console",
                                params={"lines": 2000})
         return out["lines"]
+
+    async def host_ports(self, server_id: str) -> list[dict]:
+        """What holds host ports on this server's machine (GET /v1/ports)."""
+        out = await self._call("GET", "/v1/ports", timeout=10)
+        return list(out.get("ports") or [])
 
     async def console_since(self, server_id: str, after: int | None) -> dict:
         """The node's numbered console: with `after`, only the lines after

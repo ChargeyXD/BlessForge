@@ -64,7 +64,7 @@ class Recording(httpx.ASGITransport):
 
 
 def args(**kw):
-    base = dict(from_dir=None, only=None, no_boot=False, dry_run=False,
+    base = dict(from_dir=None, only=None, no_boot=False, dry_run=False, auto_ports=False,
                 connect_engine=False, report=None)
     return importer.parse([]).__class__(**{**base, **kw})
 
@@ -138,6 +138,16 @@ async def main():
           outcomes["Paper Survival"][0] == "failed" and "25566" in outcomes["Paper Survival"][1]
           and outcomes["Sakura SMP"][0] == "copied", outcomes)
     check("...and Crafty is not declared safe to remove", not summary["crafty_can_go"])
+
+    eng3 = MockEngine(seed=False)
+    engine.configure("mock", drivers={"local": eng3})
+    await engine.create_server(name="Already here", port=25566, memory_mb=2048)
+    summary = await go(eng3, no_boot=True, auto_ports=True)
+    imported = {r["name"]: r for r in summary["results"]}
+    sid = imported["Paper Survival"].get("server_id")
+    check("with --auto-ports that server is imported anyway, with Port: automatic",
+          imported["Paper Survival"]["outcome"] == "copied" and sid
+          and (await engine.get_server(sid))["limits"].get("port_auto"), imported)
 
     mock.SERVERS["cccc3333"] = {"server_id": "cccc3333", "server_name": "Mystery",
                                 "server_port": 25570, "path": "/servers/mystery",

@@ -166,6 +166,25 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     async def list_servers():
         return {"items": [sup().describe(s) for s in sup().servers.values()]}
 
+    @app.get("/v1/ports")
+    async def ports():
+        """Host ports in use on this machine: every container's published
+        ports (Crafty's range, other apps) and this node's running servers.
+        A program on the host that is not a container shows only when a
+        start's bind is refused."""
+        held: dict[int, dict] = {}
+        try:
+            for port, who in (await sup().runtime.host_ports()).items():
+                held[port] = {"port": port, "by": who, "server": None}
+        except Exception as e:      # noqa: BLE001 -- a down Docker is worth saying
+            return {"ports": [], "error": str(e)}
+        for srv in sup().servers.values():
+            if srv.running is not None:
+                for port in srv.published or {int(srv.spec["port"])}:
+                    held[port] = {"port": port, "by": srv.spec.get("name"),
+                                  "server": srv.uuid}
+        return {"ports": sorted(held.values(), key=lambda p: p["port"])}
+
     @app.get("/v1/stats")
     async def all_stats():
         """Every server's state, players, CPU and memory in one call, from the

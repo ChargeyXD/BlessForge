@@ -65,6 +65,34 @@ SAMPLE_TIMEOUT = 10
 LIST_EVERY = 120       # the most often `list` is sent to settle a disagreement
 
 
+def _port_range(value) -> list[int]:
+    try:
+        lo, hi = (int(v) for v in value)
+    except (TypeError, ValueError):
+        return [25500, 25600]
+    return [lo, hi] if 1024 <= lo <= hi <= 65535 else [25500, 25600]
+
+
+def set_properties_port(folder: Path, old: int, new: int) -> None:
+    """server-port (and a query.port that followed it) set to `new`, in the
+    server's own server.properties, through the jail."""
+    try:
+        text = files.read_text(folder, "server.properties")
+    except (files.JailError, OSError):
+        text = ""
+    out, seen = [], False
+    for line in text.splitlines():
+        key = line.split("=", 1)[0].strip()
+        if key == "server-port":
+            line, seen = f"server-port={new}", True
+        elif key == "query.port" and line.split("=", 1)[-1].strip() in ("", str(old)):
+            line = f"query.port={new}"
+        out.append(line)
+    if not seen:
+        out.append(f"server-port={new}")
+    files.write_bytes(folder, "server.properties", ("\n".join(out) + "\n").encode())
+
+
 def check_uuid(value: str) -> str:
     if not _UUID.match(value or ""):
         raise RuntimeError_(f"{value!r} is not a server id", 400)
@@ -144,6 +172,10 @@ class Server:
         # The host ports it holds while it runs: the game port and its
         # add-ons'. Servers may share a port; only one may hold it at once.
         self.published: set[int] = set()
+        # Port: automatic -- ports a bind was refused on this start, and how
+        # many times it has moved on.
+        self.refused_ports: set[int] = set()
+        self.port_tries = 0
         # How it last ended: {"code", "oom", "at", "asked"} -- asked is True
         # when someone stopped it. Kept until the next start.
         self.last_exit: dict | None = None
@@ -210,6 +242,11 @@ class Supervisor:
             "memory_mb": int(spec.get("memory_mb") or 2048),
             "limits": dict(spec.get("limits") or {}),
             "auto_start": bool(spec.get("auto_start")),
+            # "Port: automatic": at each start, the last port if it is free,
+            # otherwise the first free one in port_range (the panel's
+            # GAME_PORT_RANGE). Written into server.properties and reported.
+            "port_auto": bool(spec.get("port_auto")),
+            "port_range": _port_range(spec.get("port_range")),
         }
         if not 1024 <= clean["port"] <= 65535:
             raise RuntimeError_("the port must be between 1024 and 65535", 400)
@@ -232,9 +269,7 @@ class Supervisor:
             except PermissionError:
                 pass            # a non-root dev agent; the container user is us
         self.specs_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.specs_dir / f"{uuid}.json.tmp"
-        tmp.write_text(json.dumps(clean, indent=1), encoding="utf-8")
-        tmp.replace(self.specs_dir / f"{uuid}.json")
+        self._save(uuid, clean)
         srv = self.servers.get(uuid)
         if srv is None:
             srv = self.servers[uuid] = Server(uuid, clean)
@@ -288,6 +323,61 @@ class Supervisor:
                 out.append((other, min(shared)))
         return out
 
+    async def taken_ports(self, srv: Server) -> dict[int, str]:
+        """Host ports in use right now by anything but this server: every
+        container's published ports (Crafty's range, other apps), the other
+        BlessForge servers running here, and any a bind was refused on."""
+        taken: dict[int, str] = {}
+        try:
+            mine = self.runtime.container(srv.uuid) if hasattr(self.runtime, "container") \
+                else None
+            for port, who in (await self.runtime.host_ports()).items():
+                if who != mine:
+                    taken[port] = who
+        except Exception as e:      # noqa: BLE001 -- the start's bind is the last word
+            log.warning("could not list host ports: %s", e)
+        for other in self.servers.values():
+            if other.uuid != srv.uuid and other.running is not None:
+                for port in other.published or {int(other.spec["port"])}:
+                    taken[port] = other.spec.get("name") or other.uuid
+        for port in srv.refused_ports:
+            taken.setdefault(port, "a program on this machine")
+        return taken
+
+    async def next_free_port(self, srv: Server, taken: dict[int, str] | None = None
+                             ) -> int | None:
+        """The first free port in this server's range, preferring ports no
+        other server on this node is set to."""
+        taken = taken if taken is not None else await self.taken_ports(srv)
+        lo, hi = srv.spec.get("port_range") or [25500, 25600]
+        assigned = {int(o.spec["port"]) for o in self.servers.values() if o.uuid != srv.uuid}
+        free = [p for p in range(lo, hi + 1) if p not in taken]
+        return next((p for p in free if p not in assigned), free[0] if free else None)
+
+    async def _choose_port(self, srv: Server) -> None:
+        """Port: automatic. The last port if it is free, otherwise the first
+        free one in the range, written into server.properties through the
+        jail and reported (port_changed) so the panel updates its record."""
+        taken = await self.taken_ports(srv)
+        current = int(srv.spec["port"])
+        if current not in taken:
+            return
+        chosen = await self.next_free_port(srv, taken)
+        if chosen is None:
+            lo, hi = srv.spec.get("port_range") or [25500, 25600]
+            raise RuntimeError_(f"Every port in {lo}-{hi} is in use on this machine.", 409)
+        await asyncio.to_thread(set_properties_port, self.folder(srv.uuid), current, chosen)
+        srv.spec = {**srv.spec, "port": chosen}
+        self._save(srv.uuid, srv.spec)
+        srv.console.feed(f"[BlessForge] Port {current} is taken (by {taken[current]}); "
+                         f"this server runs on {chosen} instead.")
+        self.events.emit("port_changed", srv.uuid, port=chosen, previous=current)
+
+    def _save(self, uuid: str, spec: dict) -> None:
+        tmp = self.specs_dir / f"{uuid}.json.tmp"
+        tmp.write_text(json.dumps(spec, indent=1), encoding="utf-8")
+        tmp.replace(self.specs_dir / f"{uuid}.json")
+
     def _ports_of(self, srv: Server) -> tuple[list[dict], set[int]]:
         game_port = int(srv.spec["port"])
         extra = addons.detect(self.folder(srv.uuid), game_port)
@@ -302,6 +392,9 @@ class Supervisor:
             for other, _port in self.holders(srv, ports):
                 await self.power(other.uuid, "stop")
             action = "start"
+        if action in ("start", "restart"):
+            srv.refused_ports.clear()
+            srv.port_tries = 0
         async with srv.lock:
             if action == "start":
                 await self._start(srv)
@@ -324,6 +417,8 @@ class Supervisor:
         if srv.state == "installing":
             raise RuntimeError_("an install is running on this server", 409)
         argv_of(srv.spec.get("execution_command") or "")      # 409 if none
+        if srv.spec.get("port_auto"):
+            await self._choose_port(srv)
         # The ports its add-ons open (Geyser, Voice Chat, a web map), read
         # from the folder at every start so a mod added since is picked up.
         # Another server on this node holding one of them refuses the start,
@@ -353,6 +448,21 @@ class Supervisor:
             srv.running = await self.runtime.start({**srv.spec, "addon_ports": extra},
                                                    self.folder(srv.uuid),
                                                    on_output, on_exit)
+        except RuntimeError_ as e:
+            srv.state = "offline"
+            taken = e.extra.get("taken")
+            if taken and srv.spec.get("port_auto") and srv.port_tries < 5:
+                # A program on the host (not a container) holds it: only the
+                # bind could say so. The next free one, then.
+                srv.port_tries += 1
+                srv.refused_ports.add(int(taken))
+                return await self._start(srv)
+            if taken:
+                nxt = await self.next_free_port(srv)
+                if nxt:
+                    e.extra["next_free"] = nxt
+                    e.args = (f"{e} The next free port is {nxt}.",)
+            raise
         except Exception:
             srv.state = "offline"
             raise

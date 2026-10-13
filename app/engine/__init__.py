@@ -410,6 +410,14 @@ async def console_lines(server_id: str, *, from_file: bool = False) -> list[str]
     return await (await _driver(server_id)).console_lines(server_id, from_file=from_file)
 
 
+async def host_ports(server_id: str) -> list[dict]:
+    """Host ports in use on the machine that runs this server, by anything
+    (other apps' containers too); empty where the driver cannot say."""
+    drv = await _driver(server_id)
+    fn = getattr(drv, "host_ports", None)
+    return [] if fn is None else await fn(server_id)
+
+
 async def console_since(server_id: str, after: int | None) -> dict | None:
     """The numbered console after `after`, or None for a driver whose
     console is not numbered (the in-memory engine)."""

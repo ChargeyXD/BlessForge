@@ -336,6 +336,22 @@ async def save(server_id: str, updates: dict) -> dict:
 PUBLISHED_RANGE = config.GAME_PORT_RANGE
 
 
+async def _taken_by_apps(server_id: str) -> list[dict]:
+    """Host ports another app on this machine holds (its containers' published
+    ports, another panel's whole range among them), as runs: [{"from", "to", "by"}]."""
+    try:
+        held = [p for p in await engine.host_ports(server_id) if not p.get("server")]
+    except Exception:       # noqa: BLE001 -- a node that cannot say is not a refusal
+        return []
+    runs: list[dict] = []
+    for p in sorted(held, key=lambda p: p["port"]):
+        if runs and runs[-1]["by"] == p["by"] and runs[-1]["to"] == p["port"] - 1:
+            runs[-1]["to"] = p["port"]
+        else:
+            runs.append({"from": p["port"], "to": p["port"], "by": p["by"]})
+    return runs
+
+
 async def port_status(server_id: str) -> dict:
     """Current port, plus what else on this node is already using one."""
     server = await engine.get_server(server_id)
@@ -368,6 +384,8 @@ async def port_status(server_id: str) -> dict:
         "record_port": current,
         "properties_port": props_port,
         "query_port": query_port,
+        "auto": bool((server.get("limits") or {}).get("port_auto")),
+        "taken_by_apps": await _taken_by_apps(server_id),
         "in_use_by_others": taken,
         "published_range": list(PUBLISHED_RANGE),
         "mismatch": mismatch,
@@ -377,6 +395,16 @@ async def port_status(server_id: str) -> dict:
             "the one in server.properties -- saving a port here fixes both."
         ) if mismatch else None,
     }
+
+
+async def set_auto(server_id: str, auto: bool) -> dict:
+    """Port: automatic. On, the node uses the last port if it is free at a
+    start, otherwise the first free one in the game port range, and says
+    which (the record follows)."""
+    server = await engine.get_server(server_id)
+    limits = {**(server.get("limits") or {}), "port_auto": bool(auto)}
+    await engine.update_server(server_id, {"limits": limits})
+    return {"auto": bool(auto)}
 
 
 async def set_port(server_id: str, port: int, *, update_query: bool = True,
@@ -411,6 +439,11 @@ async def set_port(server_id: str, port: int, *, update_query: bool = True,
         warnings.append(
             f"Also used by {', '.join(conflicts)} (only one can run at a time)."
         )
+    for run in await _taken_by_apps(server_id):
+        if run["from"] <= port <= run["to"]:
+            warnings.append(f"Port {port} is taken by another app on this machine "
+                            f"({run['by']}); this server cannot start on it while "
+                            "that runs. Port: automatic picks a free one instead.")
 
     low, high = PUBLISHED_RANGE
     if not low <= port <= high:

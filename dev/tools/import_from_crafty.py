@@ -247,9 +247,10 @@ async def import_one(crafty: Crafty, server: dict, args, existing: list[dict]) -
                     "why": "already imported"}
         return {**report, "outcome": "failed",
                 "why": f"a server named {name!r} already uses port {port} here"}
-    if any(int(s.get("server_port") or 0) == port for s in existing):
+    if any(int(s.get("server_port") or 0) == port for s in existing) and not args.auto_ports:
         return {**report, "outcome": "failed",
-                "why": f"port {port} is already used by another server here"}
+                "why": f"port {port} is already used by another server here "
+                       "(--auto-ports gives imported servers a free port at each start)"}
     if not mc:
         return {**report, "outcome": "failed",
                 "why": "could not tell which Minecraft version it runs"}
@@ -259,7 +260,14 @@ async def import_one(crafty: Crafty, server: dict, args, existing: list[dict]) -
     java = await templates.java_major(loader, mc)
     new_id = await engine.create_server(
         name=name, port=port, memory_mb=specs.container_memory_mb(heap),
-        mc_version=mc, loader=loader, java_major=java)
+        mc_version=mc, loader=loader, java_major=java,
+        # The heap is the one its owner set in Crafty: never lowered by a
+        # repair. Port: automatic -- Crafty's whole range stays held while
+        # Crafty runs, so the node picks a free port at each start instead.
+        limits={"heap_mb": int(heap * 1024), "heap_set_by_user": True,
+                **({"port_auto": True} if args.auto_ports else {})})
+    if args.auto_ports:
+        report["port_auto"] = True
     report["server_id"] = new_id
     copied = size = 0
     try:
@@ -368,6 +376,9 @@ def parse(argv=None):
     p.add_argument("--only", help="import only these Crafty server ids (comma-separated)")
     p.add_argument("--no-boot", action="store_true", help="skip the boot test")
     p.add_argument("--dry-run", action="store_true", help="change nothing")
+    p.add_argument("--auto-ports", action="store_true",
+                   help="give imported servers Port: automatic -- their Crafty port while "
+                        "it is free, otherwise the first free one in GAME_PORT_RANGE")
     p.add_argument("--connect-engine", action="store_true",
                    help="with --dry-run, also check ports against the engine")
     p.add_argument("--report", help="write the report as JSON here")

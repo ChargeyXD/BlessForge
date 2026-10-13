@@ -333,6 +333,19 @@ async def main():
               and twin_up and first_down, r.text[:200])
         r = await c.post(f"/api/instances/{sid}/action/switch_server")
         check("...and back", r.status_code == 200 and await until(lambda: _running(c, sid), 20))
+        r = await c.post(f"/api/instances/{twin}/port", json={"auto": True})
+        r2 = await c.post(f"/api/instances/{twin}/action/start_server")
+
+        async def moved():
+            p = (await c.get(f"/api/instances/{twin}/port")).json()
+            return p if p.get("record_port") != port else None
+        now = await until(moved, 15)
+        check("with Port: automatic it starts beside the first instead, on a free port "
+              "the panel's record follows", r.status_code == 200 and r2.status_code == 200
+              and now and now["auto"] and now["record_port"] != port
+              and str(now["properties_port"]) == str(now["record_port"]), (r2.text[:200], now))
+        await c.post(f"/api/instances/{twin}/action/stop_server")
+        await until(lambda: _stopped(c, twin), 20)
         await eng.delete_server(twin)
 
         # --- a token is for one server and one node -----------------------------------------
