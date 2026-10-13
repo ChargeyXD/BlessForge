@@ -313,6 +313,41 @@ async def main():
           by["iris.jar"].get("required_by_others") is None,
           "Zoomer needs Iris, but Zoomer is going too")
 
+    # Sodium, Embeddium, Oculus: never protected, and what needs them goes too.
+    items = [
+        # A staying mod hard-requires Sodium: before, Sodium was "kept".
+        scored("sodium-fabric-0.5.13+mc1.20.1.jar", "Sodium", "sodium", "review", (), 40),
+        scored("dynlights.jar", "Dynamic Lights", "dynlights", "server", ["sodium"], -20),
+        scored("addon.jar", "Lights Addon", "lightsaddon", "server", ["dynlights"], -20),
+        scored("embeddium-0.3.31+mc1.20.1.jar", "Embeddium", "embeddium", "server", (), -10),
+        scored("oculus-mc1.20.1-1.8.0.jar", "Oculus", "oculus", "server", (), -10),
+        scored("create.jar", "Create", "create", "server", (), -50),
+        scored("sodium-extra-0.5.7.jar", "Sodium Extra", None, "server", (), -10),
+    ]
+    clientscan.apply_overrides(items)
+    by = {c["file_name"]: c for c in items}
+    check("Sodium is removed even though a staying mod requires it",
+          by["sodium-fabric-0.5.13+mc1.20.1.jar"]["verdict"] == "client"
+          and not by["sodium-fabric-0.5.13+mc1.20.1.jar"].get("required_by_others"),
+          by["sodium-fabric-0.5.13+mc1.20.1.jar"]["verdict"])
+    check("...and the mod that hard-requires it goes with it",
+          by["dynlights.jar"]["verdict"] == "client"
+          and "Sodium" in by["dynlights.jar"]["reasons"][0],
+          by["dynlights.jar"]["reasons"][:1])
+    check("...all the way up the chain",
+          by["addon.jar"]["verdict"] == "client", by["addon.jar"]["verdict"])
+    check("Embeddium and Oculus are removed whatever their score said",
+          by["embeddium-0.3.31+mc1.20.1.jar"]["verdict"] == "client"
+          and by["oculus-mc1.20.1-1.8.0.jar"]["verdict"] == "client")
+    check("an unrelated content mod is untouched",
+          by["create.jar"]["verdict"] == "server")
+    check("an add-on whose file name starts with sodium- is not taken for Sodium",
+          clientscan.never_on_server(file_name="sodium-extra-0.5.7.jar") is None
+          and clientscan.never_on_server(file_name="sodium-fabric-0.5.13.jar") == "Sodium"
+          and clientscan.never_on_server(mod_id="embeddium") == "Embeddium"
+          and clientscan.never_on_server(slug="oculus") == "Oculus"
+          and clientscan.never_on_server(mod_id="sodiumextra") is None)
+
     # --- the scoring itself ---------------------------------------------------
     only_name = clientscan.evaluate(file_name="zoomify-1.2.jar", name_listed=True)
     check("a name-list match alone is a review, never a removal",

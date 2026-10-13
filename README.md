@@ -233,11 +233,17 @@ inference: an operator decision always wins, a mod another *staying* mod
 hard-requires is never removed, and the author stating `server_side: required`
 outranks every heuristic here.
 
+One exception to the second rule: **Sodium, Embeddium and Oculus** only ever run
+on a client, so they are never protected, never re-enabled by boot repair and
+never installed as a missing library. A mod that hard-requires one of them is a
+client mod too, and goes with it (all the way up the chain). Only your own
+allow list outranks this.
+
 | Verdict | Meaning |
 |---|---|
 | **client-only** | Score at or above 70 — a declared environment, an all-client package tree, or several signals agreeing. Ticked by default; installed disabled. |
 | **worth a look** | 30 to 69. Left for you to judge. |
-| **protected** | Looks client-only *but another mod that is staying requires it*. Never disabled automatically. |
+| **protected** | Looks client-only *but another mod that is staying requires it*. Never disabled automatically (Sodium, Embeddium and Oculus excepted). |
 | **fine** | Real server-side code. |
 
 Every verdict shows **the points each piece of evidence contributed and the

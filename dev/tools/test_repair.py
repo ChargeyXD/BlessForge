@@ -231,6 +231,34 @@ async def main():
                   ("disable", "forgeconfigscreens-8.0.2.jar")}, got)
     check("...both found in one boot (Fabric lists them together)", len(actions) == 2)
 
+    # --- Sodium / Embeddium / Oculus: never enabled, never installed --------------------
+    found["sodium"] = {"do": "install", "source": "modrinth", "project_id": "AANobbMI",
+                       "file_id": "x", "name": "Sodium"}
+    needs_sodium = ("[main/ERROR]: Incompatible mods found!\n"
+                    "\t - Mod 'Sodium Dynamic Lights' (sodiumdynamiclights) 1.0.9 requires "
+                    "any version of sodium, which is missing!\n")
+    actions, _ = await decide_for({
+        "sodiumdynamiclights-1.0.9.jar": fabric_jar("sodiumdynamiclights",
+                                                    depends={"sodium": "*"}),
+        "sodium-fabric-0.5.13.jar.disabled": fabric_jar("sodium"),
+    }, needs_sodium)
+    got = [(a["do"], a.get("file")) for a in actions]
+    check("a mod needing Sodium is disabled; Sodium is neither enabled nor installed",
+          got == [("disable", "sodiumdynamiclights-1.0.9.jar")], got)
+    actions, _ = await decide_for({
+        "sodiumdynamiclights-1.0.9.jar": fabric_jar("sodiumdynamiclights",
+                                                    depends={"sodium": "*"})}, needs_sodium)
+    check("...even when Sodium is in the catalogue and not on disk at all",
+          [(a["do"], a.get("file")) for a in actions]
+          == [("disable", "sodiumdynamiclights-1.0.9.jar")], actions)
+    del found["sodium"]
+    try:
+        await repair.fix_dependency(None, "x", "embeddium", required_by="Some mod")
+        refused = False
+    except ValueError as e:
+        refused = "only runs on a client" in str(e)
+    check("Diagnose's \"fix this missing library\" refuses Embeddium, and says why", refused)
+
     # --- a disabled server-side library comes back ------------------------------------
     actions, _ = await decide_for({
         "simplybows-forge-neoforge-0.1.4.jar": forge_jar("simplybows"),

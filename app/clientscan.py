@@ -70,6 +70,32 @@ CLIENT_LIBRARIES = {
     "mixinextras-client", "renderer", "immediatelyfast", "entityculling",
 }
 
+# Renderers that only ever run on a client: Sodium, Embeddium (its Forge and
+# NeoForge port) and Oculus (shaders on Forge). Nothing a server does needs
+# them, so no rule here or in repair ever keeps one or brings one back: not
+# dependency protection, not "enable the disabled jar that provides it", not
+# "install the missing library". A mod that hard-requires one is a client mod
+# too, and goes with it. Only the operator's own allow list outranks this.
+NEVER_ON_SERVER = {"sodium": "Sodium", "embeddium": "Embeddium", "oculus": "Oculus"}
+_NEVER_FILE = re.compile(r"^(sodium|embeddium|oculus)(?=[-_+ .]|$)")
+
+
+def never_on_server(mod_id: str | None = None, file_name: str | None = None,
+                    slug: str | None = None) -> str | None:
+    """"Sodium" / "Embeddium" / "Oculus" if this is one of them, else None.
+    By mod id or project slug; by file name only when there is no mod id
+    (sodium-extra-*.jar is an add-on, not Sodium itself)."""
+    for value in (mod_id, slug):
+        if value and str(value).lower() in NEVER_ON_SERVER:
+            return NEVER_ON_SERVER[str(value).lower()]
+    if file_name and not mod_id:
+        name = posixpath.basename(str(file_name)).lower()
+        m = _NEVER_FILE.match(name)
+        if m and not re.match(r"sodium[-_ ]?extra", name):
+            return NEVER_ON_SERVER[m.group(1)]
+    return None
+
+
 # Fabric entrypoint names that only ever run client-side.
 CLIENT_ENTRYPOINTS = {
     "client", "modmenu", "emi", "rei_client", "jei_client", "clothconfig",
@@ -410,6 +436,42 @@ def apply_overrides(items: list[dict], *, server_id: str | None = None) -> None:
                 "leaves it enabled"
             ]
 
+    def ids_of(item: dict) -> set[str]:
+        return {str(i).lower() for i in
+                ([item.get("mod_id")] + list(item.get("provides") or [])) if i}
+
+    # Sodium, Embeddium and Oculus are off, whatever requires them -- and so
+    # is everything that hard-requires them, all the way up the chain.
+    allowed = lambda i: (i.get("operator") or {}).get("verdict") not in (None, whitelist.BLOCK)  # noqa: E731
+    gone: dict[str, str] = {}           # mod id -> the renderer it comes down to
+    for item in items:
+        name = never_on_server(item.get("mod_id"), item.get("file_name"))
+        if not name or allowed(item):
+            continue
+        item.update(verdict="client", confidence="high", never_on_server=True)
+        item["reasons"] = [f"{name} only ever runs on a client; BlessForge never keeps "
+                           "it on a server, whatever requires it"]
+        for mid in ids_of(item) or {name.lower()}:
+            gone[mid] = name
+    changed = bool(gone)
+    while changed:
+        changed = False
+        for item in items:
+            if item["verdict"] == "client" or allowed(item):
+                continue
+            needs = [str(d).lower() for d in item.get("hard_dependencies") or []
+                     if str(d).lower() in gone]
+            if not needs:
+                continue
+            renderer = gone[needs[0]]
+            item.update(verdict="client", confidence="high", never_on_server=True)
+            item["reasons"] = [f"it requires {renderer}, which only runs on a client -- so "
+                               "this mod only does anything on a client too"
+                               ] + item.get("reasons", [])
+            for mid in ids_of(item):
+                gone.setdefault(mid, renderer)
+            changed = True
+
     staying = [i for i in items if i["verdict"] == "server"]
     provided_by_staying: dict[str, set[str]] = {}
     for mod in staying:
@@ -420,11 +482,10 @@ def apply_overrides(items: list[dict], *, server_id: str | None = None) -> None:
     # A jar satisfies its own mod id and everything it declares under
     # `provides` or ships nested, which is how modern packs carry libraries.
     for item in items:
-        if item["verdict"] == "server" or item.get("whitelisted"):
+        if item["verdict"] == "server" or item.get("whitelisted") \
+                or item.get("never_on_server"):
             continue
-        ids = {str(i).lower() for i in
-               ([item.get("mod_id")] + list(item.get("provides") or []))
-               if i}
+        ids = ids_of(item)
         protectors: set[str] = set()
         for mid in ids:
             protectors |= provided_by_staying.get(mid, set())

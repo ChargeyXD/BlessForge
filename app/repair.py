@@ -42,8 +42,8 @@ import re
 import time
 import zipfile
 
-from app import (curseforge, diagnostics, engine, jarmeta, loaders, modrinth, packs,
-                 smoketest, specs)
+from app import (clientscan, curseforge, diagnostics, engine, jarmeta, loaders, modrinth,
+                 packs, smoketest, specs)
 from app import mods as modmgr
 from app.jobs import Job
 
@@ -321,8 +321,18 @@ async def decide(server_id: str, text: str, *, mc: str, loader: str, disk: Disk,
     # 2. Missing libraries.
     for miss in missing_dependencies(text):
         dep, by = miss["dep"], miss["by"]
-        provider = await disk.find(dep, disk.disabled) if disk.disabled else None
         dependent = await disk.find(by, disk.enabled)
+        renderer = clientscan.never_on_server(dep)
+        if renderer:
+            # Never enabled, never installed: the mod that needs it goes.
+            if dependent:
+                plan({"do": "disable", "file": dependent,
+                      "why": f"it requires {renderer}, which only runs on a client -- so "
+                             "this mod only does anything on a client too"})
+            else:
+                unresolved.append(f"{by} needs {renderer}, which only runs on a client")
+            continue
+        provider = await disk.find(dep, disk.disabled) if disk.disabled else None
         if provider:
             if await disk.is_client_side(provider):
                 # A mod that needs a client-side library is itself client-side.
@@ -592,6 +602,11 @@ async def _record(server_id: str, repairs: list[dict]) -> None:
 async def fix_dependency(job: Job, server_id: str, mod_id: str,
                          required_by: str | None = None) -> dict:
     """Diagnose's "fix this missing library": enable it, or install a build."""
+    renderer = clientscan.never_on_server(mod_id)
+    if renderer:
+        raise ValueError(f"{renderer} only runs on a client, so BlessForge never puts it "
+                         f"on a server. {required_by or 'The mod that needs it'} is a "
+                         "client mod too: disable it instead.")
     manifest = await engine.read_manifest(server_id)
     mc = manifest.get("minecraft") or ""
     loader = loaders.family_of(manifest.get("loader") or "")

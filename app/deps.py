@@ -161,6 +161,23 @@ async def _mr_dependencies(version_meta: dict) -> tuple[list[dict], list[str]]:
     return required, incompatible
 
 
+def _client_renderer(slug: str | None, required_by: str | None,
+                     warnings: list[str]) -> bool:
+    """Sodium, Embeddium, Oculus: never added to a server as a dependency.
+    True when this one is skipped (the warning says why)."""
+    from app.clientscan import never_on_server
+    name = never_on_server(slug=slug)
+    if not name:
+        return False
+    if required_by:
+        warnings.append(f"{required_by} requires {name}, which only runs on a client -- "
+                        f"{name} is not installed, and {required_by} will not run on a "
+                        "server without it.")
+        return True
+    warnings.append(f"{name} only runs on a client; on a server it does nothing.")
+    return False
+
+
 async def resolve(
     *, source: str, project_id: str | int, file_id: str | int,
     mc_version: str, loader: str, installed: dict,
@@ -208,6 +225,8 @@ async def resolve(
                     )
                     return
                 project = await curseforge.get_mod(int(pid))
+                if _client_renderer(project.get("slug"), required_by, warnings):
+                    return
                 entry = {
                     "source": "curseforge",
                     "project_id": int(pid),
@@ -262,6 +281,8 @@ async def resolve(
                     )
                     return
                 project = await modrinth.get_project(str(pid)) or {}
+                if _client_renderer(project.get("slug"), required_by, warnings):
+                    return
                 entry = {
                     "source": "modrinth",
                     "project_id": version.get("mod_id") or pid,
