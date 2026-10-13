@@ -337,6 +337,9 @@ class DockerRunning(Running):
         self.name = name
         self.writer = writer
         self.reader_task = reader_task
+        # The previous reading's (container CPU, host CPU) totals: CPU use is
+        # the change between two readings.
+        self._cpu_before: tuple[int, int] | None = None
 
     async def send(self, line: str) -> None:
         self.writer.write((line.rstrip("\n") + "\n").encode())
@@ -370,23 +373,31 @@ class DockerRunning(Running):
             await c.post(f"/containers/{self.name}/kill")
 
     async def stats(self) -> dict:
-        async with _docker_client(self.rt.cfg) as c:
-            r = await c.get(f"/containers/{self.name}/stats", params={"stream": "false"})
+        """One quick reading. `one-shot`: without it Docker waits for a second
+        sample of its own, 1-2 s per call. CPU is the change since this
+        server's previous reading, so the first one after a start has none."""
+        async with _docker_client(self.rt.cfg, 15) as c:
+            r = await c.get(f"/containers/{self.name}/stats",
+                            params={"stream": "false", "one-shot": "true"})
             if r.status_code >= 400:
                 return {}
             s = r.json()
+        return self._reading(s)
+
+    def _reading(self, s: dict) -> dict:
         cpu = s.get("cpu_stats") or {}
-        pre = s.get("precpu_stats") or {}
-        delta = (cpu.get("cpu_usage", {}).get("total_usage", 0)
-                 - pre.get("cpu_usage", {}).get("total_usage", 0))
-        system = cpu.get("system_cpu_usage", 0) - pre.get("system_cpu_usage", 0)
+        total = int(cpu.get("cpu_usage", {}).get("total_usage", 0) or 0)
+        system = int(cpu.get("system_cpu_usage", 0) or 0)
         cores = cpu.get("online_cpus") or len(cpu.get("cpu_usage", {})
                                               .get("percpu_usage") or []) or 1
+        before, self._cpu_before = self._cpu_before, (total, system)
+        pct = None
+        if before and system > before[1] and total >= before[0]:
+            pct = round((total - before[0]) / (system - before[1]) * cores * 100, 1)
         mem = s.get("memory_stats") or {}
         used = mem.get("usage", 0) - (mem.get("stats") or {}).get("inactive_file", 0)
         limit = mem.get("limit") or 1
-        return {"cpu": round(delta / system * cores * 100, 1) if system > 0 else 0.0,
-                "mem": int(used), "mem_percent": round(used / limit * 100, 1)}
+        return {"cpu": pct, "mem": int(used), "mem_percent": round(used / limit * 100, 1)}
 
 
 class DockerRuntime:
@@ -576,6 +587,7 @@ class ProcessRunning(Running):
     def __init__(self, proc: asyncio.subprocess.Process, task):
         self.proc = proc
         self.task = task
+        self._ps = None
 
     async def send(self, line: str) -> None:
         if self.proc.stdin is None or self.proc.returncode is not None:
@@ -598,12 +610,17 @@ class ProcessRunning(Running):
             self.proc.kill()
 
     async def stats(self) -> dict:
+        return await asyncio.to_thread(self._reading)
+
+    def _reading(self) -> dict:
+        """CPU since the previous reading (no blocking interval), and memory."""
         try:
             import psutil
-            p = psutil.Process(self.proc.pid)
+            if self._ps is None:
+                self._ps = psutil.Process(self.proc.pid)
+            p = self._ps
             mem = sum(c.memory_info().rss for c in [p, *p.children(recursive=True)])
-            cpu = p.cpu_percent(interval=0.1)
-            return {"cpu": cpu, "mem": mem, "mem_percent": None}
+            return {"cpu": p.cpu_percent(None), "mem": mem, "mem_percent": None}
         except Exception:       # noqa: BLE001
             return {}
 

@@ -5,6 +5,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
 
   * file work (copy, delete, extract, compress, a tree walk) runs off the
     event loop, and quick work never queues behind heavy work (6.1);
+  * CPU and memory come from a background sampler: no request waits on
+    Docker's stats, and GET /v1/stats answers for every server at once (6.2);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -104,6 +106,40 @@ class LoopProbe:
         self._task.cancel()
 
 
+FAKE_SERVER = r'''
+import sys, time
+def say(msg):
+    print(time.strftime("[%H:%M:%S]") + " [Server thread/INFO]: " + msg, flush=True)
+say("Starting minecraft server version fake-1.0")
+say('Done (0.05s)! For help, type "help"')
+for line in sys.stdin:
+    line = line.strip()
+    if line == "stop":
+        say("Stopping the server")
+        sys.exit(0)
+    say("ran: " + line)
+'''
+
+
+async def until(pred, seconds=10.0, every=0.05):
+    end = time.time() + seconds
+    while time.time() < end:
+        if await pred() if asyncio.iscoroutinefunction(pred) else pred():
+            return True
+        await asyncio.sleep(every)
+    return False
+
+
+async def fake_server(a: Agent, sid: str, port: int, **spec) -> None:
+    """A tiny stand-in that behaves like a Minecraft console, created on `a`."""
+    script = TMP / "fake_server.py"
+    script.write_text(FAKE_SERVER, encoding="utf-8")
+    r = await a.client.put(f"/v1/servers/{sid}", json={
+        "name": spec.pop("name", sid[:8]), "port": port,
+        "execution_command": f"{sys.executable} -u {script}", **spec})
+    assert r.status_code == 200, r.text
+
+
 # --- 6.1 file work off the event loop ---------------------------------------------
 
 
@@ -176,8 +212,95 @@ async def test_file_ops_off_loop():
               r.status_code == 400, r.text)
 
 
+# --- 6.2 stats from a sampler ------------------------------------------------------
+
+
+async def test_stats_sampler():
+    section("6.2 CPU and memory come from a sampler, not from each request")
+    from agent import containers
+
+    # The Docker reading: one-shot, and CPU from two readings of our own.
+    seen = []
+    readings = iter([
+        {"cpu_stats": {"cpu_usage": {"total_usage": 1_000_000_000},
+                       "system_cpu_usage": 10_000_000_000, "online_cpus": 4},
+         "memory_stats": {"usage": 600 * 2**20, "limit": 1024 * 2**20,
+                          "stats": {"inactive_file": 88 * 2**20}}},
+        {"cpu_stats": {"cpu_usage": {"total_usage": 3_000_000_000},
+                       "system_cpu_usage": 14_000_000_000, "online_cpus": 4},
+         "memory_stats": {"usage": 600 * 2**20, "limit": 1024 * 2**20}},
+    ])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, json=next(readings))
+
+    real_client = containers._docker_client
+    containers._docker_client = lambda cfg, timeout=60: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://docker")
+    try:
+        cfg = process_cfg("dockerstats")
+        run = containers.DockerRunning(containers.DockerRuntime(cfg), "bf-x", None, None)
+        first = await run.stats()
+        second = await run.stats()
+    finally:
+        containers._docker_client = real_client
+    check("Docker is asked for a one-shot reading (no 1-2 s wait for its own second sample)",
+          all(u.params.get("one-shot") == "true" and u.params.get("stream") == "false"
+              for u in seen), [str(u) for u in seen])
+    check("the first reading after a start has memory but no CPU yet",
+          first["cpu"] is None and first["mem"] == 512 * 2**20, first)
+    check("the next one has CPU, from the change between the two (2 of 4 cores = 200)",
+          second["cpu"] == 200.0, second)
+
+    sid = "bbbbbbbb-0000-0000-0000-000000000001"
+    other = "bbbbbbbb-0000-0000-0000-000000000002"
+    async with Agent(process_cfg("stats")) as a:
+        c = a.client
+        await fake_server(a, sid, 30011, name="sampled")
+        await fake_server(a, other, 30012, name="idle")
+        r = await c.post(f"/v1/servers/{sid}/power", json={"action": "start"})
+        assert r.status_code == 200, r.text
+        await until(lambda: a.sup.servers[sid].state == "running")
+        await a.sup.sample()
+        r = await c.get("/v1/stats")
+        body = r.json()["servers"]
+        check("GET /v1/stats answers for every server on the node in one call",
+              r.status_code == 200 and set(body) == {sid, other}, list(body))
+        check("...with the running one's sampled memory and the stopped one's state",
+              body[sid]["running"] and body[sid].get("mem", 0) > 0
+              and body[sid].get("sampled_at") and not body[other]["running"]
+              and body[other]["state"] == "offline", body)
+
+        srv = a.sup.servers[sid]
+        real_stats = srv.running.stats
+
+        async def stuck():
+            await asyncio.sleep(3)
+            return {}
+        srv.running.stats = stuck
+        t0 = time.perf_counter()
+        r = await c.get(f"/v1/servers/{sid}")
+        one_s = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        r2 = await c.get("/v1/stats")
+        all_s = time.perf_counter() - t0
+        check("GET /v1/servers/{id} never waits on a stats call",
+              r.status_code == 200 and one_s < 0.2 and r.json()["stats"].get("mem"),
+              f"{one_s:.3f}s")
+        check("...nor does GET /v1/stats", r2.status_code == 200 and all_s < 0.2,
+              f"{all_s:.3f}s")
+        srv.running.stats = real_stats
+        await c.post(f"/v1/servers/{sid}/power", json={"action": "stop"})
+        await until(lambda: a.sup.servers[sid].running is None)
+        await a.sup.sample()
+        check("a stopped server's last reading is dropped",
+              sid not in a.sup.samples and "mem" not in (await a.sup.stats(sid)))
+
+
 async def main():
     await test_file_ops_off_loop()
+    await test_stats_sampler()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)

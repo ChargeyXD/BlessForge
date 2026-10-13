@@ -36,7 +36,7 @@ from agent import auth, files
 from agent.config import AgentConfig, load
 from agent.containers import RuntimeError_, runtime_for
 from agent.events import Events
-from agent.servers import Supervisor, check_uuid
+from agent.servers import SAMPLE_EVERY, Supervisor, check_uuid
 
 log = logging.getLogger("blessforge.agent")
 
@@ -77,6 +77,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                      tokens=auth.BrowserTokens(c.panel_public_key, c.node_id))
         tasks = [asyncio.create_task(events.run()),
                  asyncio.create_task(sup.watch_disks()),
+                 asyncio.create_task(sup.sample_loop()),
                  asyncio.create_task(_stats_loop(sup, events)),
                  asyncio.create_task(_reconcile(c, sup, events))]
         events.emit("agent_started", version=VERSION)
@@ -158,6 +159,18 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     @app.get("/v1/servers")
     async def list_servers():
         return {"items": [sup().describe(s) for s in sup().servers.values()]}
+
+    @app.get("/v1/stats")
+    async def all_stats():
+        """Every server's state, players, CPU and memory in one call, from the
+        sampler's last reading -- what the fleet view asks for, once per node."""
+        out = {}
+        for uuid in list(sup().servers):
+            try:
+                out[uuid] = await sup().stats(uuid)
+            except RuntimeError_:
+                continue        # deleted while this was answering
+        return {"servers": out, "sample_every": SAMPLE_EVERY}
 
     @app.get("/v1/servers/{uuid}")
     async def get_server(uuid: str):

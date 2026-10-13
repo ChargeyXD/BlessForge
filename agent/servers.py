@@ -58,6 +58,10 @@ _LIST = re.compile(r"There are (\d+) ?(?:of a max(?: of)? (\d+)|/ ?(\d+)) player
 _LIST_NAMES = re.compile(r"\]:\s*(.*)$")
 _PLAYER = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 PING_EVERY = 30        # seconds between server list pings
+# How often the sampler reads every running server's CPU and memory. Requests
+# read its last reading; none of them waits on Docker.
+SAMPLE_EVERY = 5
+SAMPLE_TIMEOUT = 10
 LIST_EVERY = 120       # the most often `list` is sent to settle a disagreement
 
 
@@ -140,6 +144,8 @@ class Supervisor:
         self.servers: dict[str, Server] = {}
         self.installs: dict[str, dict] = {}
         self.specs_dir = cfg.state_dir / "servers"
+        # The sampler's latest CPU and memory reading per running server.
+        self.samples: dict[str, dict] = {}
 
     # --- desired state -----------------------------------------------------------
 
@@ -298,6 +304,7 @@ class Supervisor:
     async def _exited(self, srv: Server, code: int | None, info: dict | None = None) -> None:
         srv.running = None
         srv.started_at = None
+        self.samples.pop(srv.uuid, None)
         srv.clear_players()
         oom = bool((info or {}).get("oom"))
         srv.last_exit = {"code": code, "oom": oom, "at": time.time(), "asked": srv.stopping}
@@ -425,13 +432,44 @@ class Supervisor:
             except Exception:       # noqa: BLE001
                 pass
 
-    async def stats(self, uuid: str) -> dict:
-        srv = self.get(uuid)
-        if srv.running is not None:
+    # --- the sampler ------------------------------------------------------------
+
+    async def sample_loop(self) -> None:
+        while True:
+            try:
+                await self.sample()
+            except Exception as e:      # noqa: BLE001 -- the next pass tries again
+                log.warning("stats sampler: %s", e)
+            await asyncio.sleep(SAMPLE_EVERY)
+
+    async def sample(self) -> None:
+        """One pass: every running server's CPU and memory, read at once, and
+        its players checked against a ping. A reading that takes too long is
+        skipped, so one stuck container cannot hold up the rest."""
+        async def one(srv: Server) -> None:
+            running = srv.running
             try:
                 await self._reconcile_players(srv)
-            except Exception:       # noqa: BLE001 -- stats must still answer
+            except Exception:       # noqa: BLE001 -- the reading still counts
                 pass
+            try:
+                got = await asyncio.wait_for(running.stats(), SAMPLE_TIMEOUT)
+            except Exception:       # noqa: BLE001
+                return
+            if srv.running is running and got:
+                self.samples[srv.uuid] = {**got, "sampled_at": time.time()}
+
+        running = [s for s in self.servers.values() if s.running is not None]
+        await asyncio.gather(*(one(s) for s in running))
+        for uuid in list(self.samples):
+            srv = self.servers.get(uuid)
+            if srv is None or srv.running is None:
+                self.samples.pop(uuid, None)
+
+    async def stats(self, uuid: str) -> dict:
+        """What the panel shows for one server: never waits on Docker -- the
+        CPU and memory are the sampler's last reading."""
+        srv = self.get(uuid)
         ping = srv.ping or {}
         online = (len(srv.players) if not ping or ping.get("stale")
                   else ping.get("online", len(srv.players)))
@@ -447,7 +485,7 @@ class Supervisor:
                                "version": (srv.ping or {}).get("version"),
                                "last_exit": srv.last_exit}
         if srv.running is not None:
-            out.update(await srv.running.stats())
+            out.update(self.samples.get(uuid) or {})
         if out.get("cpu") is not None:
             # The runtimes count 100 per busy core; the panel shows a share
             # with "busy" at 60 and "straining" at 85. Raw, a 2-core server

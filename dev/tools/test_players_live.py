@@ -56,7 +56,14 @@ def supervisor():
     srv.state = "running"
     srv.running = FakeRunning()
     sup.servers = {UUID: srv}
+    sup.samples = {}
     return sup, srv
+
+
+async def look(sup):
+    """What a panel sees after the sampler's next pass."""
+    await sup.sample()
+    return await sup.stats(UUID)
 
 
 def line(text):
@@ -90,7 +97,7 @@ async def main():
     # --- the ping --------------------------------------------------------------------------
     sup, srv = supervisor()
     pings.append({"online": 1, "max": 20, "sample": ["Sakura"], "version": "1.20.1"})
-    st = await sup.stats(UUID)
+    st = await look(sup)
     check("a ping finds a player the log never showed, and names the version",
           st["online"] == 1 and st["players"] == ["Sakura"] and st["max"] == 20
           and st["version"] == "1.20.1" and st["player_source"] == "ping", st)
@@ -101,25 +108,25 @@ async def main():
 
     sup._track_players(srv, line("Kitsune joined the game"))
     pings.append(None)          # the server does not answer the next ping
-    st = await sup.stats(UUID)
+    st = await look(sup)
     check("a join right after a ping counts at once, not the ping's stale number",
           st["online"] == 2 and sorted(st["players"]) == ["Kitsune", "Sakura"], st)
     check("...keeping the slots and version the ping knew", st["max"] == 20
           and st["version"] == "1.20.1", st)
     srv.pinged_at = 0       # thirty seconds on
     pings.append({"online": 2, "max": 20, "sample": ["Kitsune", "Sakura"], "version": "1.20.1"})
-    st = await sup.stats(UUID)
+    st = await look(sup)
     check("...and when the next ping agrees, the list is confirmed by the server",
           st["online"] == 2 and st["player_source"] == "ping", st)
 
     sup, srv = supervisor()
     pings.append({"online": 3, "max": 20, "sample": [], "version": "1.20.1"})
-    await sup.stats(UUID)
+    await look(sup)
     check("a ping that names nobody (hidden sample) asks `list` to name them",
           srv.running.sent == ["list"], srv.running.sent)
     srv.pinged_at = 0
     pings.append({"online": 3, "max": 20, "sample": [], "version": "1.20.1"})
-    await sup.stats(UUID)
+    await look(sup)
     check("...but not again within two minutes", srv.running.sent == ["list"],
           srv.running.sent)
 
