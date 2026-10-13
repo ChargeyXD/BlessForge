@@ -78,7 +78,11 @@ a new token.
 Linux, Docker, WireGuard to the control plane. `agent/systemd/` has the unit
 (with the install steps in its header) and `agent/images/` the runtime images:
 one per Java major — 8, 17, 21 and 25 (Minecraft 26.x requires Java 25) —
-built with `agent/images/build.sh`.
+published by CI as `ghcr.io/chargeyxd/blessforge-runtime:javaN`. The agent
+pulls the ones its servers use in the background when it starts, and builds
+one itself from `agent/images/` when it cannot pull it (the server's console
+says "Preparing Java 21 (first time only)" while a start waits on that);
+`agent/images/build.sh` builds all four.
 
 ## Tests
 

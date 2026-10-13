@@ -296,8 +296,9 @@ services:
   #
   # It is the one container given the Docker socket -- that is how it creates
   # game containers -- and it runs as uid 1000 with only the socket's group.
-  # Runtime images (one per Java version) are pulled, or built here from the
-  # Dockerfile the agent ships with when they cannot be.
+  # Runtime images (one per Java version) are pulled when it starts, for the
+  # versions its servers use, or built here from the Dockerfile the agent
+  # ships with when they cannot be.
   #
   # PORTS: there is no `ports:` range here, and there should not be. Crafty
   # runs every server inside its one container, so it has to publish a whole

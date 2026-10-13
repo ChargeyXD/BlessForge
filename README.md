@@ -576,9 +576,11 @@ it, because losing it means registering every node again.
    for nodes yet — the admin views are WP-08). The answer holds the node's
    agent config, **once** — it contains the node's token.
 2. On the node (Linux, Docker, WireGuard to the control plane): save that as
-   `/etc/blessforge-agent/agent.toml` (root, mode 600), install the agent
-   with the steps in `agent/systemd/blessforge-agent.service`, and build or
-   pull the runtime images (`agent/images/build.sh`: Java 8, 17, 21 and 25).
+   `/etc/blessforge-agent/agent.toml` (root, mode 600) and install the agent
+   with the steps in `agent/systemd/blessforge-agent.service`. It pulls the
+   runtime images its servers need itself (CI publishes Java 8, 17, 21 and
+   25), and builds one from `agent/images/` when it cannot pull it;
+   `agent/images/build.sh` builds all four for a registry of your own.
 3. `systemctl enable --now blessforge-agent`. The node reports in and shows
    as online; servers can now be created on it.
 

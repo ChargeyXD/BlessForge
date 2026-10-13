@@ -233,6 +233,22 @@ class Supervisor:
             except (ValueError, KeyError) as e:
                 log.warning("ignoring %s: %s", path, e)
 
+    async def prepare_images(self) -> None:
+        """Fetch the runtime image of each Java version this node's servers
+        use, in the background and one at a time, so a server's first start
+        does not wait on a pull -- or minutes on a local build. Only those
+        versions: a node of Java 21 packs never fetches Java 8. A start that
+        comes while one is fetching waits for that fetch, and says so."""
+        prepare = getattr(self.runtime, "prepare", None)
+        if prepare is None:
+            return              # the process runtime uses the node's own Java
+        for image in sorted({self.cfg.image_for(s.spec.get("java_major"))
+                             for s in self.servers.values()}):
+            try:
+                await prepare(image)
+            except Exception as e:      # noqa: BLE001 -- the start tries again, and says why
+                log.warning("could not prepare %s: %s", image, e)
+
     def folder(self, uuid: str) -> Path:
         return self.cfg.server_dir(check_uuid(uuid))
 

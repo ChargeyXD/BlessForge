@@ -35,6 +35,9 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
   * the disk watchdog walks on a thread, and walks a server far from its
     limit less often (6.7);
   * reading a server's add-on configs at start is off the loop too (6.11);
+  * the runtime images its servers use -- only those Java versions -- are
+    pulled (or built) in the background when the agent starts, and a start
+    that has to wait on one says so in its console before it waits (6.8);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1115,6 +1118,158 @@ async def test_panel_fleet():
     panel_side._stats.pop("n-fleet", None)
 
 
+# --- 6.8 runtime images ----------------------------------------------------------------
+
+
+def docker_cfg(name: str) -> AgentConfig:
+    return AgentConfig(node_id="node-test", token_id="t", token="t",
+                       panel_url="http://x", panel_public_key=PUB,
+                       servers_root=TMP / name / "servers",
+                       state_dir=TMP / name / "state", game_bind_ip="127.0.0.1")
+
+
+class FakeImages:
+    """Docker's API as far as images go, with none of the runtime images yet.
+    Containers cannot be created: a start stops there, after its image."""
+
+    def __init__(self):
+        self.calls = []
+        self.present: set[str] = set()
+        self.pullable = True
+        self.gate: asyncio.Event | None = None     # holds every pull while set
+        self.on_pull = None
+
+    def made(self, path: str) -> list[str]:
+        return [f"{q['fromImage']}:{q['tag']}" if p == "/images/create" else q["t"]
+                for _m, p, q in self.calls if p == path]
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        p, q = request.url.path, dict(request.url.params)
+        self.calls.append((request.method, p, q))
+        if request.method == "GET" and p.startswith("/images/") and p.endswith("/json"):
+            name = p[len("/images/"):-len("/json")]
+            return httpx.Response(200 if name in self.present else 404, json={})
+        if p == "/images/create":
+            if self.on_pull:
+                self.on_pull()
+            if self.gate is not None:
+                await self.gate.wait()
+            if not self.pullable:
+                return httpx.Response(500, json={"message": "denied"})
+            self.present.add(f"{q['fromImage']}:{q['tag']}")
+            return httpx.Response(200, text='{"status":"Downloaded newer image"}\n')
+        if p == "/build":
+            self.present.add(q["t"])
+            return httpx.Response(200, text='{"stream":"Successfully built"}\n')
+        if p == "/containers/create":
+            return httpx.Response(500, json={"message": "no containers in this test"})
+        return httpx.Response(404, json={"message": "no such container"})
+
+
+async def test_runtime_images():
+    section("6.8 runtime images: fetched ahead of a first start, and a wait is said")
+    import json
+    from agent import containers
+    from agent.servers import Supervisor
+    fake = FakeImages()
+    real_client = containers._docker_client
+    containers._docker_client = lambda cfg, timeout=60: httpx.AsyncClient(
+        transport=httpx.MockTransport(fake), base_url="http://docker")
+    try:
+        cfg = docker_cfg("images")
+        sup = Supervisor(cfg, containers.DockerRuntime(cfg), FakeEvents())
+        ids = [f"eeeeeeee-0000-0000-0000-00000000000{i}" for i in range(5)]
+        for sid, port, java in ((ids[0], 30041, 17), (ids[1], 30042, 21),
+                                (ids[2], 30043, None)):
+            sup.put(sid, {"name": f"java{java}", "port": port, "java_major": java,
+                          "execution_command": "java -jar server.jar"})
+        await sup.prepare_images()
+        check("the startup pre-pull fetches only the Java versions its servers use "
+              "(17, and 21 for the one that names none -- not 8 or 25), each once",
+              sorted(fake.made("/images/create")) == sorted([cfg.images[17], cfg.images[21]])
+              and not fake.made("/build"), fake.made("/images/create"))
+
+        fake.calls.clear()
+        fake.pullable = False
+        sup.put(ids[3], {"name": "legacy", "port": 30044, "java_major": 8,
+                         "execution_command": "java -jar server.jar"})
+        await sup.prepare_images()
+        builds = [q for _m, p, q in fake.calls if p == "/build"]
+        check("...one it cannot pull it builds from the agent's own Dockerfile instead",
+              fake.made("/images/create") == [cfg.images[8]] and len(builds) == 1
+              and builds[0]["t"] == cfg.images[8]
+              and json.loads(builds[0]["buildargs"]) == {"JAVA": "8"}, builds)
+        fake.calls.clear()
+        await sup.prepare_images()
+        check("...and a second pass fetches nothing",
+              not fake.made("/images/create") and not fake.made("/build"), fake.calls)
+
+        # A start whose image is missing says so before the pull starts.
+        fake.pullable = True
+        sup.put(ids[4], {"name": "newest", "port": 30045, "java_major": 25,
+                         "execution_command": "java -jar server.jar"})
+        srv = sup.servers[ids[4]]
+        at_pull = []
+        fake.on_pull = lambda: at_pull.append(list(srv.console.lines))
+        try:
+            await sup.power(ids[4], "start")
+        except containers.RuntimeError_:
+            pass                        # this fake Docker creates no containers
+        fake.on_pull = None
+        line = "[BlessForge] Preparing Java 25 (first time only)"
+        check("a start that has to fetch its image says \"Preparing Java 25 (first time "
+              "only)\" in its console before the pull begins",
+              at_pull and line in at_pull[0] and fake.made("/images/create") == [cfg.images[25]],
+              at_pull)
+        check("...after its \"Starting\" line, so the console reads in order",
+              [ln for ln in srv.console.lines if ln.startswith("[BlessForge]")][:2]
+              == ["[BlessForge] Starting newest", line], list(srv.console.lines))
+        try:
+            await sup.power(ids[1], "start")
+        except containers.RuntimeError_:
+            pass
+        check("a start whose image is already here says nothing about it",
+              not any("Preparing" in ln for ln in sup.servers[ids[1]].console.lines),
+              list(sup.servers[ids[1]].console.lines))
+
+        # A start while the pre-pull is fetching its image waits for that pull.
+        fake.present.discard(cfg.images[17])
+        fake.calls.clear()
+        fake.gate = asyncio.Event()
+        pre = asyncio.create_task(sup.prepare_images())
+        await until(lambda: fake.made("/images/create"))
+        start = asyncio.create_task(sup.power(ids[0], "start"))
+        said = await until(lambda: any("Preparing Java 17" in ln
+                                       for ln in sup.servers[ids[0]].console.lines))
+        await asyncio.sleep(0.1)
+        check("a start during the pre-pull of its image says so at once, and waits "
+              "for that pull rather than starting another",
+              said and not start.done() and fake.made("/images/create") == [cfg.images[17]],
+              fake.made("/images/create"))
+        fake.gate.set()
+        fake.gate = None
+        await pre
+        try:
+            await start
+        except containers.RuntimeError_:
+            pass
+        check("...then carries on with it: one pull in all",
+              fake.made("/images/create") == [cfg.images[17]]
+              and any(p == "/containers/create" for _m, p, _q in fake.calls),
+              fake.made("/images/create"))
+
+        # The loader installer waits on its image the same way.
+        fake.present.discard(cfg.images[17])
+        job = sup.start_install(ids[0], {"run": ["java", "-jar", "installer.jar"],
+                                         "java_major": 17})
+        await until(lambda: sup.installs[job]["status"] in ("done", "error"))
+        out = sup.installs[job]["output"]
+        check("...and so does an install's loader installer, in the install's output",
+              "preparing Java 17 (first time only)" in out, out)
+    finally:
+        containers._docker_client = real_client
+
+
 # --- 7.7 bounded queues, counted drops ----------------------------------------------------
 
 
@@ -1252,6 +1407,7 @@ async def main():
     await test_ping_target()
     await test_disk_watchdog()
     await test_addons_off_loop()
+    await test_runtime_images()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

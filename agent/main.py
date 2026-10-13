@@ -16,7 +16,8 @@ never stops a Docker server; see Supervisor.adopt_running), then asks the
 panel for the desired state of every server on this node
 (`/api/agent/servers`) and creates what is missing -- reporting, never
 deleting, what the panel does not know about. Servers marked auto-start
-that are not already running are started.
+that are not already running are started. Meanwhile the runtime image of
+each Java version its servers use is pulled (or built) in the background.
 """
 from __future__ import annotations
 
@@ -93,6 +94,9 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                  asyncio.create_task(sup.watch_disks()),
                  asyncio.create_task(sup.sample_loop()),
                  asyncio.create_task(_stats_loop(sup, events)),
+                 # The runtime images its servers use, before anybody waits
+                 # on one (and again once the panel's servers are in).
+                 asyncio.create_task(sup.prepare_images()),
                  asyncio.create_task(_reconcile(c, sup, events))]
         events.emit("agent_started", version=VERSION)
         try:
@@ -565,6 +569,8 @@ async def _reconcile(cfg: AgentConfig, sup: Supervisor, events: Events) -> None:
         except Exception as e:      # noqa: BLE001
             events.emit("drift", spec["uuid"], problem=f"could not auto-start: {e}")
     events.emit("reconciled", None, created=created, updated=updated, unknown=unknown)
+    # A node set up again from the panel had none of these specs at startup.
+    await sup.prepare_images()
 
 
 app = create_app()

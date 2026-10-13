@@ -344,6 +344,20 @@ def _docker_client(cfg: AgentConfig, timeout: float = 60) -> clients.Lent:
     return clients.Lent(clients.client(f"docker:{host}", make), timeout)
 
 
+# One pull or build per image at a time: a start that needs an image the
+# startup pre-pull is fetching waits for that fetch instead of starting a
+# second one. By event loop, like agent/clients.py's clients.
+_image_locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+
+
+def _image_lock(image: str) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    held = _image_locks.get(image)
+    if held is None or held[0] is not loop:
+        held = _image_locks[image] = (loop, asyncio.Lock())
+    return held[1]
+
+
 def _docker_time(value: str | None) -> float | None:
     """Docker's RFC 3339 time (nanoseconds, Z) as epoch seconds."""
     if not value or value.startswith("0001-"):
@@ -479,9 +493,34 @@ class DockerRuntime:
         return {"docker": v.get("Version"), "api": v.get("ApiVersion"),
                 "running_containers": len(listed)}
 
-    async def _ensure_image(self, c: clients.Lent, image: str) -> None:
+    def java_name(self, image: str) -> str:
+        """How a console names an image: "Java 21" for the Java 21 one."""
+        majors = [m for m, i in self.cfg.images.items() if i == image]
+        return f"Java {majors[0]}" if majors else image
+
+    async def prepare(self, image: str) -> None:
+        """Fetch a runtime image ahead of the first start that needs it
+        (the agent's background pre-pull, Supervisor.prepare_images)."""
+        async with _docker_client(self.cfg, 60) as c:
+            await self._ensure_image(c, image)
+
+    async def _ensure_image(self, c: clients.Lent, image: str,
+                            announce: Callable[[], None] | None = None) -> None:
+        """Have `image` on this machine: pulled, or built here when it cannot
+        be. A first pull takes a while and a local build minutes, so
+        `announce` is called once the image is known to be missing and
+        BEFORE waiting on it -- a start never hangs saying nothing."""
         if (await c.get(f"/images/{image}/json")).status_code == 200:
             return
+        if announce is not None:
+            announce()
+        async with _image_lock(image):
+            # Whoever held the lock may have just fetched it.
+            if (await c.get(f"/images/{image}/json")).status_code == 200:
+                return
+            await self._fetch_image(c, image)
+
+    async def _fetch_image(self, c: clients.Lent, image: str) -> None:
         repo, _, tag = image.rpartition(":")
         r = await c.post("/images/create", params={"fromImage": repo, "tag": tag},
                          timeout=1800)
@@ -533,7 +572,9 @@ class DockerRuntime:
             while True:
                 spec = container_spec(server, self.cfg, folder)
                 assert_safe(spec, self.cfg, folder)
-                await self._ensure_image(c, spec["Image"])
+                await self._ensure_image(c, spec["Image"], lambda: on_output(
+                    f"[BlessForge] Preparing {self.java_name(spec['Image'])} "
+                    "(first time only)"))
                 await self._recreate(c, name, spec, refuse_running=True)
                 reader, writer = await self._attach(name)
                 r = await c.post(f"/containers/{name}/start")
@@ -696,7 +737,8 @@ class DockerRuntime:
         assert_safe(spec, self.cfg, folder)
         name = self.container(server["uuid"]) + "-install"
         async with _docker_client(self.cfg, timeout + 60) as c:
-            await self._ensure_image(c, spec["Image"])
+            await self._ensure_image(c, spec["Image"], lambda: on_output(
+                f"preparing {self.java_name(spec['Image'])} (first time only)"))
             await self._recreate(c, name, spec)
             await c.post(f"/containers/{name}/start")
             try:
