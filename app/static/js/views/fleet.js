@@ -139,6 +139,8 @@ export async function render() {
           counts.attention ? 'bad' : 'ok'),
       ) : null,
 
+      ...portGroups(all),
+
       !all.length
         ? (state.health?.ready
           ? empty('fox-mascot.png', 'No servers yet',
@@ -315,9 +317,26 @@ function gauge(label, percent, text, tone = '', title = '') {
     h('span.tnum', { style: { textAlign: 'right' } }, text));
 }
 
+/* Servers sharing one port -- one address, switched between, one running
+   at a time: a line per port, saying which is up. */
+function portGroups(all) {
+  const byPort = new Map();
+  for (const s of all) {
+    if (!s.port) continue;
+    byPort.set(s.port, [...(byPort.get(s.port) || []), s]);
+  }
+  return [...byPort].filter(([, list]) => list.length > 1)
+    .sort(([a], [b]) => a - b)
+    .map(([port, list]) => h('div.note', { style: { marginBottom: '10px' } },
+      h('b', `Port ${port}: `),
+      list.map((s) => `${s.name} ${s.state === 'running' ? '● running' : '○'}`)
+        .join(', ')));
+}
+
 export async function action(s, act) {
   const verb = { start_server: 'Starting', stop_server: 'Stopping',
-    restart_server: 'Restarting', kill_server: 'Killing' }[act];
+    restart_server: 'Restarting', kill_server: 'Killing',
+    switch_server: 'Switching to' }[act];
   if (act === 'stop_server' && s.players > 0) {
     const ok = await confirmDialog({
       title: `Stop ${s.name}?`,
@@ -334,6 +353,19 @@ export async function action(s, act) {
     setTimeout(() => refreshInstances({ quiet: true }), 1200);
     setTimeout(() => refreshInstances({ quiet: true }), 5000);
   } catch (e) {
+    // Another server holds the port: offer to switch rather than only fail.
+    const other = e?.body?.conflict;
+    if (e?.status === 409 && other && act !== 'switch_server') {
+      const ok = await confirmDialog({
+        title: `Switch to ${s.name}?`,
+        message: `${other.name} is running on port ${other.port}, which ${s.name} `
+          + `uses too. Switching stops ${other.name} the normal way (it saves `
+          + `its world) and then starts ${s.name}.`,
+        confirmLabel: 'Switch to this server',
+      });
+      if (ok) await action(s, 'switch_server');
+      return;
+    }
     toastError(e, `Could not ${act.split('_')[0]} ${s.name}`);
   }
 }

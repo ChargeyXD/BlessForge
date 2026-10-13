@@ -109,11 +109,12 @@ class AgentEngine:
                               503)
         if r.status_code >= 400:
             try:
-                detail = r.json().get("detail")
+                body = r.json()
+                detail = body.get("detail")
             except ValueError:
-                detail = r.text[:300]
+                body, detail = None, r.text[:300]
             raise EngineError(str(detail or f"node {self.node_id} answered {r.status_code}"),
-                              r.status_code, detail)
+                              r.status_code, body if isinstance(body, dict) else detail)
         if not r.content:
             return None
         ctype = r.headers.get("content-type", "")
@@ -155,10 +156,8 @@ class AgentEngine:
                             limits: dict | None = None) -> str:
         sid = server_id or str(uuidlib.uuid4())
         async with db.session() as s:
-            clash = (await s.execute(select(Server).where(
-                Server.node_id == self.node_id, Server.port == int(port)))).first()
-            if clash:
-                raise EngineError(f"port {port} is already taken on node {self.node_id}", 409)
+            # Servers may share a port (one runs at a time; the node checks
+            # at start), so a port in use is not refused here.
             row = Server(uuid=sid, kind="personal", node_id=self.node_id,
                          name=name[:120], port=int(port), template=loader or "",
                          mc_version=mc_version or "",
@@ -198,6 +197,17 @@ class AgentEngine:
     async def update_server(self, server_id: str, fields: dict) -> None:
         async with db.session() as s:
             row = await self._row(s, server_id)
+            port = int(fields.get("server_port") or row.port)
+            if fields.get("auto_start") or (row.auto_start and "server_port" in fields):
+                other = (await s.execute(select(Server).where(
+                    Server.node_id == self.node_id, Server.port == port,
+                    Server.uuid != server_id, Server.auto_start.is_(True)))).scalars().first()
+                if other is not None:
+                    raise EngineError(
+                        f"{other.name} already starts by itself on port {port}; only one "
+                        "server on a port can.", 409,
+                        {"conflict": {"server": other.uuid, "name": other.name,
+                                      "port": port}})
             for key, value in fields.items():
                 if key in _FIELD_COLUMNS:
                     setattr(row, _FIELD_COLUMNS[key],

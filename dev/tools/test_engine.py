@@ -117,8 +117,19 @@ async def main():
                                     mc_version="1.21.1")
     check("a new server records the Java its version needs",
           (await engine.get_server(s1))["java_major"] == 21)
-    check("a port already taken on the node is refused",
-          await refused(engine.create_server(name="Dup", port=25572, memory_mb=1), 409))
+    dup = await engine.create_server(name="Dup", port=25572, memory_mb=1024)
+    check("two servers may share a port (one runs at a time)",
+          (await engine.get_server(dup))["server_port"] == 25572)
+    await engine.update_server(s1, {"auto_start": True})
+    check("...but only one of them may start by itself",
+          await refused(engine.update_server(dup, {"auto_start": True}), 409))
+    from app import properties
+    moved = await properties.set_port(dup, 25572)
+    check("setting a port another server uses warns rather than refuses",
+          any("Also used by Files (only one can run at a time)" in w
+              for w in moved["warnings"]), moved["warnings"])
+    await engine.update_server(s1, {"auto_start": False})
+    await engine.delete_server(dup)
     for bad in ("../etc/passwd", "/etc/passwd", "a/../../b", "x\x00y", "C:/Windows"):
         check(f"a path outside the folder is refused: {bad!r}",
               await refused(engine.read_file(s1, bad), 400))

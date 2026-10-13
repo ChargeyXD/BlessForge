@@ -68,7 +68,9 @@ EULA_ACCEPTED = "eula=true\n"
 
 # What `power` accepts. The `_server` spellings are the ones the HTTP API has
 # always taken from the front end, so they are accepted and normalised.
-POWER_ACTIONS = ("start", "stop", "restart", "kill")
+# "switch": stop whichever server on the node holds this one's port, then
+# start this one (servers may share a port; one runs at a time).
+POWER_ACTIONS = ("start", "stop", "restart", "kill", "switch")
 
 
 def power_action(action: str) -> str:

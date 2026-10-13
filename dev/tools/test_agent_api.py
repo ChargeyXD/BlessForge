@@ -315,6 +315,26 @@ async def main():
         check("stats come from the node: running, with the player who joined",
               stats.get("running") and stats.get("online") == 1, stats)
 
+        # --- two servers on one port: one at a time, and a switch -----------------------------
+        port = (await eng.get_server(sid))["server_port"]
+        twin = await eng.create_server(name="Twin", port=port, memory_mb=1024)
+        await eng.upload_file(twin, ".", "fake_server.py", FAKE_SERVER.encode())
+        await eng.update_server(twin, {"execution_command":
+                                       f'"{sys.executable}" -u fake_server.py'})
+        r = await c.post(f"/api/instances/{twin}/action/start_server")
+        check("a second server on the same port can be made, and starting it while the "
+              "first runs is a 409 naming the first",
+              r.status_code == 409 and r.json().get("conflict", {}).get("server") == sid
+              and r.json()["conflict"].get("name") == "Agent Test", r.text[:300])
+        r = await c.post(f"/api/instances/{twin}/action/switch_server")
+        twin_up = await until(lambda: _running(c, twin), 20)
+        first_down = not (await c.get(f"/api/instances/{sid}/stats")).json().get("running")
+        check("switching stops the first and starts the second", r.status_code == 200
+              and twin_up and first_down, r.text[:200])
+        r = await c.post(f"/api/instances/{sid}/action/switch_server")
+        check("...and back", r.status_code == 200 and await until(lambda: _running(c, sid), 20))
+        await eng.delete_server(twin)
+
         # --- a token is for one server and one node -----------------------------------------
         other = await eng.create_server(name="Other", port=free_port(), memory_mb=1024)
         from app import nodes as panel_nodes

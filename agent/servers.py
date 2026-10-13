@@ -141,6 +141,9 @@ class Server:
         self.list_names_next = False
         self.restart_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
+        # The host ports it holds while it runs: the game port and its
+        # add-ons'. Servers may share a port; only one may hold it at once.
+        self.published: set[int] = set()
         # How it last ended: {"code", "oom", "at", "asked"} -- asked is True
         # when someone stopped it. Kept until the next start.
         self.last_exit: dict | None = None
@@ -191,8 +194,12 @@ class Supervisor:
             raise RuntimeError_(f"no server {uuid} on this node", 404)
         return srv
 
-    def put(self, uuid: str, spec: dict) -> dict:
-        """Create or update a server's spec. Idempotent."""
+    def put(self, uuid: str, spec: dict, *, strict: bool = True) -> dict:
+        """Create or update a server's spec. Idempotent.
+
+        `strict` False is the agent's own reconcile: a record the panel
+        already holds is never refused here (the boot picks one auto-start
+        server per port instead), or a server could drop off its node."""
         uuid = check_uuid(uuid)
         clean = {
             "uuid": uuid,
@@ -206,9 +213,17 @@ class Supervisor:
         }
         if not 1024 <= clean["port"] <= 65535:
             raise RuntimeError_("the port must be between 1024 and 65535", 400)
-        for other in self.servers.values():
-            if other.uuid != uuid and other.spec.get("port") == clean["port"]:
-                raise RuntimeError_(f"port {clean['port']} is already used on this node", 409)
+        # Several servers may share a port (one public address, switched
+        # between); one runs at a time, checked at start. Only one of them
+        # may start by itself, or which one comes up would be a race.
+        if clean["auto_start"] and strict:
+            for other in self.servers.values():
+                if (other.uuid != uuid and other.spec.get("port") == clean["port"]
+                        and other.spec.get("auto_start")):
+                    raise RuntimeError_(
+                        f"{other.spec.get('name')} already starts by itself on port "
+                        f"{clean['port']}; only one server on a port can.", 409,
+                        conflict=self._who(other, clean["port"]))
         folder = self.folder(uuid)
         folder.mkdir(parents=True, exist_ok=True)
         if hasattr(os, "chown"):
@@ -257,8 +272,36 @@ class Supervisor:
 
     # --- power ------------------------------------------------------------------
 
+    @staticmethod
+    def _who(other: "Server", port: int) -> dict:
+        return {"server": other.uuid, "name": other.spec.get("name"), "port": port,
+                "state": other.state}
+
+    def holders(self, srv: Server, ports: set[int]) -> list[tuple[Server, int]]:
+        """The other servers on this node running on any of these ports."""
+        out = []
+        for other in self.servers.values():
+            if other.uuid == srv.uuid or other.running is None:
+                continue
+            shared = ports & (other.published or {int(other.spec["port"])})
+            if shared:
+                out.append((other, min(shared)))
+        return out
+
+    def _ports_of(self, srv: Server) -> tuple[list[dict], set[int]]:
+        game_port = int(srv.spec["port"])
+        extra = addons.detect(self.folder(srv.uuid), game_port)
+        return extra, {game_port} | {int(a["port"]) for a in extra}
+
     async def power(self, uuid: str, action: str) -> dict:
         srv = self.get(uuid)
+        if action == "switch":
+            # Stop whichever server holds this one's port -- the normal stop,
+            # with its save timeout -- wait for it to exit, then start this.
+            _extra, ports = self._ports_of(srv)
+            for other, _port in self.holders(srv, ports):
+                await self.power(other.uuid, "stop")
+            action = "start"
         async with srv.lock:
             if action == "start":
                 await self._start(srv)
@@ -281,6 +324,20 @@ class Supervisor:
         if srv.state == "installing":
             raise RuntimeError_("an install is running on this server", 409)
         argv_of(srv.spec.get("execution_command") or "")      # 409 if none
+        # The ports its add-ons open (Geyser, Voice Chat, a web map), read
+        # from the folder at every start so a mod added since is picked up.
+        # Another server on this node holding one of them refuses the start,
+        # naming it -- servers may share a port, one at a time.
+        extra, ports = self._ports_of(srv)
+        held = self.holders(srv, ports)
+        if held:
+            other, port = held[0]
+            srv.console.feed(f"[BlessForge] Port {port} is in use by "
+                             f"{other.spec.get('name')}, which is running.")
+            raise RuntimeError_(
+                f"Port {port} is in use by {other.spec.get('name')}, which is running. "
+                "Only one of them can run at a time: switch to this server to stop it "
+                "and start this one.", 409, conflict=self._who(other, port))
         srv.stopping = False
         srv.last_exit = None
         srv.state = "starting"
@@ -288,10 +345,6 @@ class Supervisor:
         srv.console.feed(f"[BlessForge] Starting {srv.spec.get('name')}")
         on_output, on_exit = self._handlers(srv)
 
-        # The ports its add-ons open (Geyser, Voice Chat, a web map), read
-        # from the folder at every start so a mod added since is picked up.
-        game_port = int(srv.spec["port"])
-        extra = addons.detect(self.folder(srv.uuid), game_port)
         for a in extra:
             srv.console.feed(f"[BlessForge] Publishing {a['what']} on port "
                              f"{a['port']}/{a['proto']} "
@@ -304,6 +357,7 @@ class Supervisor:
             srv.state = "offline"
             raise
         srv.started_at = time.time()
+        srv.published = ports
         self.events.emit("status", srv.uuid, state="starting")
 
     def _handlers(self, srv: Server):

@@ -117,7 +117,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
 
     @app.exception_handler(RuntimeError_)
     async def _runtime_error(_r, e: RuntimeError_):
-        return JSONResponse({"detail": str(e)}, status_code=e.status)
+        return JSONResponse({"detail": str(e), **e.extra}, status_code=e.status)
 
     @app.exception_handler(files.JailError)
     async def _jail_error(_r, e: files.JailError):
@@ -475,7 +475,7 @@ async def _reconcile(cfg: AgentConfig, sup: Supervisor, events: Events) -> None:
     for spec in desired:
         existing = sup.servers.get(spec["uuid"])
         try:
-            sup.put(spec["uuid"], spec)
+            sup.put(spec["uuid"], spec, strict=False)
         except Exception as e:      # noqa: BLE001 -- reported, the rest continue
             events.emit("drift", spec["uuid"], problem=str(e))
             continue
@@ -483,13 +483,24 @@ async def _reconcile(cfg: AgentConfig, sup: Supervisor, events: Events) -> None:
     unknown = [u for u in sup.servers if u not in wanted]
     for uuid in unknown:
         events.emit("drift", uuid, problem="on this node but not in the panel")
-    for spec in desired:
+    # One auto-start server per port: servers may share a port, and if an
+    # older record has two marked, only the first (in a stable order) starts.
+    claimed: dict[int, str] = {s.spec["port"]: s.uuid for s in sup.servers.values()
+                               if s.running is not None}
+    for spec in sorted(desired, key=lambda d: (str(d.get("name") or ""), d["uuid"])):
         srv = sup.servers.get(spec["uuid"])
-        if srv and spec.get("auto_start") and srv.running is None:
-            try:
-                await sup.power(spec["uuid"], "start")
-            except Exception as e:      # noqa: BLE001
-                events.emit("drift", spec["uuid"], problem=f"could not auto-start: {e}")
+        if not (srv and spec.get("auto_start") and srv.running is None):
+            continue
+        port = srv.spec["port"]
+        if port in claimed:
+            events.emit("drift", spec["uuid"], problem=f"not auto-started: port {port} "
+                        "is another server's, which starts by itself or is running")
+            continue
+        claimed[port] = srv.uuid
+        try:
+            await sup.power(spec["uuid"], "start")
+        except Exception as e:      # noqa: BLE001
+            events.emit("drift", spec["uuid"], problem=f"could not auto-start: {e}")
     events.emit("reconciled", None, created=created, updated=updated, unknown=unknown)
 
 

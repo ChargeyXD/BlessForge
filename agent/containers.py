@@ -76,9 +76,12 @@ def port_in_use(docker_error: str) -> int | None:
 
 
 class RuntimeError_(Exception):
-    def __init__(self, message: str, status: int = 500):
+    def __init__(self, message: str, status: int = 500, **extra):
         super().__init__(message)
         self.status = status
+        # More for the caller than a sentence: {"conflict": {...}} on a start
+        # refused because another server holds the port.
+        self.extra = extra
 
 
 class UnsafeSpec(RuntimeError_):

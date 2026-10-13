@@ -85,6 +85,11 @@ export async function render() {
   let errors = {};
 
   const usedPorts = new Set(state.instances.map((s) => s.port).filter(Boolean));
+  const sharedWith = (port) => {
+    const names = state.instances.filter((s) => s.port === port).map((s) => s.name);
+    return names.length
+      ? `Also used by ${names.join(', ')} (only one can run at a time).` : '';
+  };
   // Offer a port nothing has claimed rather than making the user find out by
   // failing: two servers on one port is the classic silent broken server.
   while (usedPorts.has(form.port) && form.port < 25700) form.port += 1;
@@ -113,10 +118,10 @@ export async function render() {
     else if (form.name.length > 60) errors.name = 'That name is too long.';
     if (!form.minecraft) errors.minecraft = 'Pick a Minecraft version.';
     const port = Number(form.port);
+    // A port another server uses is allowed: several servers can share one
+    // address, one running at a time (the hint under the field says who).
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
       errors.port = 'A port between 1024 and 65535.';
-    } else if (usedPorts.has(port)) {
-      errors.port = 'Another server already uses that port.';
     }
     return Object.keys(errors).length === 0;
   }
@@ -296,9 +301,10 @@ export async function render() {
                     oninput: (e) => { form.port = e.target.value; },
                     onblur: () => { validate(); paint(); },
                   }),
-                  usedPorts.size
-                    ? `In use: ${[...usedPorts].sort((a, b) => a - b).join(', ')}`
-                    : 'Nothing else is using a port yet.',
+                  sharedWith(Number(form.port))
+                    || (usedPorts.size
+                      ? `In use: ${[...usedPorts].sort((a, b) => a - b).join(', ')}`
+                      : 'Nothing else is using a port yet.'),
                   errors.port),
               ),
 

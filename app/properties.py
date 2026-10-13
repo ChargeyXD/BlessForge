@@ -395,21 +395,21 @@ async def set_port(server_id: str, port: int, *, update_query: bool = True,
     if not 1024 <= port <= 65535:
         raise ValueError("port must be between 1024 and 65535")
 
+    # Servers may share a port -- one public address, switched between --
+    # so another server on it is information, not a refusal: only one of
+    # them can run at a time, and starting the other offers to switch.
+    # `force` is kept for callers; nothing is refused either way.
+    del force
     warnings: list[str] = []
-    conflicts = []
-    for other in await engine.list_servers():
-        if other.get("server_id") == server_id:
-            continue
-        if other.get("server_port") == port:
-            conflicts.append(other.get("server_name"))
-    if conflicts and not force:
-        raise ValueError(
-            f"port {port} is already used by: {', '.join(conflicts)}. "
-            "Two servers cannot share a port."
-        )
+    me = next((s for s in await engine.list_servers() if s.get("server_id") == server_id),
+              {})
+    conflicts = [other.get("server_name") for other in await engine.list_servers()
+                 if other.get("server_id") != server_id
+                 and other.get("server_port") == port
+                 and other.get("node") == me.get("node")]
     if conflicts:
         warnings.append(
-            f"Also assigned to {', '.join(conflicts)} -- only one can bind it."
+            f"Also used by {', '.join(conflicts)} (only one can run at a time)."
         )
 
     low, high = PUBLISHED_RANGE

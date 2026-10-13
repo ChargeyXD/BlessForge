@@ -158,8 +158,7 @@ class MockEngine:
         sid = server_id or uuid.uuid4().hex
         if sid in self.servers:
             raise EngineError(f"server {sid} already exists", 409)
-        if any(r.get("server_port") == port for r in self.servers.values()):
-            raise EngineError(f"port {port} is already taken on this node", 409)
+        # Servers may share a port; the agent checks at start, and so does this.
         self.servers[sid] = {
             "server_id": sid, "server_name": name, "server_port": int(port),
             "executable": "", "execution_command": "",
@@ -194,16 +193,33 @@ class MockEngine:
         if unknown:
             raise EngineError(f"cannot change {', '.join(sorted(unknown))}", 400)
         if "server_port" in fields:
-            port = int(fields["server_port"])
-            if any(r.get("server_port") == port and k != server_id
-                   for k, r in self.servers.items()):
-                raise EngineError(f"port {port} is already taken on this node", 409)
-            fields = {**fields, "server_port": port}
+            fields = {**fields, "server_port": int(fields["server_port"])}
+        port = fields.get("server_port", rec.get("server_port"))
+        if fields.get("auto_start") or (rec.get("auto_start") and "server_port" in fields):
+            for k, r in self.servers.items():
+                if k != server_id and r.get("server_port") == port and r.get("auto_start"):
+                    raise EngineError(
+                        f"{r['server_name']} already starts by itself on port {port}; "
+                        "only one server on a port can.", 409,
+                        {"conflict": {"server": k, "name": r["server_name"], "port": port}})
         rec.update(fields)
+
+    def _holder(self, server_id: str) -> str | None:
+        port = self.servers[server_id].get("server_port")
+        for k, r in self.servers.items():
+            if k != server_id and r.get("server_port") == port \
+                    and self.stats.get(k, {}).get("running"):
+                return k
+        return None
 
     async def power(self, server_id: str, action: str) -> None:
         self._record(server_id)
         action = power_action(action)
+        if action == "switch":
+            holder = self._holder(server_id)
+            if holder:
+                await self.power(holder, "stop")
+            action = "start"
         st = self.stats.setdefault(server_id, _stopped())
         if action in ("stop", "kill"):
             if st.get("running"):
@@ -215,6 +231,16 @@ class MockEngine:
             self._log(server_id, "Stopping the server")
         if not self.servers[server_id].get("execution_command"):
             raise EngineError("this server has no startup command yet", 409)
+        holder = self._holder(server_id)
+        if holder and not st.get("running"):
+            other = self.servers[holder]
+            port = other["server_port"]
+            raise EngineError(
+                f"Port {port} is in use by {other['server_name']}, which is running. "
+                "Only one of them can run at a time: switch to this server to stop it "
+                "and start this one.", 409,
+                {"detail": "", "conflict": {"server": holder, "name": other["server_name"],
+                                            "port": port}})
         self._log(server_id, "Starting minecraft server")
         self._log(server_id, 'Done (1.042s)! For help, type "help"')
         # A real server starts logs/latest.log afresh on every boot, and the

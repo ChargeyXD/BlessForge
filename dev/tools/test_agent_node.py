@@ -14,6 +14,9 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
   * the console is numbered, so a follower asks only for what is new even
     once the ring is full, and the panel's relay follows each server once
     for every viewer (2; the end-to-end relay is in test_agent_api.py);
+  * several servers share a port, one running at a time: a start while
+    another holds it is refused naming it, and a switch stops that one
+    through its own stop and starts this one (5);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -694,12 +697,88 @@ async def test_console():
         await hub.close()
 
 
+# --- 5. several servers on one port, switched between ----------------------------------
+
+
+async def test_shared_port():
+    section("5. several servers on one port, one running at a time")
+    a_id, b_id, c_id = ("ffffffff-0000-0000-0000-00000000000a",
+                        "ffffffff-0000-0000-0000-00000000000b",
+                        "ffffffff-0000-0000-0000-00000000000c")
+    async with Agent(process_cfg("shared")) as a:
+        c = a.client
+        await fake_server(a, a_id, 30051, name="Survival", auto_start=True)
+        await fake_server(a, b_id, 30051, name="Creative")
+        check("two specs on one port can be saved",
+              a.sup.servers[a_id].spec["port"] == a.sup.servers[b_id].spec["port"] == 30051)
+        script = TMP / "fake_server.py"
+        r = await c.put(f"/v1/servers/{c_id}", json={
+            "name": "Skyblock", "port": 30051, "auto_start": True,
+            "execution_command": f"{sys.executable} -u {script}"})
+        check("a second server that starts by itself on the same port is refused, naming "
+              "the first", r.status_code == 409
+              and r.json().get("conflict", {}).get("server") == a_id, r.text)
+
+        await c.post(f"/v1/servers/{a_id}/power", json={"action": "start"})
+        await until(lambda: a.sup.servers[a_id].state == "running")
+        r = await c.post(f"/v1/servers/{b_id}/power", json={"action": "start"})
+        conflict = r.json().get("conflict") or {}
+        check("starting B while A runs gives a 409 naming A, its name and the port",
+              r.status_code == 409 and conflict.get("server") == a_id
+              and conflict.get("name") == "Survival" and conflict.get("port") == 30051,
+              r.text)
+        check("...and B is not left half-started",
+              a.sup.servers[b_id].running is None and a.sup.servers[b_id].state == "offline")
+        r = await c.post(f"/v1/servers/{b_id}/power", json={"action": "switch"})
+        sa, sb = a.sup.servers[a_id], a.sup.servers[b_id]
+        await until(lambda: sb.state == "running")
+        check("switching stops A through its own stop (it saved and exited 0)",
+              r.status_code == 200 and sa.running is None
+              and (sa.last_exit or {}).get("asked") and (sa.last_exit or {}).get("code") == 0
+              and any("Stopping the server" in ln for ln in sa.console.lines),
+              sa.last_exit)
+        check("...then starts B", sb.running is not None and sb.state == "running")
+        r = await c.get(f"/v1/servers/{a_id}")
+        check("status comes from the agent's own state, not a ping of the port",
+              r.json()["state"] == "offline" and (await c.get(f"/v1/servers/{b_id}"))
+              .json()["state"] == "running")
+        await c.post(f"/v1/servers/{b_id}/power", json={"action": "stop"})
+        await until(lambda: sb.running is None)
+
+    # On the agent's boot only one auto-start server per port starts, even
+    # when an older record has two marked.
+    from agent.events import Events
+    from agent.main import _reconcile
+    from agent.servers import Supervisor
+    cfg = process_cfg("shared-boot")
+    desired = [{"uuid": u, "name": n, "port": 30061, "auto_start": True,
+                "execution_command": "java -jar server.jar"}
+               for u, n in ((a_id, "Survival"), (b_id, "Creative"))]
+
+    def panel(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"servers": desired})
+
+    events = Events(cfg)
+    events.panel = lambda: httpx.AsyncClient(transport=httpx.MockTransport(panel))
+    runtime = FakeDocker({})
+    sup = Supervisor(cfg, runtime, events)
+    await _reconcile(cfg, sup, events)
+    drift = [e for e in events.queue if e["type"] == "drift"]
+    check("on boot only one auto-start server per port starts; the other is reported",
+          len(runtime.started) == 1 and sup.servers[b_id].running is not None
+          and sup.servers[a_id].running is None
+          and any(e["server"] == a_id and "30061" in e["problem"] for e in drift),
+          (len(runtime.started), drift))
+    check("...and both records stay on the node", set(sup.servers) == {a_id, b_id})
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
     await test_shared_clients()
     await test_readopt()
     await test_console()
+    await test_shared_port()
     if LIVE:
         await test_readopt_live()
     else:

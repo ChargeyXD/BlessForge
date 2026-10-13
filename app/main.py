@@ -633,7 +633,8 @@ async def instance_stats(server_id: str) -> dict:
 
 @app.post("/api/instances/{server_id}/action/{action}")
 async def instance_action(server_id: str, action: str) -> dict:
-    allowed = {"start_server", "stop_server", "restart_server", "kill_server"}
+    allowed = {"start_server", "stop_server", "restart_server", "kill_server",
+               "switch_server"}
     if action not in allowed:
         raise HTTPException(400, f"action must be one of {sorted(allowed)}")
 
@@ -650,7 +651,7 @@ async def instance_action(server_id: str, action: str) -> dict:
             pass          # if stats are unreadable, let the start try anyway
 
     prepared: dict = {}
-    if action in ("start_server", "restart_server"):
+    if action in ("start_server", "restart_server", "switch_server"):
         # Re-assert the runtime the Minecraft version needs, so a server
         # whose record lost it (an import, a hand edit) still starts on the
         # right Java, and make sure the EULA is accepted in a form every
@@ -663,6 +664,13 @@ async def instance_action(server_id: str, action: str) -> dict:
                 "why": ("This server was already marked as running, so it "
                         "was restarted rather than started -- a plain start "
                         "would have been ignored.") if upgraded else None}
+    except engine.EngineError as e:
+        # Another server holds the port: say which, so the page can offer
+        # "Switch to this server" rather than only an error.
+        if isinstance(e.body, dict) and e.body.get("conflict"):
+            return JSONResponse({"detail": str(e), "conflict": e.body["conflict"]},
+                                status_code=409)
+        raise _err(e)
     except Exception as e:
         raise _err(e)
 
