@@ -276,6 +276,32 @@ def test_races():
 # --- 4. hard links --------------------------------------------------------------------
 
 
+def test_concurrent_folders():
+    section("3b. two writes making the same new folder at the same moment")
+    import concurrent.futures
+    errors = []
+
+    def write(i):
+        try:
+            files.write_bytes(A, f"race/deep/er/f{i}.txt", b"x")
+        except Exception as e:      # noqa: BLE001
+            errors.append(repr(e))
+    for _round in range(5):
+        shutil.rmtree(A / "race", ignore_errors=True)
+        with concurrent.futures.ThreadPoolExecutor(16) as pool:
+            list(pool.map(write, range(16)))
+    check("sixteen writes creating the same folders at once all land "
+          "(one used to fail with a raw FileExistsError)",
+          not errors and len(list((A / "race/deep/er").iterdir())) == 16, errors[:2])
+    shutil.rmtree(A / "race", ignore_errors=True)
+    if os.name != "nt":
+        (A / "racelink").symlink_to(OUTSIDE, target_is_directory=True)
+        check("...and a link where a folder would be made is still refused",
+              refused(files.write_bytes, A, "racelink/x.txt", b"x", status=403)
+              and outside_untouched())
+        os.unlink(A / "racelink")
+
+
 def test_hard_links():
     section("4. hard links")
     try:
@@ -1164,6 +1190,7 @@ async def main():
     test_paths()
     test_links()
     test_races()
+    test_concurrent_folders()
     test_hard_links()
     test_archives()
     test_tokens()

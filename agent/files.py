@@ -121,8 +121,17 @@ def _dir_fd(root: Path, dir_parts: list[str], *, create: bool = False) -> Iterat
             except FileNotFoundError:
                 if not create:
                     raise JailError(f"{'/'.join(dir_parts)} does not exist", 404)
-                os.mkdir(part, 0o755, dir_fd=fds[-1])
-                fds.append(os.open(part, flags, dir_fd=fds[-1]))
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fds[-1])
+                except FileExistsError:
+                    pass        # another write made it this instant; open it as below
+                try:
+                    # Still O_NOFOLLOW: whatever is there now -- the folder
+                    # just made, or a link swapped in -- is opened as a
+                    # folder or refused.
+                    fds.append(os.open(part, flags, dir_fd=fds[-1]))
+                except OSError as e:
+                    raise JailError(f"{part} is a link or not a folder ({e.strerror})", 403)
             except OSError as e:
                 # ELOOP: it is a symlink. ENOTDIR: it is a file.
                 raise JailError(f"{part} is a link or not a folder ({e.strerror})", 403)
