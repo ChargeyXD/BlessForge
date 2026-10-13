@@ -603,7 +603,9 @@ with `ENGINE=mock` — servers in memory, nothing real started — which is
 enough to try the interface. It is also what CasaOS imports:
 
 ```
-ghcr.io/chargeyxd/blessforge:latest    (amd64 + arm64)
+ghcr.io/chargeyxd/blessforge:latest          the panel, the worker and the bundled agent (amd64 + arm64)
+ghcr.io/chargeyxd/blessforge-agent:latest    the node agent alone, for a node of its own (amd64 + arm64)
+ghcr.io/chargeyxd/blessforge-runtime:javaN   game servers, Java 8/17/21/25, pulled by the agent
 ```
 
 **On CasaOS** — App Store → **Custom Install** → **Import** → paste the
@@ -621,9 +623,9 @@ docker compose up -d --build
 ```
 
 `docker-compose.override.yml` is what makes that work: Compose picks it up
-automatically from a checkout, swaps in `build: .` against the same image tag,
-and reads `.env` in `raw` format so a CurseForge key containing `$` survives.
-CasaOS never sees the override file — it imports `docker-compose.yml` alone.
+automatically from a checkout, swaps in `build: .` (and `build: ./agent` for
+the agent) against the same image tags, and reads `.env` in `raw` format so a
+CurseForge key containing `$` survives. CasaOS never sees the override file — it imports `docker-compose.yml` alone.
 
 > **Where the key comes from.** Only from your own environment: `.env` (read
 > in `raw` format from a checkout), a Docker secret named by

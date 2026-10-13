@@ -41,7 +41,9 @@ COPY alembic.ini ./
 # One template per loader (app/templates.py): without them nothing can be created.
 COPY templates/ ./templates/
 # The node agent, so one image runs the panel, the worker AND the agent the
-# one-box docker-compose.yml bundles (`python -m agent`). agent/images is the
+# one-box docker-compose.yml bundles (`python -m agent`): its layers are
+# already on that machine. A node on a machine of its own uses the slim
+# blessforge-agent image instead (agent/Dockerfile). agent/images is the
 # runtime images' Dockerfile, built on the machine when it cannot be pulled.
 COPY agent/ ./agent/
 # Moving servers off Crafty, from inside the panel's container:

@@ -294,6 +294,11 @@ services:
   # running `python -m agent`. It waits for the panel to register it and
   # write /node/agent.toml on the panel's first start, then reports in.
   #
+  # A node on a machine of its own uses the slim ghcr.io/chargeyxd/
+  # blessforge-agent image (agent/Dockerfile). Here the panel's image is the
+  # better fit: its layers are already on the machine, and the agent's
+  # memory is the same either way (it never imports the panel's packages).
+  #
   # It is the one container given the Docker socket -- that is how it creates
   # game containers -- and it runs as uid 1000 with only the socket's group.
   # Runtime images (one per Java version) are pulled when it starts, for the

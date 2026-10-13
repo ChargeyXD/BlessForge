@@ -1,0 +1,8 @@
+# The agent image's build context is agent/ alone (agent/Dockerfile).
+Dockerfile
+.dockerignore
+**/__pycache__
+**/*.pyc
+# A node agent's config holds its token in the clear: never in an image.
+**/agent.toml
+**/.agent
