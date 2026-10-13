@@ -34,6 +34,8 @@ WARN_SHARE = 0.85
 # room around the heap, and at least a gigabyte more.
 GROW_SHARE = 0.25
 GROW_MIN_MB = 1024
+# What repair leaves free for everything else when it grows a container.
+GROW_KEEP_FREE_MB = 768
 
 
 async def mod_count(server_id: str) -> int:
@@ -42,6 +44,11 @@ async def mod_count(server_id: str) -> int:
                     if n.lower().endswith(".jar")])
     except engine.EngineError:
         return 0
+
+
+def _gb(value: float) -> str:
+    """11.6, or 16 rather than 16.0 -- the same in every message."""
+    return f"{round(float(value), 1):g}"
 
 
 def host_total_mb(host: dict) -> int:
@@ -54,8 +61,8 @@ def check(heap_mb: int, host: dict) -> None:
         raise ValueError(f"a heap under {MIN_HEAP_MB} MB cannot run a server")
     total = host_total_mb(host)
     if total and heap_mb > total:
-        raise ValueError(f"this machine has {total // 1024} GB; a {heap_mb // 1024} GB "
-                         "heap cannot fit on it")
+        raise ValueError(f"this machine has {_gb(total / 1024)} GB; a "
+                         f"{_gb(heap_mb / 1024)} GB heap cannot fit on it")
 
 
 def warnings(memory_mb: int, host: dict) -> list[str]:
@@ -68,7 +75,7 @@ def warnings(memory_mb: int, host: dict) -> list[str]:
     need = memory_mb / 1024
     if need > total * WARN_SHARE:
         tail = f"; other apps use about {others:.0f}" if others >= 0.5 else ""
-        return [f"This machine has {total:.0f} GB{tail}. A server holding "
+        return [f"This machine has {_gb(total)} GB{tail}. A server holding "
                 f"{need:.1f} GB leaves little for anything else, and the kernel kills "
                 "whichever process it must when memory runs out."]
     if available and need > available:
@@ -137,11 +144,28 @@ async def grow_for_oom(server_id: str, heap_mb: int, mods: int) -> tuple[int | N
     grown = max(grown, specs.container_memory_mb(heap_mb / 1024, mods))
     if total:
         grown = min(grown, total)
+    # Repair grows a container on its own, so it only grows into memory that
+    # is free right now (the killed server's own is free again by then),
+    # keeping some back for everything else. "Up to the machine's total"
+    # took ATM10 to 8 GB on a box with 5 GB free: swap filled, the load went
+    # to 66, and every other app on it stalled. A person can still choose
+    # more in Tune; that is theirs to decide, not repair's.
     if grown <= limit:
         return None, (f"the server was killed for memory in a {limit} MB container and "
                       f"this machine has {total} MB in all, so there is no more to give "
                       "it. Lower the heap (Tune), run fewer mods, or move it to a bigger "
                       "machine")
+    free = int(float(host.get("available_ram_gb") or 0) * 1024)
+    room = free - GROW_KEEP_FREE_MB if free else 0
+    if room and grown > room:
+        grown = room
+        # A step too small to matter costs a whole boot for nothing.
+        if grown < limit + GROW_MIN_MB // 2:
+            return None, (f"the server was killed for memory in a {limit} MB container, "
+                          f"and only {max(0, free)} MB is free on this machine right now -- "
+                          "not enough to give it more without starving everything else. "
+                          "Stop something else and boot it again, lower the heap (Tune), "
+                          "or run fewer mods")
     limits = {**(server.get("limits") or {}), "memory_mb": grown}
     await engine.update_server(server_id, {"memory_mb": grown, "limits": limits})
     return grown, ""

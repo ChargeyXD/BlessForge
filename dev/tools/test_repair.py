@@ -434,6 +434,24 @@ async def main():
         check("...and it says so", "set by a person" in (result.get("why") or "")
               and "no more to give" in (result.get("why") or ""), result.get("why"))
 
+        # 16 GB in all, 6.5 GB free right now: ATM10 grew to 8 GB on a box
+        # like that, filled swap and took the load to 66.
+        real_host_for = _specs.host_for
+
+        async def busy_host(server_id=None):
+            return {"total_ram_gb": 16.0, "available_ram_gb": 6.5, "cpu_count": 8}
+        _specs.host_for = busy_host
+        try:
+            sid, result, server = await big_pack(by_user=True)
+        finally:
+            _specs.host_for = real_host_for
+        check("repair grows a container only into memory that is free right now",
+              result["outcome"] == "failed" and server["memory_mb"] == 6144
+              and not result["repairs"], (result.get("why"), server["memory_mb"]))
+        check("...and says what is free and what to do",
+              "free on this machine right now" in (result.get("why") or "")
+              and "Stop something else" in (result.get("why") or ""), result.get("why"))
+
         sid, result, server = await big_pack(by_user=False)
         check("only a heap BlessForge chose itself is lowered to fit, and the next boot "
               "comes up", result["outcome"] == "ready"

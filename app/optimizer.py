@@ -702,10 +702,8 @@ async def apply(server_id: str, selection: dict, *, by_user: bool = True) -> dic
     if heap:
         from app import heap as heaps
         host = await specs.host_for(server_id)
-        try:
-            heaps.check(int(heap * 1024), host)
-        except ValueError as e:
-            raise RuntimeError(str(e))
+        # A ValueError, so the API answers 400 (the request), not 500.
+        heaps.check(int(heap * 1024), host)
         if loader in ("forge", "neoforge"):
             body = specs.render_jvm_args(
                 flags, heap,

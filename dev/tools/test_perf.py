@@ -245,7 +245,7 @@ async def main():
         refused = False
         try:
             await optimizer.apply(sid, {"heap_gb": 17, "flags": []})
-        except RuntimeError as e:
+        except ValueError as e:         # a 400 from the API, not a 500
             refused = "this machine has 16 GB" in str(e)
         check("only a heap bigger than the whole machine is refused", refused)
         refused = False

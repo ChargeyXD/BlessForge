@@ -475,7 +475,8 @@ async def _fit_memory(server_id: str, mod_count: int,
     """After an OOM kill: room for the heap, never a smaller heap a person set.
 
     The container grows around the same heap, one step at a time (a quarter
-    more overhead, at least 1 GB more), up to the machine's total. Only when
+    more overhead, at least 1 GB more), into memory that is free right now --
+    never past it, which starves every other app on the machine. Only when
     the machine has nothing more to give, and only for a heap BlessForge
     chose itself, does the heap come down to fit -- and the repair says so.
     Before, the heap always came down, which for an extra-large pack
