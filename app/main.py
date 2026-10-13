@@ -839,6 +839,13 @@ async def bring_blocked(server_id: str, request: Request,
         await file.close()
     await auth.audit(actor=request.state.user["username"], action="mods.bring_blocked",
                      server_id=server_id, detail=result["matched"], ip=_client_ip(request))
+    if result.pop("resume_boot", False):
+        # Everything the pack waited for is here: the install's first boot
+        # (and its repairs) runs now, as it would have at the end.
+        name = await _instance_name(server_id) or server_id
+        job = registry.create("boot_repair", f"First boot of {name}", server_id=server_id)
+        await registry.submit(job, "boot_repair", server_id=server_id)
+        result["job_id"] = job.id
     return result
 
 

@@ -1230,7 +1230,23 @@ async def install_modpack(
     # Installed is not running. Boot it once and fix what that boot proves
     # broken -- a missing library, a client mod a server pack should not have
     # shipped -- so the operator gets a server that starts, not a list of
-    # things to do first (app/repair.py).
+    # things to do first (app/repair.py). Not yet while mods it needs are
+    # still to be brought by hand: that boot could only fail, and repair
+    # would go disabling the mods that need them. It runs by itself when the
+    # last one lands (mods.accept_blocked).
+    must_bring = [b for b in blocked_by_author if b.get("required", True)]
+    if boot_check and must_bring:
+        boot_check = False
+        summary["boot_pending"] = True
+        job.log_line(f"First boot waits for the {len(must_bring)} mod"
+                     f"{'' if len(must_bring) == 1 else 's'} you bring yourself; it "
+                     "starts by itself once the last one is uploaded.", "warn")
+        try:
+            manifest = await engine.read_manifest(server_id)
+            manifest["boot_pending"] = True
+            await engine.write_manifest(server_id, manifest)
+        except Exception:       # noqa: BLE001
+            pass
     if boot_check:
         from app import repair
         job.set_step("First boot", 97)

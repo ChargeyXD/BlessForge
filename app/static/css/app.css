@@ -2310,6 +2310,7 @@ html.js-motion .ofuda.thinking .ofuda-seal{
 .ofuda.waiting{border-color:var(--amber-ink)}
 .ofuda.waiting .ofuda-seal{background:var(--amber-ink)}
 .ofuda.waiting .ofuda-line{align-items:center}
+.ofuda.waiting.drop{outline:2px dashed var(--amber-ink);outline-offset:3px}
 .waiting-acts{display:inline-flex;gap:6px;margin-left:auto;flex-wrap:wrap}
 
 /* Two containers the rack screen leans on. Left to browser defaults they

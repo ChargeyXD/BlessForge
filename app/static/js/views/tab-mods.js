@@ -18,7 +18,7 @@ import {
   frag, prefs, qs, copyText, sideTag, spinner, reveal, sourceMark, ago,
   endlessFeed, blockedByAuthor,
 } from '../core.js';
-import { run, runAwait } from '../jobs.js';
+import { follow, run, runAwait } from '../jobs.js';
 
 export async function render(ctx) {
   const dir = ctx.modDir;
@@ -177,7 +177,7 @@ export async function render(ctx) {
     const items = listing?.blocked_by_author || [];
     return items.length
       ? h('div', { style: { marginBottom: '12px' } },
-        blockedByAuthor(items, { onUpload: uploadBlocked }))
+        blockedByAuthor(items, { onUpload: uploadBlocked, onFiles: bringJars }))
       : null;
   }
 
@@ -185,26 +185,42 @@ export async function render(ctx) {
      fingerprint) and files it under the name the pack expects, so a
      download the browser renamed " (1)" still counts, a wrong jar is
      refused, and several can go at once whichever row was clicked. */
+  /* Many jars at once -- picked, or dropped as loose files or a whole
+     downloads folder. Jars that are not among those waited for are counted,
+     not shouted about: a downloads folder holds plenty of other things. When
+     the last one lands, the install's first boot runs by itself. */
+  async function bringJars(files) {
+    let brought = 0;
+    let other = 0;
+    for (const file of files) {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      try {
+        const r = await api.upload(`/api/instances/${ctx.id}/mods/blocked`, form);
+        brought += 1;
+        toast(`${r.name || r.matched} is in mods/`
+          + (r.uploaded_as !== r.matched ? ` (as ${r.matched})` : '') + '.', 'ok');
+        if (r.job_id) {
+          toast('Every mod it waited for is here: its first boot is starting.', 'ok');
+          follow(r.job_id, { title: 'First boot' });
+        }
+      } catch (err) {
+        if (err?.status === 409 && files.length > 1) other += 1;
+        else toastError(err, `${file.name} was not taken`);
+      }
+    }
+    if (other) toast(`${other} other file${other > 1 ? 's were' : ' was'} not among the `
+      + 'jars this server is waiting for.', 'warn');
+    if (brought) load(true);
+  }
+
   function uploadBlocked() {
     const input = h('input', {
       type: 'file', accept: '.jar', multiple: true, style: { display: 'none' },
       onchange: async (e) => {
         const picked = [...(e.target.files || [])];
         input.remove();
-        let brought = 0;
-        for (const file of picked) {
-          const form = new FormData();
-          form.append('file', file, file.name);
-          try {
-            const r = await api.upload(`/api/instances/${ctx.id}/mods/blocked`, form);
-            brought += 1;
-            toast(`${r.name || r.matched} is in mods/`
-              + (r.uploaded_as !== r.matched ? ` (as ${r.matched})` : '') + '.', 'ok');
-          } catch (err) {
-            toastError(err, `${file.name} was not taken`);
-          }
-        }
-        if (brought) load(true);
+        await bringJars(picked);
       },
     });
     document.body.append(input);

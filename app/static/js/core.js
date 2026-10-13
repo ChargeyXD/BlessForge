@@ -1366,14 +1366,62 @@ export function sourceMark(source) {
    without it the strip is a notice (the review, the install report). */
 const CF_PAGE = /^https:\/\/www\.curseforge\.com\//;
 
-export function blockedByAuthor(items, { onUpload } = {}) {
+/* Every .jar in a drop -- loose files or whole folders, however deep. */
+async function droppedJars(dataTransfer) {
+  const out = [];
+  const walk = (entry) => new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file((f) => { if (/\.jar$/i.test(f.name)) out.push(f); resolve(); },
+        () => resolve());
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const all = [];
+      const more = () => reader.readEntries(async (batch) => {
+        if (!batch.length) {
+          for (const e of all) await walk(e);
+          resolve();
+          return;
+        }
+        all.push(...batch);
+        more();
+      }, () => resolve());
+      more();
+    } else resolve();
+  });
+  const entries = [...(dataTransfer.items || [])]
+    .map((it) => it.webkitGetAsEntry?.()).filter(Boolean);
+  if (entries.length) {
+    for (const e of entries) await walk(e);
+  } else {
+    out.push(...[...(dataTransfer.files || [])].filter((f) => /\.jar$/i.test(f.name)));
+  }
+  return out;
+}
+
+export function blockedByAuthor(items, { onUpload, onFiles } = {}) {
   if (!items?.length) return null;
   const n = items.length;
-  return h('div.ofuda.waiting', { role: 'note' },
+  // CurseForge pages to fetch them from, a few tabs at a time: browsers
+  // allow only so many windows from one click.
+  const pages = items.filter((b) => CF_PAGE.test(b.url || '')).map((b) => b.url);
+  let opened = 0;
+  const openBtn = pages.length > 1 ? h('button.btn.xs', {
+    onclick: () => {
+      for (const url of pages.slice(opened, opened + 5)) {
+        window.open(url, '_blank', 'noopener');
+      }
+      opened = Math.min(pages.length, opened + 5);
+      openBtn.lastChild.textContent = opened >= pages.length
+        ? 'All opened' : `Open the next ${Math.min(5, pages.length - opened)}`;
+      openBtn.disabled = opened >= pages.length;
+    },
+  }, icon('link', 12), h('span', `Open ${Math.min(5, pages.length)} of ${pages.length}`))
+    : null;
+  const box = h('div.ofuda.waiting', { role: 'note' },
     h('span.ofuda-seal', { 'aria-hidden': 'true' }),
     h('div', { style: { minWidth: '0', flex: '1 1 auto' } },
       h('div.ofuda-hd',
-        `${n} mod${n > 1 ? 's' : ''} you will have to bring yourself`),
+        `${n} mod${n > 1 ? 's' : ''} need${n > 1 ? '' : 's'} a one-time download`),
       h('div.ofuda-sum',
         `${n > 1 ? 'Their authors' : 'Its author'} turned off third-party `
         + 'downloads and Modrinth does not carry '
@@ -1395,5 +1443,21 @@ export function blockedByAuthor(items, { onUpload } = {}) {
             ? h('button.btn.xs', { onclick: () => onUpload(b) },
               hl(), icon('upload', 12), h('span', 'Upload jar'))
             : null)))),
+      openBtn || onFiles ? h('div.waiting-acts', { style: { marginTop: '8px' } },
+        openBtn,
+        onFiles ? h('span.muted', { style: { fontSize: '12px' } },
+          'Drop the jars -- or the whole downloads folder -- here; each is '
+          + 'matched by its content, whatever its name.') : null) : null,
       h('div.ofuda-foot', 'listed until a jar with that name is in the folder')));
+  if (onFiles) {
+    box.addEventListener('dragover', (e) => { e.preventDefault(); box.classList.add('drop'); });
+    box.addEventListener('dragleave', () => box.classList.remove('drop'));
+    box.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      box.classList.remove('drop');
+      const jars = await droppedJars(e.dataTransfer);
+      if (jars.length) onFiles(jars);
+    });
+  }
+  return box;
 }

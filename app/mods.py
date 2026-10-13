@@ -254,8 +254,25 @@ async def accept_blocked(server_id: str, filename: str, data: bytes) -> dict:
         "name": entry.get("name") or name, "brought_by_hand": True,
         "required": entry.get("required", True), "identified_at": time.time(),
     })
-    return {"matched": name, "name": entry.get("name"), "uploaded_as": filename,
-            "waiting": len(waiting) - 1}
+    try:
+        present = set(await engine.list_dir(server_id, "mods"))
+    except engine.EngineError:
+        present = {name}
+    left = [b for b in waiting if b["file_name"] not in present]
+    out = {"matched": name, "name": entry.get("name"), "uploaded_as": filename,
+           "waiting": len(left)}
+    if not [b for b in left if b.get("required", True)]:
+        # The last one: the install's first boot, which waited for these,
+        # can run now (the caller starts it).
+        manifest = await engine.read_manifest(server_id)
+        if manifest.get("boot_pending"):
+            manifest.pop("boot_pending", None)
+            try:
+                await engine.write_manifest(server_id, manifest)
+            except Exception:       # noqa: BLE001
+                pass
+            out["resume_boot"] = True
+    return out
 
 
 async def _remember_mod(server_id: str, record: dict) -> None:

@@ -451,6 +451,25 @@ async def main():
         refused = "not one of the files" in str(e)
     check("a jar with the right name and the wrong content is refused", refused)
 
+    # The install's first boot waits for the jars a person brings, and runs
+    # by itself when the last one lands.
+    balm = jar("balm")
+    manifest = await engine.read_manifest(sid)
+    manifest["blocked_by_author"][1].update(fingerprint=curseforge.fingerprint(balm),
+                                            sha1=hashlib.sha1(balm).hexdigest())
+    manifest["boot_pending"] = True
+    await engine.write_manifest(sid, manifest)
+    again = await modmgr.accept_blocked(sid, "waystones (2).jar", wanted)
+    check("bringing one again while another is still missing does not start the boot",
+          again["waiting"] == 1 and not again.get("resume_boot"), again)
+    last = await modmgr.accept_blocked(sid, "balm.jar", balm)
+    check("...the last one does, once",
+          last["waiting"] == 0 and last.get("resume_boot")
+          and not (await engine.read_manifest(sid)).get("boot_pending"), last)
+    source = (ROOT / "app" / "installer.py").read_text(encoding="utf-8")
+    check("an install that leaves required mods to bring holds its first boot for them",
+          "if boot_check and must_bring:" in source and 'manifest["boot_pending"] = True' in source)
+
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)
