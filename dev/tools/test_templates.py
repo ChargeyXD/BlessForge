@@ -206,6 +206,22 @@ async def main():
               boot["outcome"] == "ready" and not (await engine.get_stats(sid)).get("running"),
               boot["outcome"])
 
+    # --- "Optimize" off: no tuning flags, but the heap typed is still the heap -----------
+    for family, mc in (("paper", "1.21.1"), ("neoforge", "1.21.1")):
+        port += 1
+        out = await provision.create_empty(Job("create_server", "plain"), name=f"Plain {family}",
+                                           loader=family, mc_version=mc, port=port, mem_max=1,
+                                           optimize=False)
+        rec = await engine.get_server(out["server_id"])
+        cmd = rec.get("execution_command") or ""
+        jvm = (await engine.read_file(out["server_id"], "user_jvm_args.txt")
+               if "@user_jvm_args.txt" in cmd else cmd)
+        check(f"{family} with Optimize off: a 1 GB heap is written, not the -Xmx2G "
+              "placeholder, and no tuning flags",
+              re.search(r"-Xmx(1G|1024M)\b", jvm) and "-Xmx2G" not in jvm
+              and "-XX:" not in jvm and rec.get("memory_mb") == 1024 + 768, (jvm[-160:],
+                                                                             rec.get("memory_mb")))
+
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)

@@ -348,21 +348,24 @@ async def create_empty(
     except Exception as e:
         job.log_line(f"Could not set the port to {port}: {e}", "warn")
 
-    if optimize:
-        job.set_step("Tuning for this host", 92)
-        try:
-            flags = [f["flag"] for f in specs.build_flag_plan(
-                heap_gb=ram_max, host=host, mc_version=mc_version,
-                loader=family) if f["enabled"]]
-            args_file = templates.jvm_args_file(family)
-            if args_file and await _has_args_command(server_id, args_file):
-                await engine.write_file(server_id, args_file,
-                                        specs.render_jvm_args(flags, ram_max))
-            else:
-                await optimizer.set_command_memory(server_id, ram_max, flags)
-            job.log_line(f"Tuned JVM: {ram_max:g} GB heap, {len(flags)} flags")
-        except Exception as e:
-            job.log_line(f"Could not apply performance tuning: {e}", "warn")
+    # The heap is written either way; "optimize" only decides the flags. Off,
+    # the command kept the placeholder -Xmx2G whatever was typed, inside a
+    # container sized for the typed heap.
+    job.set_step("Tuning for this host" if optimize else "Setting the heap", 92)
+    try:
+        flags = [f["flag"] for f in specs.build_flag_plan(
+            heap_gb=ram_max, host=host, mc_version=mc_version,
+            loader=family) if f["enabled"]] if optimize else []
+        args_file = templates.jvm_args_file(family)
+        if args_file and await _has_args_command(server_id, args_file):
+            await engine.write_file(server_id, args_file,
+                                    specs.render_jvm_args(flags, ram_max))
+        else:
+            await optimizer.set_command_memory(server_id, ram_max, flags)
+        job.log_line(f"Tuned JVM: {ram_max:g} GB heap, {len(flags)} flags" if optimize
+                     else f"Heap: {ram_max:g} GB (no tuning flags)")
+    except Exception as e:
+        job.log_line(f"Could not set the heap: {e}", "warn")
     try:
         # The container follows the heap, and remembers who chose it.
         from app import heap as heaps
