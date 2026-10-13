@@ -102,6 +102,18 @@ async def build_plan(server_id: str) -> dict:
         },
         "flags": flag_plan,
         "properties": props_plan,
+        # The container follows the heap (app/heap.py). Enough for the Memory
+        # control to show the limit a heap means, live, without a request.
+        "container": {
+            "memory_mb": int(server.get("memory_mb") or 0),
+            "heap_set_by_user": bool((server.get("limits") or {}).get("heap_set_by_user")),
+            "warn_share": 0.85,
+            "overhead": {"min_mb": specs.CONTAINER_OVERHEAD_MIN_MB,
+                         "share": specs.CONTAINER_OVERHEAD_SHARE,
+                         "per_mod_mb": specs.CONTAINER_OVERHEAD_PER_MOD_MB,
+                         "mods_max_mb": specs.CONTAINER_OVERHEAD_MODS_MAX_MB,
+                         "mod_count": mod_count},
+        },
         "jvm_file_supported": supports_jvm_file,
         "note": None if supports_jvm_file else (
             "Fabric and vanilla instances take their memory settings from "
@@ -659,8 +671,12 @@ async def advise(server_id: str, *, refresh: bool = False) -> dict:
     return {"plan": plan, "advice": plan["advice"]}
 
 
-async def apply(server_id: str, selection: dict) -> dict:
+async def apply(server_id: str, selection: dict, *, by_user: bool = True) -> dict:
     """Apply a user-approved subset of the proposal.
+
+    The heap is what the person chose, never clamped: the container is
+    resized around it (app/heap.py), and anything worth knowing about that
+    size on this machine comes back as `warnings`.
 
     selection = {
       "heap_gb": 6,
@@ -683,6 +699,12 @@ async def apply(server_id: str, selection: dict) -> dict:
         )
 
     if heap:
+        from app import heap as heaps
+        host = await specs.host_for(server_id)
+        try:
+            heaps.check(int(heap * 1024), host)
+        except ValueError as e:
+            raise RuntimeError(str(e))
         if loader in ("forge", "neoforge"):
             body = specs.render_jvm_args(
                 flags, heap,
@@ -699,6 +721,12 @@ async def apply(server_id: str, selection: dict) -> dict:
                 f"launch command: {heap:g} GB heap, {len(flags)} flags"
             )
             result["execution_command"] = updated
+        sized = await heaps.resize(server_id, int(heap * 1024), by_user=by_user,
+                                   host=host)
+        result["applied"].append(f"container: {sized['memory_mb']} MB "
+                                 f"({sized['overhead_mb']} MB beyond the heap)")
+        result["memory"] = sized
+        result["warnings"] = sized["warnings"]
 
     props = selection.get("properties") or {}
     safe = {k: v for k, v in props.items() if k in SAFE_PROPERTY_KEYS}

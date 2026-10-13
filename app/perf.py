@@ -174,14 +174,17 @@ def check_jvm(args: list[dict], *, java: int | None, container_mb: int | None,
         headroom = container_mb - heap
         needed = specs.container_overhead_mb(heap, mod_count)
         if headroom < needed:
+            # The heap is what was asked for; the container is what is wrong.
+            # Applying this keeps the heap and resizes the container around it.
             add("bad", f"The heap ({heap} MB) does not fit the container ({container_mb} MB)",
                 f"Java needs memory beyond the heap -- threads, metaspace, the JIT, native "
                 f"buffers -- about {needed} MB for this server"
                 + (f" with {mod_count} mods" if mod_count else "") + f", and it has "
                 f"{max(0, headroom)} MB. Without that room the container is killed for "
-                "running out of memory, usually under load, with no Java error at all.",
-                xmx[-1][1], {"set_heap_mb": max(1024, specs.heap_for_container_mb(
-                    container_mb, mod_count))})
+                "running out of memory, usually under load, with no Java error at all. "
+                f"Fixing it keeps the {heap} MB heap and makes the container "
+                f"{heap + needed} MB.",
+                xmx[-1][1], {"set_heap_mb": heap})
         elif heap < container_mb * 0.45 and container_mb >= 3072:
             add("info", f"The heap uses only {heap} MB of a {container_mb} MB container",
                 "Most of the container's memory is not available to the game. If the "
@@ -593,12 +596,15 @@ def _plugin_bundles_spark(family: str, mc: str) -> bool:
 # --- applying -------------------------------------------------------------------------
 
 
-async def apply(server_id: str, *, jvm_fixes: list[dict], yaml_ids: list[str]) -> dict:
+async def apply(server_id: str, *, jvm_fixes: list[dict], yaml_ids: list[str],
+                by_user: bool = True) -> dict:
     """Apply chosen fixes where each setting actually lives.
 
     A JVM argument is edited in user_jvm_args.txt when that is where it came
     from, otherwise in the startup command. A YAML setting is changed only
-    if the key exists. Everything takes effect at the next start.
+    if the key exists. A new heap resizes the container with it (app/heap.py),
+    recorded as chosen by a person unless `by_user` is False. Everything takes
+    effect at the next start.
     """
     reading = await analyse(server_id)
     server = await engine.get_server(server_id)
@@ -611,6 +617,7 @@ async def apply(server_id: str, *, jvm_fixes: list[dict], yaml_ids: list[str]) -
             args_text = ""
     origin = {a["arg"]: a["from"] for a in reading["jvm"]["args"]}
     done: list[str] = []
+    new_heap: int | None = None
 
     def edit(arg: str, new: str | None) -> None:
         nonlocal command, args_text
@@ -668,10 +675,16 @@ async def apply(server_id: str, *, jvm_fixes: list[dict], yaml_ids: list[str]) -
                 argv[1:1] = [f"-Xms{mb}M", f"-Xmx{mb}M"]
                 command = shlex.join(argv)
             done.append(f"heap set to {mb} MB")
+            new_heap = mb
     if command != (server.get("execution_command") or ""):
         await engine.update_server(server_id, {"execution_command": command})
     if args_text is not None:
         await engine.write_file(server_id, "user_jvm_args.txt", args_text)
+    if new_heap:
+        from app import heap
+        sized = await heap.resize(server_id, new_heap, by_user=by_user,
+                                  mods=reading.get("mod_count"))
+        done.append(f"container resized to {sized['memory_mb']} MB")
 
     by_id = {p["id"]: p for p in reading["paper"] + reading["mod_settings"]}
     files: dict[str, str] = {}

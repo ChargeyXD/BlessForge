@@ -69,9 +69,10 @@ async def main():
     check("two collectors at once: a fault", any("Two garbage collectors" in i["title"]
                                                 for i in issues))
     issues = run("java -Xmx6G -jar s.jar", java=21, container_mb=6200, cpus=4)
-    check("a heap with no room left in its container: a fault, with a size that fits",
+    check("a heap with no room left in its container: a fault, fixed by keeping the "
+          "heap and resizing the container",
           any(i["level"] == "bad" and "does not fit" in i["title"] and
-              i["fix"]["set_heap_mb"] < 6200 - 512 for i in issues))
+              i["fix"]["set_heap_mb"] == 6144 for i in issues))
     issues = run("java -Xms8G -Xmx4G -jar s.jar", java=21, container_mb=9000, cpus=4)
     check("a minimum heap above the maximum: a fault",
           any("minimum heap is bigger" in i["title"] for i in issues))
@@ -210,6 +211,68 @@ async def main():
           host["total_ram_gb"] == 8.0 and host["available_ram_gb"] == 5.0
           and host["cpu_count"] == 4 and host["load_per_core"] == 0.5
           and host["source"] == "node n1", host)
+
+    # --- the heap is the user's, and the container follows it (brief item 1) ------------
+    import os as _os
+    from app import heap as heaps
+    from app import optimizer
+    _os.environ["HOST_RAM_GB"] = "16"
+    try:
+        mock = MockEngine(seed=False)
+        engine.configure("mock", drivers={"local": mock})
+        sid = await engine.create_server(name="Tune", port=25801, memory_mb=4096,
+                                         mc_version="1.20.1", loader="fabric")
+        await engine.update_server(sid, {"execution_command":
+                                         "java -Xms3G -Xmx3G -jar fabric.jar nogui"})
+        await engine.write_manifest(sid, {"schema": 1, "minecraft": "1.20.1",
+                                          "loader": "fabric"})
+        await engine.ensure_dir(sid, "mods")
+        for i in range(120):
+            await engine.write_file(sid, f"mods/m{i}.jar", "x")
+        res = await optimizer.apply(sid, {"heap_gb": 10, "flags": []})
+        server = await engine.get_server(sid)
+        want = _specs.container_memory_mb(10, 120)
+        check("changing the heap in Tune resizes the container around it",
+              "-Xmx10240M" in server["execution_command"] and server["memory_mb"] == want
+              and res["memory"]["memory_mb"] == want, (server["memory_mb"], want, res))
+        check("...and records that a person chose it",
+              heaps.set_by_user(server) and server["limits"]["heap_mb"] == 10240)
+        res = await optimizer.apply(sid, {"heap_gb": 14, "flags": []})
+        server = await engine.get_server(sid)
+        check("a heap near the machine's total is set as asked, with a plain warning",
+              "-Xmx14336M" in server["execution_command"] and res["warnings"]
+              and "This machine has 16 GB" in res["warnings"][0], res.get("warnings"))
+        refused = False
+        try:
+            await optimizer.apply(sid, {"heap_gb": 17, "flags": []})
+        except RuntimeError as e:
+            refused = "this machine has 16 GB" in str(e)
+        check("only a heap bigger than the whole machine is refused", refused)
+        refused = False
+        try:
+            await heaps.set_heap(sid, 256, by_user=True)
+        except ValueError:
+            refused = True
+        check("...or one under 512 MB", refused)
+        res = await perf.apply(sid, jvm_fixes=[{"set_heap_mb": 6144}], yaml_ids=[])
+        server = await engine.get_server(sid)
+        check("a heap set from the Performance fixes resizes the container too",
+              "-Xmx6144M" in server["execution_command"]
+              and server["memory_mb"] == _specs.container_memory_mb(6, 120)
+              and any("container resized" in a for a in res["applied"]), res)
+        out = await heaps.set_heap(sid, 8192, by_user=False)
+        server = await engine.get_server(sid)
+        check("set_heap writes -Xmx and the container together, and who chose it",
+              "-Xmx8192M" in server["execution_command"]
+              and server["memory_mb"] == out["memory_mb"] == _specs.container_memory_mb(8, 120)
+              and not heaps.set_by_user(server), out)
+        plan = await optimizer.build_plan(sid)
+        check("the Tune plan carries what the Memory control needs",
+              (plan["container"]["memory_mb"] == server["memory_mb"]
+                               and plan["container"]["overhead"]["mod_count"] == 120),
+              plan.get("container"))
+    finally:
+        _os.environ.pop("HOST_RAM_GB", None)
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")

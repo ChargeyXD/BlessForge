@@ -459,7 +459,9 @@ async def apply(job: Job, server_id: str, action: dict, *, mc: str) -> bool:
         elif action["do"] == "fit_heap":
             from app import perf
             await perf.apply(server_id, jvm_fixes=[{"set_heap_mb": action["heap_mb"]}],
-                             yaml_ids=[])
+                             yaml_ids=[], by_user=False)
+        elif action["do"] == "grow_container":
+            pass                # done when it was decided (_fit_memory)
         job.log_line(f"Repair: {action['do']} {action.get('file') or action.get('name') or ''}"
                      f" -- {action['why']}", "warn" if action.get("last_resort") else "info")
         return True
@@ -470,27 +472,43 @@ async def apply(job: Job, server_id: str, action: dict, *, mc: str) -> bool:
 
 async def _fit_memory(server_id: str, mod_count: int,
                       tried: set) -> tuple[list[dict], list[str]]:
-    """The heap that fits this server's container with room for its mods.
+    """After an OOM kill: room for the heap, never a smaller heap a person set.
 
-    The container keeps its size -- that is the owner's (or the plan's) to
-    change -- and the heap comes down to fit inside it.
+    The container grows around the same heap, one step at a time (a quarter
+    more overhead, at least 1 GB more), up to the machine's total. Only when
+    the machine has nothing more to give, and only for a heap BlessForge
+    chose itself, does the heap come down to fit -- and the repair says so.
+    Before, the heap always came down, which for an extra-large pack
+    guaranteed a heap too small to load, and pointed at Tune, which could
+    not change the container.
     """
-    from app import perf
+    from app import heap, perf
     server = await engine.get_server(server_id)
     limit = int(server.get("memory_mb") or 0)
     reading = await perf.analyse(server_id)
     heaps = [a["arg"] for a in reading["jvm"]["args"] if a["arg"].startswith("-Xmx")]
     current = perf._size_mb(heaps[-1][4:]) if heaps else None
-    fit = specs.heap_for_container_mb(limit, mod_count) if limit else None
-    if not fit or not current or fit >= current or ("fit_heap", str(fit)) in tried:
+    if not current:
         return [], [f"the server was killed for running out of memory in its {limit} MB "
-                    "container; give it more memory (Tune) or run fewer mods"]
-    need = specs.container_memory_mb(current / 1024, mod_count)
+                    "container and sets no heap of its own; set one in Tune"]
+    grown, why_not = await heap.grow_for_oom(server_id, current, mod_count)
+    if grown:
+        return [{"do": "grow_container", "memory_mb": grown, "file": None,
+                 "project_id": str(grown),
+                 "why": f"the kernel killed it for its {limit} MB memory limit: the JVM "
+                        f"around a {current} MB heap with {mod_count} mods needs more. "
+                        f"The heap stays {current} MB; the container is now {grown} MB"}], []
+    if heap.set_by_user(server):
+        return [], [why_not + f". The {current} MB heap was set by a person, so "
+                    "BlessForge leaves it as it is"]
+    fit = specs.heap_for_container_mb(limit, mod_count) if limit else None
+    if not fit or fit >= current or ("fit_heap", str(fit)) in tried:
+        return [], [why_not]
     return [{"do": "fit_heap", "heap_mb": fit, "file": None, "project_id": str(fit),
-             "why": f"the kernel killed it for its {limit} MB memory limit: a {current} MB "
-                    f"heap leaves too little for the JVM around it with {mod_count} mods. "
-                    f"The heap is now {fit} MB; to keep {current} MB, give the server "
-                    f"{need} MB (Tune)"}], []
+             "why": f"the kernel killed it for its {limit} MB memory limit, which is all "
+                    f"this machine can give. BlessForge chose the {current} MB heap "
+                    f"itself, so it is lowered to {fit} MB to fit; set a heap in Tune "
+                    "and it is never lowered again"}], []
 
 
 def boot_timeout(mod_count: int) -> int:

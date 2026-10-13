@@ -7,8 +7,10 @@ spec builder becomes a refused start rather than an escape:
 
   * never the Docker socket, never privileged, no added capabilities, never
     the host's network, PID or IPC namespace;
-  * `Memory` equal to `MemorySwap` (no swap to hide in), a CPU quota, a PID
-    limit (a fork bomb stops at it), a block-IO weight;
+  * `Memory` equal to `MemorySwap` (no swap to hide in) -- or, only on a
+    node whose agent.toml says memory_mode = "soft", a reservation and no
+    hard limit -- a CPU quota, a PID limit (a fork bomb stops at it), a
+    block-IO weight;
   * every capability dropped, no-new-privileges, a read-only root
     filesystem with only /tmp writable (tmpfs, noexec). The JVM's own temp
     folder is in the server folder instead (NATIVE_TMP): libraries such as
@@ -152,8 +154,8 @@ def container_spec(server: dict, cfg: AgentConfig, folder: Path) -> dict:
                    "io.blessforge.node": cfg.node_id},
         "HostConfig": {
             "Binds": [f"{folder}:{SERVER_MOUNT}:rw"],
-            "Memory": mem,
-            "MemorySwap": mem,
+            **({"MemoryReservation": mem} if cfg.memory_mode == "soft"
+               else {"Memory": mem, "MemorySwap": mem}),
             "NanoCpus": int(lim["cpu_pct"] / 100 * 1_000_000_000),
             "PidsLimit": cfg.pids_limit,
             "BlkioWeight": lim["io_weight"],
@@ -236,7 +238,12 @@ def assert_safe(spec: dict, cfg: AgentConfig, folder: Path) -> None:
             raise UnsafeSpec(f"the host's {label}")
         if isinstance(mode, str) and mode.startswith("container:"):
             raise UnsafeSpec(f"another container's {label}")
-    if not hc.get("Memory") or hc.get("MemorySwap") != hc.get("Memory"):
+    hard = bool(hc.get("Memory")) and hc.get("MemorySwap") == hc.get("Memory")
+    # A reservation with no hard limit only where the node's owner asked for
+    # it (memory_mode = "soft" in agent.toml), never by default.
+    soft = (cfg.memory_mode == "soft" and not hc.get("Memory")
+            and not hc.get("MemorySwap") and bool(hc.get("MemoryReservation")))
+    if not (hard or soft):
         raise UnsafeSpec("memory limit missing, or swap not equal to it")
     if not hc.get("NanoCpus"):
         raise UnsafeSpec("no CPU limit")

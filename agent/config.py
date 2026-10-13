@@ -65,6 +65,12 @@ class AgentConfig:
     tmp_size_mb: int = 256
     stop_timeout: int = 60               # seconds between "stop" and a kill
     disk_quota: str = "watchdog"         # xfs | ext4 | watchdog | none
+    # "hard" (the default): each server's memory is a hard limit, swap equal
+    # to it. "soft": a reservation and no hard limit, for a self-hosted box
+    # whose owner wants Crafty-like behaviour -- a server may take more than
+    # its share when the machine has it, and the kernel decides when it does
+    # not. Never on a node that hosts anybody else.
+    memory_mode: str = "hard"
 
     # --- process runtime: development only -------------------------------------
     # Runs the server as a plain process with no isolation at all. Refused
@@ -102,6 +108,8 @@ def load(path: Path | str | None = None) -> AgentConfig:
     cfg = AgentConfig(**agent)
     if cfg.runtime not in ("docker", "process"):
         raise ValueError(f"runtime must be docker or process, not {cfg.runtime!r}")
+    if cfg.memory_mode not in ("hard", "soft"):
+        raise ValueError(f"memory_mode must be hard or soft, not {cfg.memory_mode!r}")
     if cfg.runtime == "process" and not cfg.allow_unsafe_process_runtime:
         raise ValueError(
             "runtime = \"process\" runs servers with NO isolation and is for "

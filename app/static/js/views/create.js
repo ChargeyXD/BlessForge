@@ -189,12 +189,14 @@ export async function render() {
     const heapSlider = shrineRange({
       label: 'Heap size',
       min: 1,
-      max: heapCeiling,
+      // Up to the whole machine: the suggestion is the starting value, not
+      // a cap (the panel warns above about 85% of it, never refuses).
+      max: totalRam ? Math.max(1, Math.floor(totalRam)) : heapCeiling,
       snap: 1,
       value: form.mem_max,
       ariaLabel: 'Heap size in gigabytes',
       format: (v) => `${v} GB`,
-      capLabel: totalRam ? `ceiling ${heapCeiling} GB` : 'no measured host',
+      capLabel: totalRam ? `machine ${totalRam} GB` : 'no measured host',
       oninput: (v) => {
         form.mem_max = v;
         heapEcho.textContent = `${v} GB`;

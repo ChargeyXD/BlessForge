@@ -238,7 +238,8 @@ export async function render() {
         stat('Mods', String(review.review?.total_mods ?? '?'),
           `${review.review?.server_mods ?? 0} server-side`),
         stat('Heap', `${form.mem_max} GB`,
-          review.memory?.capped_by_host ? 'capped by this host' : 'from the pack',
+          review.memory?.capped_by_host
+            ? `more than the ~${review.memory.ceiling_gb} GB free now` : 'from the pack',
           review.memory?.capped_by_host ? 'warn' : '')),
 
       (review.warnings || []).length

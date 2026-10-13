@@ -145,8 +145,33 @@ export async function render(ctx) {
     // stopped anyone following the advice directly underneath it ("pick a
     // number you know the machine has"). With nothing measured there is
     // nothing to strain against either, so the rope simply runs longer.
-    const ceiling = Math.max(2, Number(mem.ceiling_gb) || 16);
-    const top = mem.unmeasured ? Math.max(16, Math.ceil(heap * 2)) : ceiling;
+    // The heap is the person's to set, up to everything the machine has:
+    // the ceiling is a suggestion shown beside it, never the end of the
+    // slider. The container follows the heap (app/heap.py), so the limit it
+    // will get is shown live under it.
+    const total = Number(hostSpecs.total_ram_gb) || 0;
+    const top = mem.unmeasured || !total
+      ? Math.max(16, Math.ceil(heap * 2)) : Math.max(1, Math.floor(total * 2) / 2);
+    const box = plan.container || {};
+    const containerLine = h('div.sldr-help');
+    const sizeNote = () => {
+      const o = box.overhead || {};
+      const mb = heap * 1024;
+      const byMods = Math.min(o.mods_max_mb ?? 3072,
+        (o.min_mb ?? 768) + (o.per_mod_mb ?? 2.5) * (o.mod_count ?? plan.mod_count ?? 0));
+      const extra = Math.max(o.min_mb ?? 768, mb * (o.share ?? 0.2), byMods);
+      const gb = (mb + extra) / 1024;
+      const used = total - (Number(hostSpecs.available_ram_gb) || total);
+      const warn = total && gb > total * (box.warn_share ?? 0.85);
+      containerLine.className = warn ? 'note warn' : 'sldr-help';
+      containerLine.textContent = `Container: ${gb.toFixed(1)} GB — the heap plus `
+        + `${(extra / 1024).toFixed(1)} GB for Java around it`
+        + (o.mod_count ? ` with ${o.mod_count} mods` : '') + '.'
+        + (warn ? ` This machine has ${total} GB`
+          + (used >= 0.5 ? `; other apps use about ${used.toFixed(0)}` : '')
+          + '. It is set as asked; it may be squeezed.' : '');
+    };
+    sizeNote();
     slider = shrineRange({
       label: 'Heap',
       min: 1,
@@ -155,13 +180,14 @@ export async function render(ctx) {
       value: heap,
       ariaLabel: 'Heap size in gigabytes',
       format: (v) => `${v} GB`,
-      capLabel: mem.unmeasured ? 'no measured ceiling' : `ceiling ${ceiling} GB`,
+      capLabel: mem.unmeasured || !total ? 'no measured total' : `machine ${total} GB`,
       oninput: (v) => {
         heap = v;
         touchedHeap = true;
         for (const n of echoes) {
           n.textContent = n.dataset.fmt.replace('%', String(v));
         }
+        sizeNote();
       },
     });
 
@@ -207,13 +233,15 @@ export async function render(ctx) {
                   mem.unmeasured ? 'warn' : 'rose'),
               ),
               slider.node,
+              containerLine,
               h('div.sldr-help', mem.unmeasured
                 ? "No ceiling could be computed, because this host's memory "
                   + 'is unreadable from here. Pick a number you know the '
                   + 'machine has.'
-                : `The ceiling is ${mem.ceiling_gb} GB — total minus the `
-                  + `${mem.reserve_gb} GB reserved for the OS, the node and `
-                  + 'whatever else is on this box.'),
+                : `Suggested up to ${mem.ceiling_gb} GB — what is free beyond the `
+                  + `${mem.reserve_gb} GB kept for the OS and whatever else is on `
+                  + 'this box. A suggestion, not a limit: the heap you set is the '
+                  + 'one the server gets, and its container is resized with it.'),
               h('div', { style: { marginTop: '14px' } }, ofudaHost),
               !plan.jvm_file_supported
                 ? h('div.note', { style: { marginTop: '10px' } }, plan.note)

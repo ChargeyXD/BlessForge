@@ -337,6 +337,37 @@ async def main():
     check("nothing under app/ mentions Crafty", not hits, ", ".join(hits[:5]))
     check("app/crafty.py is gone", not (ROOT / "app" / "crafty.py").exists())
 
+    # --- the heap a person types is the heap the server gets (brief item 1) ---------------
+    import os
+    from app import heap as heaps
+    from app import specs
+    os.environ["HOST_RAM_GB"] = "16"
+    try:
+        m = MockEngine(seed=False)
+        engine.configure(drivers={"mock": m})
+        big = await engine.create_server(name="Big", port=25590,
+                                         memory_mb=specs.container_memory_mb(10),
+                                         mc_version="1.20.1", loader="forge")
+        await engine.update_server(big, {"execution_command":
+                                         "java @user_jvm_args.txt @libraries/x/unix_args.txt nogui"})
+        await engine.write_file(big, "user_jvm_args.txt", specs.render_jvm_args([], 10))
+        host = await specs.host_for(big)
+        sized = await heaps.resize(big, 10240, by_user=True, mods=420, host=host)
+        rec = await engine.get_server(big)
+        args = await engine.read_file(big, "user_jvm_args.txt")
+        check("a 10 GB heap typed for a 420-mod pack on a 16 GB node is the heap it gets",
+              "-Xmx10G" in args or "-Xmx10240M" in args, args)
+        check("...in a container sized for that heap and those mods",
+              rec["memory_mb"] == specs.container_memory_mb(10, 420) == sized["memory_mb"]
+              and rec["memory_mb"] > 10240 + 1024 and heaps.set_by_user(rec), rec)
+        check("...with no warning: it fits this machine", sized["warnings"] == [], sized)
+        source = (ROOT / "app" / "installer.py").read_text(encoding="utf-8")
+        check("the install uses the heap typed or the pack's, never the host's free figure",
+              'heap = mem_max or memory["heap_gb"]' not in source
+              and "heap = ram_max" in source)
+    finally:
+        os.environ.pop("HOST_RAM_GB", None)
+
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return passed == len(results)

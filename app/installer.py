@@ -1061,12 +1061,19 @@ async def install_modpack(
     job.set_step("Applying server settings", 94)
     await _apply_server_settings(job, server_id, plan, ram_max, motd, port)
 
-    # Size the heap against the host, not just the pack's wishlist: a pack
-    # asking for 8 GB on a box with 5 GB free dies at startup with no log.
-    # Set when the loader keeps its JVM args in the startup command rather
-    # than in a file; applied last, so nothing after it rewrites the command
-    # and undoes it.
+    # The heap is the one typed, or the pack's; the container is sized for
+    # it either way (below, or here when tuning is off). Set when the loader
+    # keeps its JVM args in the startup command rather than in a file;
+    # applied last, so nothing after it rewrites the command and undoes it.
     pending_heap: tuple | None = None
+    if not optimize:
+        try:
+            from app import heap as heaps
+            await heaps.resize(server_id, int(ram_max * 1024), by_user=bool(mem_max),
+                               mods=len([r for r in records
+                                         if r.get("file", "").endswith(".jar")]))
+        except Exception as e:
+            job.log_line(f"Could not size the container: {e}", "warn")
     if optimize:
         try:
             host = await specs.host_for(server_id)
@@ -1076,14 +1083,23 @@ async def install_modpack(
                                if r.get("file", "").endswith(".jar")]),
                 host=host,
             )
-            heap = mem_max or memory["heap_gb"]
-            # The container has to hold the heap plus the JVM's own
-            # overhead, or the kernel kills it the first time it is busy.
-            # Until plans fix a server's size (WP-08), its size follows the
-            # heap rather than the other way round.
+            # The heap is what the person typed, or what the pack asks for:
+            # never capped at what this machine has free right now. That
+            # figure is a warning beside it (app/heap.py).
+            heap = ram_max
+            if not memory.get("unmeasured") and heap > memory.get("ceiling_gb", heap):
+                job.log_line(
+                    f"The {heap:g} GB heap is more than this machine can comfortably "
+                    f"give right now (about {memory['ceiling_gb']:g} GB); it is set as "
+                    "asked. Stop other apps if the server is squeezed.", "warn")
             mod_count = len([r for r in records if r.get("file", "").endswith(".jar")])
-            await engine.update_server(
-                server_id, {"memory_mb": specs.container_memory_mb(heap, mod_count)})
+            # The container holds the heap plus the JVM's own overhead, or the
+            # kernel kills it the first time it is busy; it follows the heap.
+            from app import heap as heaps
+            sized = await heaps.resize(server_id, int(heap * 1024), by_user=bool(mem_max),
+                                       mods=mod_count, host=host)
+            for w in sized["warnings"]:
+                job.log_line(w, "warn")
             flags = [f["flag"] for f in specs.build_flag_plan(
                 heap_gb=heap, host=host, mc_version=plan.mc_version,
                 loader=plan.loader) if f["enabled"]]

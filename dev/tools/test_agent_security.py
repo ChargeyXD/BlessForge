@@ -755,6 +755,43 @@ def test_containers():
         except UnsafeSpec:
             ok = True
         check(f"assert_safe refuses {label}", ok)
+    # memory_mode = "soft": an explicit setting, off by default, tested both ways.
+    soft_spec = copy.deepcopy(spec)
+    for k in ("Memory", "MemorySwap"):
+        soft_spec["HostConfig"].pop(k)
+    soft_spec["HostConfig"]["MemoryReservation"] = 2560 * mib
+    try:
+        assert_safe(soft_spec, cfg, folder)
+        ok = False
+    except UnsafeSpec:
+        ok = True
+    check("assert_safe refuses a reservation with no hard limit on a default node", ok)
+    soft_cfg = docker_cfg(memory_mode="soft")
+    built = container_spec(server, soft_cfg, folder)["HostConfig"]
+    try:
+        assert_safe(container_spec(server, soft_cfg, folder), soft_cfg, folder)
+        ok = True
+    except UnsafeSpec as e:
+        ok = str(e)
+    check("...and allows one where agent.toml says memory_mode = \"soft\", which builds it",
+          ok is True and built.get("MemoryReservation") == 2560 * mib
+          and "Memory" not in built and "MemorySwap" not in built, (ok, built))
+    for label, mutate in [("unlimited swap", hcset("MemorySwap", -1)),
+                          ("no reservation either", hcset("MemoryReservation", 0))]:
+        bad = copy.deepcopy(soft_spec)
+        mutate(bad)
+        try:
+            assert_safe(bad, soft_cfg, folder)
+            ok = False
+        except UnsafeSpec:
+            ok = True
+        check(f"...but even then refuses {label}", ok)
+    try:
+        assert_safe(spec, soft_cfg, folder)
+        ok = True
+    except UnsafeSpec as e:
+        ok = str(e)
+    check("...and a hard limit is still fine on a soft node", ok is True, ok)
     for label, f in [("a folder outside the servers root", pathlib.PurePosixPath("/etc")),
                      ("a folder that climbs out with ..",
                       pathlib.PurePosixPath("/srv/blessforge/servers/../../../etc")),
@@ -942,7 +979,17 @@ def test_config():
     cfg = load(p)
     check("the defaults are the safe ones",
           cfg.runtime == "docker" and cfg.game_network == "bridge" and cfg.pids_limit > 0
-          and cfg.verify_panel_tls and not cfg.allow_unsafe_process_runtime)
+          and cfg.verify_panel_tls and not cfg.allow_unsafe_process_runtime
+          and cfg.memory_mode == "hard")
+    p.write_text(base + 'memory_mode = "none"\n', encoding="utf-8")
+    try:
+        load(p)
+        ok = False
+    except ValueError as e:
+        ok = "memory_mode" in str(e)
+    check("a memory mode other than hard or soft is refused", ok)
+    p.write_text(base + 'memory_mode = "soft"\n', encoding="utf-8")
+    check("memory_mode = \"soft\" is read when it is asked for", load(p).memory_mode == "soft")
     try:
         ProcessRuntime(cfg)
         ok = False

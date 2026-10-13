@@ -363,6 +363,15 @@ async def create_empty(
             job.log_line(f"Tuned JVM: {ram_max:g} GB heap, {len(flags)} flags")
         except Exception as e:
             job.log_line(f"Could not apply performance tuning: {e}", "warn")
+    try:
+        # The container follows the heap, and remembers who chose it.
+        from app import heap as heaps
+        sized = await heaps.resize(server_id, int(ram_max * 1024), by_user=bool(mem_max),
+                                   mods=0, host=host)
+        for w in sized["warnings"]:
+            job.log_line(w, "warn")
+    except Exception as e:
+        job.log_line(f"Could not size the container: {e}", "warn")
 
     installed: list[dict] = []
     if seed_mods:
