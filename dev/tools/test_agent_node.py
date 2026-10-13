@@ -1096,6 +1096,17 @@ async def test_committed_memory():
                 check("/v1/system reports committed memory: the running servers' limits",
                       system["committed_bytes"] == (ram_mb - 1024) * 1048576,
                       system["committed_bytes"])
+                import psutil as _ps
+                check("/v1/system reports the machine itself: CPU model, cores, threads, "
+                      "RAM, swap, kernel, uptime and the servers' disk",
+                      system["ram_bytes"] == _ps.virtual_memory().total
+                      and system["cpu_threads"] == _ps.cpu_count()
+                      and system.get("cpu_cores") == _ps.cpu_count(logical=False)
+                      and system.get("swap_bytes") == _ps.swap_memory().total
+                      and system.get("kernel") and system.get("boot_time")
+                      and system.get("disk_total") and "cpu_model" in system,
+                      {k: system.get(k) for k in ("cpu_model", "cpu_cores", "cpu_threads",
+                                                  "swap_bytes", "kernel")})
                 check("a start past the node's RAM is not refused by default (the panel "
                       "warns and asks)", r.status_code == 200, r.text)
             else:

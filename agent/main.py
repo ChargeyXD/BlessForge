@@ -65,6 +65,24 @@ async def heavy(fn, *args):
     return await asyncio.get_running_loop().run_in_executor(_HEAVY, fn, *args)
 
 
+def _cpu_model() -> str:
+    """The host CPU's name: "model name" on x86, "Hardware"/"Model" on ARM."""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
+            found = {}
+            for line in fh:
+                key, _, value = line.partition(":")
+                key = key.strip()
+                if key in ("model name", "Hardware", "Model") and value.strip():
+                    found.setdefault(key, value.strip())
+            for key in ("model name", "Model", "Hardware"):
+                if key in found:
+                    return found[key]
+    except OSError:
+        pass
+    return platform.processor() or ""
+
+
 def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     state: dict = {}
 
@@ -146,12 +164,20 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     @app.get("/v1/system")
     async def system(lag_since: float = 0.0):
         c: AgentConfig = state["cfg"]
-        mem = available = load = None
+        # The machine's own figures, not this container's: /proc/meminfo,
+        # /proc/cpuinfo and /proc/loadavg are the host's inside a container,
+        # and the agent's own memory or CPU cap (if CasaOS gives it one) has
+        # nothing to do with what the game servers beside it may use.
+        mem = available = load = cores = swap = swap_free = booted = None
         try:
             import psutil
             vm = psutil.virtual_memory()
             mem, available = vm.total, vm.available
             load = psutil.getloadavg()[0]
+            cores = psutil.cpu_count(logical=False)
+            sw = psutil.swap_memory()
+            swap, swap_free = sw.total, sw.free
+            booted = psutil.boot_time()
         except Exception:       # noqa: BLE001
             pass
         disk = shutil.disk_usage(c.servers_root)
@@ -160,8 +186,11 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         except Exception as e:  # noqa: BLE001 -- a down Docker is worth saying
             rt = {"error": str(e)}
         return {"node": c.node_id, "agent_version": VERSION,
-                "cpu_threads": os.cpu_count(), "ram_bytes": mem,
-                "ram_available_bytes": available, "load_1m": load,
+                "cpu_threads": os.cpu_count(), "cpu_cores": cores,
+                "cpu_model": _cpu_model(), "ram_bytes": mem,
+                "ram_available_bytes": available, "swap_bytes": swap,
+                "swap_free_bytes": swap_free, "load_1m": load,
+                "boot_time": booted, "kernel": platform.release(),
                 "disk_total": disk.total, "disk_free": disk.free,
                 "os": platform.platform(), "runtime": c.runtime, **rt,
                 "servers": len(sup().servers),

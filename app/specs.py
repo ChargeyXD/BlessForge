@@ -156,14 +156,10 @@ def host_specs() -> dict:
         source = "cgroup"
     available_bytes = meminfo.get("MemAvailable", 0)
 
+    # The machine's CPUs, not this container's quota -- the same mistake as
+    # memory above: a CPU cap on the panel said nothing about the cores a
+    # game server beside it may use, and shrank every heap and flag plan.
     cpus = os.cpu_count() or 1
-    try:  # cgroup CPU quota, if one is set
-        with open("/sys/fs/cgroup/cpu.max") as fh:
-            quota, period = fh.read().split()
-            if quota != "max":
-                cpus = max(1, int(int(quota) / int(period)))
-    except (OSError, ValueError):
-        pass
 
     model = ""
     try:
@@ -228,6 +224,21 @@ async def host_for(server_id: str | None = None) -> dict:
     if node.get("load_1m") is not None:
         specs["load_1m"] = round(float(node["load_1m"]), 2)
         specs["load_per_core"] = round(float(node["load_1m"]) / (specs.get("cpu_count") or 1), 2)
+    # The rest of the machine as the node sees it -- the panel's own
+    # container is the wrong place to read a remote node's CPU or disk from.
+    if node.get("cpu_model"):
+        specs["cpu_model"] = node["cpu_model"]
+    if node.get("cpu_cores"):
+        specs["cpu_cores"] = int(node["cpu_cores"])
+    if node.get("disk_free") is not None:
+        specs["disk_free_gb"] = round(node["disk_free"] / gib, 1)
+    if node.get("disk_total"):
+        specs["disk_total_gb"] = round(node["disk_total"] / gib, 1)
+    if node.get("swap_bytes") is not None:
+        specs["swap_gb"] = round(node["swap_bytes"] / gib, 1)
+        specs["swap_free_gb"] = round((node.get("swap_free_bytes") or 0) / gib, 1)
+    if node.get("kernel"):
+        specs["kernel"] = node["kernel"]
     specs["source"] = f"node {node.get('node') or ''}".strip()
     specs["note"] = "Measured by the node that runs the servers."
     specs["unmeasured"] = False
