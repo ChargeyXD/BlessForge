@@ -2011,6 +2011,34 @@ async def set_port(server_id: str, body: dict = Body(...)) -> dict:
         raise _err(e)
 
 
+@app.post("/api/instances/{server_id}/cpu")
+async def set_cpu(server_id: str, body: dict = Body(...)) -> dict:
+    """CPU weight under contention (`cpu_shares`, 1024 = an equal share) and
+    optional pinning to cores (`cpuset`, e.g. "0-3"; blank for none). Both
+    take effect at the next start."""
+    import re as _re
+    fields: dict = {}
+    if "cpuset" in body:
+        cpuset = str(body.get("cpuset") or "").replace(" ", "")
+        if cpuset and not _re.fullmatch(r"\d{1,3}(-\d{1,3})?(,\d{1,3}(-\d{1,3})?)*", cpuset):
+            raise HTTPException(400, "cores look like 0-3 or 0,2,4-5")
+        fields["cpuset"] = cpuset
+    if body.get("cpu_shares") is not None:
+        try:
+            fields["cpu_shares"] = max(2, min(262144, int(body["cpu_shares"])))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "cpu_shares must be a number")
+    try:
+        server = await engine.get_server(server_id)
+        limits = {**(server.get("limits") or {}), **fields}
+        await engine.update_server(server_id, {"limits": limits})
+        return {"cpuset": limits.get("cpuset") or "",
+                "cpu_shares": int(limits.get("cpu_shares") or 1024),
+                "restart_required": True}
+    except Exception as e:
+        raise _err(e)
+
+
 @app.get("/api/instances/{server_id}/optimize")
 async def optimize_plan(server_id: str) -> dict:
     try:

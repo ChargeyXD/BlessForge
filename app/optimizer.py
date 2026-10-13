@@ -107,6 +107,7 @@ async def build_plan(server_id: str) -> dict:
         "container": {
             "memory_mb": int(server.get("memory_mb") or 0),
             "heap_set_by_user": bool((server.get("limits") or {}).get("heap_set_by_user")),
+            "cpuset": str((server.get("limits") or {}).get("cpuset") or ""),
             "warn_share": 0.85,
             "overhead": {"min_mb": specs.CONTAINER_OVERHEAD_MIN_MB,
                          "share": specs.CONTAINER_OVERHEAD_SHARE,

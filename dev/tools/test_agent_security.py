@@ -629,6 +629,21 @@ def test_containers():
     check("memory is capped, and swap equals it (no swap to hide in)",
           hc["Memory"] == hc["MemorySwap"] == 2560 * mib)
     check("CPU is capped (200% = two cores)", hc["NanoCpus"] == 2_000_000_000)
+    check("...and shared by weight under contention (an equal 1024), not pinned",
+          hc["CpuShares"] == 1024 and "CpusetCpus" not in hc)
+    pinned = container_spec({**server, "limits": {"cpu_pct": 200, "cpuset": "0-3",
+                                                  "cpu_shares": 2048}}, cfg, folder)
+    nonsense = container_spec({**server, "limits": {"cpuset": "0-3; rm -rf /"}}, cfg, folder)
+    try:
+        assert_safe(pinned, cfg, folder)
+        ok = True
+    except UnsafeSpec as e:
+        ok = str(e)
+    check("a big pack can be pinned to cores and weighted, and still passes the check",
+          ok is True and pinned["HostConfig"]["CpusetCpus"] == "0-3"
+          and pinned["HostConfig"]["CpuShares"] == 2048, ok)
+    check("...a cpuset that is not one is ignored, never passed to Docker",
+          "CpusetCpus" not in nonsense["HostConfig"])
     check("a PID limit is set", hc["PidsLimit"] == cfg.pids_limit > 0)
     check("every capability is dropped, none added",
           hc["CapDrop"] == ["ALL"] and not hc["CapAdd"])

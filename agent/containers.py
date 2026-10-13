@@ -105,10 +105,25 @@ def argv_of(command: str) -> list[str]:
     return argv
 
 
+_CPUSET = re.compile(r"^\d{1,3}(-\d{1,3})?(,\d{1,3}(-\d{1,3})?)*$")
+
+
+def cpuset_of(value) -> str:
+    """A cpuset such as "0-3" or "0,2,4-5", or "" for none (or nonsense)."""
+    text = str(value or "").replace(" ", "")
+    return text if _CPUSET.match(text) else ""
+
+
 def limits_of(spec: dict) -> dict:
     lim = dict(spec.get("limits") or {})
     memory_mb = int(spec.get("memory_mb") or lim.get("memory_mb") or 2048)
     return {
+        # Under contention, CPU is shared by weight: a busy server cannot
+        # starve the others of the cores they all may use. 1024 is an equal
+        # share; a server given more gets proportionally more when it counts.
+        "cpu_shares": min(262144, max(2, int(lim.get("cpu_shares") or 1024))),
+        # Optional pinning of a big pack to specific cores.
+        "cpuset": cpuset_of(lim.get("cpuset")),
         "memory_mb": max(256, memory_mb),
         # No plan limit means the node's own cores. The default used to be
         # 100 -- ONE core -- so every pack on a self-hosted node booted on a
@@ -160,6 +175,8 @@ def container_spec(server: dict, cfg: AgentConfig, folder: Path) -> dict:
             **({"MemoryReservation": mem} if cfg.memory_mode == "soft"
                else {"Memory": mem, "MemorySwap": mem}),
             "NanoCpus": int(lim["cpu_pct"] / 100 * 1_000_000_000),
+            "CpuShares": lim["cpu_shares"],
+            **({"CpusetCpus": lim["cpuset"]} if lim["cpuset"] else {}),
             "PidsLimit": cfg.pids_limit,
             "BlkioWeight": lim["io_weight"],
             "CapDrop": ["ALL"],

@@ -342,6 +342,14 @@ export async function render(ctx) {
                   + 'free, otherwise the first free one in the range')),
               h('button.btn.sm.block', { onclick: savePort },
                 hl(), icon('save', 13), h('span', 'Set the port in both places')),
+              h('div.field', { style: { marginTop: '12px' } },
+                h('label', 'Pin to cores (optional)'),
+                h('input.inp', {
+                  id: 'cpusetinput', placeholder: 'e.g. 0-3', inputMode: 'numeric',
+                  value: plan.container?.cpuset || '',
+                  onchange: (e) => saveCpuset(e.target.value),
+                }),
+                h('div.help', 'Keeps a big pack on these cores. Blank: any core.')),
               h('p.muted', { style: { fontSize: '11.5px', marginTop: '10px' } },
                 `This node's edge forwards game ports `
                 + `${(port.published_range || []).join('–')}. A port outside `
@@ -758,6 +766,14 @@ export async function render(ctx) {
       propEdits.clear();
       await load();
       askAdvice();
+    } catch (e) { toastError(e); }
+  }
+
+  async function saveCpuset(cpuset) {
+    try {
+      const res = await api.post(`/api/instances/${ctx.id}/cpu`, { cpuset });
+      toast(res.cpuset ? `Pinned to cores ${res.cpuset} from the next start.`
+        : 'Not pinned: any core, from the next start.', 'ok');
     } catch (e) { toastError(e); }
   }
 
