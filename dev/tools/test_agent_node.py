@@ -225,6 +225,9 @@ async def test_file_ops_off_loop():
         # about 120 with every suite and a modpack boot sharing the CPU.
         check("the event loop never stalled for anything like a compress",
               probe.worst < 0.25, f"worst {probe.worst * 1000:.0f} ms")
+        lag = (await c.get("/v1/system")).json().get("loop_lag_ms")
+        check("the agent's own loop-lag probe saw it too, on /v1/system",
+              lag is not None and lag < 250, lag)
         check("and the backups still finished",
               all(r.status_code == 200 for r in done)
               and all((folder / f"backup-{i}.zip").is_file() for i in range(3)))

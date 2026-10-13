@@ -86,7 +86,10 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             log.warning("re-attaching running servers took over 60 s; continuing")
         if adopted:
             log.info("re-attached %d running server(s)", len(adopted))
-        tasks = [asyncio.create_task(events.run()),
+        lag = LoopLag()
+        state["lag"] = lag
+        tasks = [asyncio.create_task(lag.run()),
+                 asyncio.create_task(events.run()),
                  asyncio.create_task(sup.watch_disks()),
                  asyncio.create_task(sup.sample_loop()),
                  asyncio.create_task(_stats_loop(sup, events)),
@@ -137,7 +140,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         return {"ok": True, "version": VERSION}
 
     @app.get("/v1/system")
-    async def system():
+    async def system(lag_since: float = 0.0):
         c: AgentConfig = state["cfg"]
         mem = available = load = None
         try:
@@ -166,7 +169,11 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 # and what they drop is counted here.
                 "events_queued": len(state["events"].queue),
                 "events_dropped": state["events"].dropped,
-                "console_dropped": sum(s.console.dropped for s in sup().servers.values())}
+                "console_dropped": sum(s.console.dropped for s in sup().servers.values()),
+                # The event loop's worst lag in the last minute (or since
+                # lag_since, an epoch time): the node's own stall meter.
+                "loop_lag_ms": round(1000 * state["lag"].worst(
+                    lag_since or time.time() - 60), 1)}
 
     # --- servers ----------------------------------------------------------------
 
@@ -466,6 +473,35 @@ async def _receive(root: Path, path: str, request: Request) -> int:
         raise
     await queue.put(None)
     return await writer
+
+
+class LoopLag:
+    """How late the event loop runs a 50 ms timer: the worst per second, for
+    the last ten minutes. Anything that blocks the loop -- a file walk, a
+    synchronous call -- shows here as lag, and every console, stats call and
+    event flush on the node waits that long."""
+
+    TICK = 0.05
+
+    def __init__(self):
+        import collections
+        self.seconds: collections.deque[tuple[int, float]] = collections.deque(maxlen=600)
+
+    async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            t0 = loop.time()
+            await asyncio.sleep(self.TICK)
+            lag = max(0.0, loop.time() - t0 - self.TICK)
+            now = int(time.time())
+            if self.seconds and self.seconds[-1][0] == now:
+                if lag > self.seconds[-1][1]:
+                    self.seconds[-1] = (now, lag)
+            else:
+                self.seconds.append((now, lag))
+
+    def worst(self, since: float = 0.0) -> float:
+        return max((lag for t, lag in self.seconds if t >= int(since)), default=0.0)
 
 
 async def _stats_loop(sup: Supervisor, events: Events) -> None:
