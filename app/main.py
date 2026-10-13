@@ -666,7 +666,7 @@ async def _overcommit(server_id: str) -> dict | None:
 @app.get("/api/nodes/ports")
 async def nodes_ports() -> dict:
     """Host ports other apps hold on the machine a new server would go to,
-    as runs ("25500-25600, big-bear-crafty"), for the new-server form."""
+    as runs ("25500-25600, another-app"), for the new-server form."""
     return {"taken_by_apps": await properties.taken_by_apps()}
 
 
