@@ -158,7 +158,10 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 "disk_total": disk.total, "disk_free": disk.free,
                 "os": platform.platform(), "runtime": c.runtime, **rt,
                 "servers": len(sup().servers),
-                "running": sum(1 for s in sup().servers.values() if s.running)}
+                "running": sum(1 for s in sup().servers.values() if s.running),
+                # What the running (and queued) servers' memory limits add
+                # up to, against ram_bytes: the node view's committed memory.
+                "committed_bytes": sup().committed_mb() * 1048576}
 
     # --- servers ----------------------------------------------------------------
 

@@ -24,6 +24,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     slot until "Done", the rest waiting with a console line (7.2);
   * installs take turns on their own pool, so an install never holds up a
     start, nor a start an install (7.3);
+  * committed memory -- the running servers' limits -- is reported against
+    the node's RAM, and only a node set to refuse overcommit refuses (7.5);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1012,6 +1014,38 @@ async def test_install_slots():
         await until(lambda: a.sup.servers[ids[2]].running is None)
 
 
+# --- 7.5 memory accounting without refusing -----------------------------------------------
+
+
+async def test_committed_memory():
+    section("7.5 committed memory: reported, and refused only where a node says so")
+    import psutil
+    ram_mb = psutil.virtual_memory().total // 1048576
+    big, small = ("efefefef-0000-0000-0000-00000000000a", "efefefef-0000-0000-0000-00000000000b")
+    for refuse in (False, True):
+        async with Agent(process_cfg(f"commit-{refuse}", refuse_overcommit=refuse)) as a:
+            c = a.client
+            await fake_server(a, big, 30301, name="Big", memory_mb=ram_mb - 1024)
+            await fake_server(a, small, 30302, name="Small", memory_mb=4096)
+            await c.post(f"/v1/servers/{big}/power", json={"action": "start"})
+            await until(lambda: a.sup.servers[big].running is not None)
+            system = (await c.get("/v1/system")).json()
+            r = await c.post(f"/v1/servers/{small}/power", json={"action": "start"})
+            if not refuse:
+                check("/v1/system reports committed memory: the running servers' limits",
+                      system["committed_bytes"] == (ram_mb - 1024) * 1048576,
+                      system["committed_bytes"])
+                check("a start past the node's RAM is not refused by default (the panel "
+                      "warns and asks)", r.status_code == 200, r.text)
+            else:
+                check("...a node with refuse_overcommit refuses it, saying how much",
+                      r.status_code == 409 and r.json().get("overcommit", {})
+                      .get("total_mb") == ram_mb, r.text)
+            for sid in (big, small):
+                await c.post(f"/v1/servers/{sid}/power", json={"action": "stop"})
+            await until(lambda: all(a.sup.servers[x].running is None for x in (big, small)))
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1022,6 +1056,7 @@ async def main():
     await test_ports()
     await test_boot_queue()
     await test_install_slots()
+    await test_committed_memory()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

@@ -15,6 +15,7 @@ node there is nothing to look up.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, AsyncIterator
 
 from app.engine.base import (EULA_ACCEPTED, POWER_ACTIONS, EngineError,
@@ -364,6 +365,25 @@ async def node_system(server_id: str | None = None) -> dict | None:
         return await drv._call("GET", "/v1/system", timeout=10)
     except EngineError:
         return None
+
+
+async def nodes_memory() -> list[dict]:
+    """Per node: the memory its running servers' limits commit, against its
+    RAM -- concurrently, and a node that does not answer is just left out."""
+    _ensure()
+
+    async def one(node_id: str, drv) -> dict | None:
+        if not hasattr(drv, "_call"):
+            return None
+        try:
+            sysinfo = await drv._call("GET", "/v1/system", timeout=3)
+        except EngineError:
+            return None
+        return {"node": node_id, "total_mb": int((sysinfo.get("ram_bytes") or 0) // 1048576),
+                "committed_mb": int((sysinfo.get("committed_bytes") or 0) // 1048576),
+                "running": sysinfo.get("running")}
+    found = await asyncio.gather(*(one(n, d) for n, d in list(_drivers.items())))
+    return [f for f in found if f]
 
 
 async def folder_usage(server_id: str) -> dict | None:

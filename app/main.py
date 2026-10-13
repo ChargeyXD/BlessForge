@@ -631,8 +631,31 @@ async def instance_stats(server_id: str) -> dict:
         raise _err(e)
 
 
+async def _overcommit(server_id: str) -> dict | None:
+    """Whether starting this server takes its node's committed memory past
+    its RAM -- a warning to confirm, never a refusal (a node can refuse
+    behind refuse_overcommit in its agent.toml)."""
+    node = await engine.node_system(server_id)
+    if not node or not node.get("ram_bytes"):
+        return None
+    server = await engine.get_server(server_id)
+    mine = int(server.get("memory_mb") or 0)
+    total = int(node["ram_bytes"] // 1048576)
+    committed = int((node.get("committed_bytes") or 0) // 1048576)
+    if committed + mine <= total:
+        return None
+    return {"committed_mb": committed, "server_mb": mine, "total_mb": total}
+
+
+@app.get("/api/nodes/memory")
+async def nodes_memory() -> dict:
+    """Committed memory per node -- the running servers' limits -- against
+    its RAM, for the fleet view."""
+    return {"nodes": await engine.nodes_memory()}
+
+
 @app.post("/api/instances/{server_id}/action/{action}")
-async def instance_action(server_id: str, action: str) -> dict:
+async def instance_action(server_id: str, action: str, confirm: bool = False) -> dict:
     allowed = {"start_server", "stop_server", "restart_server", "kill_server",
                "switch_server"}
     if action not in allowed:
@@ -649,6 +672,22 @@ async def instance_action(server_id: str, action: str) -> dict:
                 action, upgraded = "restart_server", True
         except Exception:
             pass          # if stats are unreadable, let the start try anyway
+
+    if action == "start_server" and not confirm:
+        # Over the node's RAM: say so and let a person decide.
+        try:
+            over = await _overcommit(server_id)
+        except Exception:
+            over = None
+        if over:
+            gb = lambda mb: f"{mb / 1024:.1f}"  # noqa: E731
+            return JSONResponse({
+                "detail": f"Starting this server commits {gb(over['committed_mb'] + over['server_mb'])} "
+                          f"GB of this machine's {gb(over['total_mb'])} GB: the servers "
+                          "running now already hold "
+                          f"{gb(over['committed_mb'])} GB. It can start anyway; if they "
+                          "all use what they are allowed, the kernel kills one.",
+                "overcommit": over}, status_code=409)
 
     prepared: dict = {}
     if action in ("start_server", "restart_server", "switch_server"):

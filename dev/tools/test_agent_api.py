@@ -348,6 +348,25 @@ async def main():
         await until(lambda: _stopped(c, twin), 20)
         await eng.delete_server(twin)
 
+        # --- committed memory: past the machine's RAM is a question, not a refusal ---------
+        huge = await eng.create_server(name="Huge", port=free_port(), memory_mb=1024 * 1024)
+        await eng.upload_file(huge, ".", "fake_server.py", FAKE_SERVER.encode())
+        await eng.update_server(huge, {"execution_command":
+                                       f'"{sys.executable}" -u fake_server.py'})
+        r = await c.post(f"/api/instances/{huge}/action/start_server")
+        check("starting a server past the node's RAM asks first, saying how much",
+              r.status_code == 409 and r.json().get("overcommit", {}).get("server_mb")
+              == 1024 * 1024 and "GB" in r.json()["detail"], r.text[:300])
+        r = await c.post(f"/api/instances/{huge}/action/start_server?confirm=true")
+        check("...and starts once a person confirms",
+              r.status_code == 200 and await until(lambda: _running(c, huge), 20))
+        mem = (await c.get("/api/nodes/memory")).json()["nodes"]
+        check("the fleet's committed memory counts it against the node's RAM",
+              mem and mem[0]["committed_mb"] >= 1024 * 1024 and mem[0]["total_mb"] > 0, mem)
+        await c.post(f"/api/instances/{huge}/action/stop_server")
+        await until(lambda: _stopped(c, huge), 20)
+        await eng.delete_server(huge)
+
         # --- a token is for one server and one node -----------------------------------------
         other = await eng.create_server(name="Other", port=free_port(), memory_mb=1024)
         from app import nodes as panel_nodes

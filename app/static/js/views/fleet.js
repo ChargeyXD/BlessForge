@@ -47,6 +47,10 @@ export async function render() {
   // screen permanently showing nothing.
   let rackId = prefs.get('fleet.rack', '');
   let unsub = null;
+  // Committed memory per node: the running servers' limits against its RAM.
+  let memory = [];
+  const loadMemory = () => api.get('/api/nodes/memory')
+    .then((r) => { memory = r.nodes || []; paint(); }).catch(() => {});
 
   topActions(
     h('a.btn.sm.ghost', { href: '#/groups' }, icon('layers', 14),
@@ -137,6 +141,12 @@ export async function render() {
         kpi('Needs attention', String(counts.attention),
           counts.attention ? 'crashed, orphaned or half-finished' : 'all clear',
           counts.attention ? 'bad' : 'ok'),
+        ...memory.filter((m) => m.total_mb).map((m) => kpi(
+          memory.length > 1 ? `Memory · ${m.node}` : 'Memory committed',
+          `${(m.committed_mb / 1024).toFixed(1)} / ${(m.total_mb / 1024).toFixed(0)} GB`,
+          m.committed_mb > m.total_mb ? 'more than the machine has'
+            : 'running servers\' limits',
+          m.committed_mb > m.total_mb ? 'warn' : '')),
       ) : null,
 
       ...portGroups(all),
@@ -166,9 +176,11 @@ export async function render() {
   }
   refreshGroups();
   paint();
-  unsub = onState(paint);
+  loadMemory();
+  unsub = onState(() => { paint(); });
+  const memTimer = setInterval(loadMemory, 20000);
 
-  return { node, dispose: () => unsub?.() };
+  return { node, dispose: () => { unsub?.(); clearInterval(memTimer); } };
 }
 
 function rackChip(value, label, count, motifName, current, onpick) {
@@ -353,6 +365,23 @@ export async function action(s, act) {
     setTimeout(() => refreshInstances({ quiet: true }), 1200);
     setTimeout(() => refreshInstances({ quiet: true }), 5000);
   } catch (e) {
+    // Past the machine's memory: a warning to confirm, not a refusal.
+    if (e?.status === 409 && e?.body?.overcommit && act === 'start_server') {
+      const ok = await confirmDialog({
+        title: `Start ${s.name} anyway?`,
+        message: e.message,
+        confirmLabel: 'Start anyway',
+      });
+      if (ok) {
+        try {
+          const res = await api.post(
+            `/api/instances/${s.server_id}/action/${act}?confirm=true`);
+          toast(res.why || `Starting ${s.name}…`, 'ok');
+          setTimeout(() => refreshInstances({ quiet: true }), 1200);
+        } catch (err) { toastError(err, `Could not start ${s.name}`); }
+      }
+      return;
+    }
     // A fixed port another app holds: offer the next free one.
     const nextFree = e?.body?.next_free;
     if (e?.status === 409 && nextFree && act === 'start_server') {

@@ -89,6 +89,7 @@ RULES: list[Rule] = [
     # --- reading the fleet ---------------------------------------------
     _r("GET", "/api/health", ANY),
     _r("GET", "/api/instances", ANY),
+    _r("GET", "/api/nodes/memory", ANY),
     _r("POST", "/api/fleet/seen", ANY),
     _r("GET", "/api/fleet/groups", ANY),
     _r("POST", "/api/fleet/groups", "racks.manage"),

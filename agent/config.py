@@ -78,6 +78,11 @@ class AgentConfig:
     max_concurrent_boots: int = 2
     boot_timeout: int = 900
     max_concurrent_installs: int = 2
+    # Starting a server that takes the node's committed memory (the sum of
+    # its running servers' limits) past its RAM is warned about by the
+    # panel and confirmed by a person -- not refused. A node that sells
+    # servers can make it a refusal here.
+    refuse_overcommit: bool = False
 
     # --- process runtime: development only -------------------------------------
     # Runs the server as a plain process with no isolation at all. Refused

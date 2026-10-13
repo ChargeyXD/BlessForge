@@ -73,6 +73,14 @@ def _port_range(value) -> list[int]:
     return [lo, hi] if 1024 <= lo <= hi <= 65535 else [25500, 25600]
 
 
+def _ram_mb() -> int:
+    try:
+        import psutil
+        return int(psutil.virtual_memory().total // 1048576)
+    except Exception:       # noqa: BLE001
+        return 0
+
+
 def set_properties_port(folder: Path, old: int, new: int) -> None:
     """server-port (and a query.port that followed it) set to `new`, in the
     server's own server.properties, through the jail."""
@@ -491,9 +499,25 @@ class Supervisor:
                 self.boot_slots.release()
         self.booting[srv.uuid] = asyncio.create_task(hold())
 
+    def committed_mb(self, but: str | None = None) -> int:
+        """The memory this node has promised: the limits of every server
+        running, booting or waiting to boot."""
+        return sum(limits_of(s.spec)["memory_mb"] for s in self.servers.values()
+                   if s.uuid != but and (s.running is not None or s.uuid in self.queued))
+
     async def _checks(self, srv: Server) -> None:
         if srv.state == "installing":
             raise RuntimeError_("an install is running on this server", 409)
+        if self.cfg.refuse_overcommit:
+            total = _ram_mb()
+            need = self.committed_mb(but=srv.uuid) + limits_of(srv.spec)["memory_mb"]
+            if total and need > total:
+                raise RuntimeError_(
+                    f"Starting this server would commit {need} MB of this node's "
+                    f"{total} MB, and this node does not overcommit.", 409,
+                    overcommit={"committed_mb": need - limits_of(srv.spec)["memory_mb"],
+                                "server_mb": limits_of(srv.spec)["memory_mb"],
+                                "total_mb": total})
         argv_of(srv.spec.get("execution_command") or "")      # 409 if none
         if srv.spec.get("port_auto"):
             await self._choose_port(srv)
