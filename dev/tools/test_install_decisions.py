@@ -73,6 +73,7 @@ class Recorder(MockEngine):
         self.uploaded: list[str] = []      # paths that landed in the server
         self.upload_sizes: list[int] = []
         self.patched: list[dict] = []
+        self.asked: list[dict] = []        # every install step sent
 
     async def upload_path(self, server_id, location, filename, src):
         # The overlay arrives as a zip the node unpacks, so read it back to
@@ -90,6 +91,10 @@ class Recorder(MockEngine):
     async def update_server(self, server_id, fields):
         self.patched.append(dict(fields))
         await super().update_server(server_id, fields)
+
+    async def install(self, server_id, spec, on_progress=None):
+        self.asked.append(dict(spec))       # failed steps included
+        return await super().install(server_id, spec, on_progress)
 
 
 class Run:
@@ -362,6 +367,7 @@ async def main():
     whitelist._reset_for_tests()
 
     await server_pack_without_metadata()
+    await node_fetches_mods()
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
@@ -420,6 +426,141 @@ async def server_pack_without_metadata():
               (plan.mc_version, fetched))
     finally:
         curseforge.get_file, installer.fetch_pack_archive = saved
+
+
+async def node_fetches_mods():
+    """A manifest pack's mods go from the mod site to the node in one
+    fetch_many step (agent/downloads.py); only what the node cannot fetch
+    is zipped and uploaded: the pack's own files, a mod with no SHA-1 to
+    check it by, and one the node failed on (from the copy already here)."""
+    import hashlib
+    import json
+    import tempfile
+    from app import config, curseforge
+
+    jars = {"alpha-1.0.jar": fabric_jar("alpha", "*"), "beta-1.0.jar": fabric_jar("beta", "*"),
+            "gamma-1.0.jar": fabric_jar("gamma", "*"), "delta-1.0.jar": fabric_jar("delta", "*")}
+
+    def meta(fid, name, *, sha1=True):
+        data = jars[name]
+        return curseforge._slim_file({
+            "id": fid, "modId": fid * 10, "displayName": name, "fileName": name,
+            "fileLength": len(data), "releaseType": 1, "gameVersions": ["1.20.1", "Fabric"],
+            "downloadUrl": f"https://edge.forgecdn.net/files/{fid}/{name}",
+            "hashes": [{"algo": 1, "value": hashlib.sha1(data).hexdigest()}] if sha1 else []})
+
+    metas = {1: meta(1, "alpha-1.0.jar"), 2: meta(2, "beta-1.0.jar", sha1=False),
+             3: meta(3, "gamma-1.0.jar"), 4: meta(4, "delta-1.0.jar")}
+    client = io.BytesIO()
+    with zipfile.ZipFile(client, "w") as z:
+        z.writestr("manifest.json", json.dumps({
+            "minecraft": {"version": "1.20.1",
+                          "modLoaders": [{"id": "fabric-0.15.0", "primary": True}]},
+            "manifestType": "minecraftModpack", "name": "Fetched", "version": "1",
+            "overrides": "overrides",
+            "files": [{"projectID": fid * 10, "fileID": fid, "required": True}
+                      for fid in metas]}))
+        z.writestr("overrides/config/alpha.toml", "a = 1\n")
+
+    class OldAgent(Recorder):
+        """An agent from before fetch_many: the step is ignored, "done" all the same."""
+
+        async def install(self, server_id, spec, on_progress=None):
+            out = await super().install(
+                server_id, {k: v for k, v in spec.items() if k != "fetch_many"})
+            out.pop("fetched", None)
+            return out
+
+    async def install_with(eng):
+        engine.configure(drivers={"mock": eng})
+        for m in metas.values():
+            if m["file_name"] != "gamma-1.0.jar":
+                eng.cdn[m["download_url"]] = jars[m["file_name"]]
+        # The site serves something else for gamma: the node refuses it.
+        eng.cdn[metas[3]["download_url"]] = b"not the jar you are looking for"
+
+        async def fake_load_plan(job, **kw):
+            zf = zipfile.ZipFile(io.BytesIO(client.getvalue()))
+            return packs.analyse_client_pack(zf), zf, {}
+
+        async def no_loader(job, sid, plan):
+            await engine.update_server(sid, {
+                "executable": "fabric-server.jar",
+                "execution_command": "java -Xms1G -Xmx2G -jar fabric-server.jar nogui"})
+            return {"loader_version": ""}
+
+        async def get_files(ids):
+            return {i: metas[i] for i in ids}
+
+        async def get_mods(ids):
+            return {i: {"id": i, "name": f"mod {i}"} for i in ids}
+
+        async def download(m, client=None):
+            curseforge.download_url(m)
+            return jars[m["file_name"]]
+
+        saved = (installer._load_plan, installer._wait_for_loader, curseforge.get_files,
+                 curseforge.get_mods, curseforge.download, config.CACHE_DIR)
+        installer._load_plan, installer._wait_for_loader = fake_load_plan, no_loader
+        curseforge.get_files, curseforge.get_mods = get_files, get_mods
+        curseforge.download = download
+        # A cache of its own: the jars here are this run's, byte for byte.
+        config.CACHE_DIR = pathlib.Path(tempfile.mkdtemp(prefix="bf-fetch-cache-"))
+        try:
+            job = Job("install", "fetch")
+            result = await installer.install_modpack(
+                job, mod_id=1, file_id=2, server_name="Fetched", port=25595,
+                disable_files=["delta-1.0.jar"], optimize=False, boot_check=False)
+        finally:
+            (installer._load_plan, installer._wait_for_loader, curseforge.get_files,
+             curseforge.get_mods, curseforge.download, config.CACHE_DIR) = saved
+        sid = result["server_id"]
+        on_disk = {}
+        for name in await eng.list_dir(sid, "mods"):
+            on_disk[name] = await eng.download_file(sid, f"mods/{name}")
+        log = " ".join(line.get("message", "") if isinstance(line, dict) else str(line)
+                       for line in getattr(job, "log", []))
+        return result, on_disk, log
+
+    eng = Recorder()
+    result, on_disk, log = await install_with(eng)
+    asked = next((s["fetch_many"] for s in eng.asked if s.get("fetch_many")), [])
+    asked_paths = sorted(e["path"] for e in asked)
+    check("mods with an address, a SHA-1 and a size are one fetch_many step to the node",
+          asked_paths == ["mods/alpha-1.0.jar", "mods/delta-1.0.jar.disabled",
+                          "mods/gamma-1.0.jar"], asked_paths)
+    check("...each with the hash and size the node checks it by",
+          asked and all(e["sha1"] == hashlib.sha1(jars[e["path"].split("/")[1].replace(".disabled", "")])
+              .hexdigest() and e["size"] > 0 for e in asked))
+    check("...and a mod left disabled keeps its .disabled name on the node",
+          "mods/delta-1.0.jar.disabled" in eng.fetched_many, eng.fetched_many)
+    check("the node's mods are not zipped and uploaded as well",
+          not {"mods/alpha-1.0.jar", "mods/delta-1.0.jar.disabled"} & set(eng.uploaded),
+          eng.uploaded)
+    check("a mod with no SHA-1 to check it by is uploaded, as before",
+          "mods/beta-1.0.jar" in eng.uploaded and "mods/beta-1.0.jar" not in asked_paths)
+    check("the pack's own files (overrides) are uploaded", "config/alpha.toml" in eng.uploaded,
+          eng.uploaded)
+    check("a mod the node could not fetch (a bad hash) is uploaded from the copy here",
+          "mods/gamma-1.0.jar" in eng.uploaded and "mods/gamma-1.0.jar" not in eng.fetched_many)
+    want = {"alpha-1.0.jar": jars["alpha-1.0.jar"], "beta-1.0.jar": jars["beta-1.0.jar"],
+            "gamma-1.0.jar": jars["gamma-1.0.jar"],
+            "delta-1.0.jar.disabled": jars["delta-1.0.jar"]}
+    check("every mod is on the server, byte for byte", on_disk == want,
+          [n for n in set(want) | set(on_disk) if on_disk.get(n) != want.get(n)])
+    check("the summary counts what the node fetched and what was uploaded",
+          result.get("files_fetched_by_node") == 2 and result.get("files_uploaded") == 3,
+          (result.get("files_fetched_by_node"), result.get("files_uploaded")))
+    check("...and the install log says which mod the node could not fetch, and why",
+          "could not download 1 of 3 mods" in log and "gamma-1.0.jar: its SHA-1" in log,
+          log[-300:])
+
+    old = OldAgent()
+    result, on_disk, _log = await install_with(old)
+    check("an agent too old to fetch (it ignores the step) gets every mod uploaded instead",
+          result.get("files_fetched_by_node") == 0 and len(on_disk) == 4
+          and {"mods/alpha-1.0.jar", "mods/delta-1.0.jar.disabled"} <= set(old.uploaded),
+          (result.get("files_fetched_by_node"), sorted(on_disk)))
 
 
 sys.exit(asyncio.run(main()))

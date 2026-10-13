@@ -69,7 +69,8 @@ async def install(c, body: dict, label: str) -> dict:
         row["error"] = snap.get("error")
         row["log"] = [ln["message"] for ln in (snap.get("log") or [])][-12:]
     else:
-        for key in ("loader", "minecraft", "mods_installed", "source"):
+        for key in ("loader", "minecraft", "mods_installed", "source",
+                    "files_fetched_by_node", "files_uploaded"):
             if key in result:
                 row[key] = result[key]
     return row
@@ -118,6 +119,13 @@ async def round_trip(c, sid: str, pack: int) -> dict:
     return out
 
 
+def _moved(inst: dict) -> str:
+    """How the files reached the node: fetched by it from the mod sites
+    (fetch_many), or zipped and uploaded by the panel."""
+    return (f"{inst.get('files_fetched_by_node')} fetched by the node, "
+            f"{inst.get('files_uploaded')} uploaded")
+
+
 async def one_pack(c, pack: int, first: bool) -> dict:
     files = (await c.get(f"/api/modpacks/{pack}/files")).json()
     newest = (files.get("items") or [{}])[0]
@@ -128,7 +136,8 @@ async def one_pack(c, pack: int, first: bool) -> dict:
     row.update(inst)
     print(f"   install: {inst['install']} in {inst['seconds']}s "
           f"({inst.get('loader')} {inst.get('minecraft')}, "
-          f"{inst.get('mods_installed')} mods) {inst.get('error') or ''}", flush=True)
+          f"{inst.get('mods_installed')} mods; {_moved(inst)}) "
+          f"{inst.get('error') or ''}", flush=True)
     if inst["install"] != "done":
         for line in inst.get("log") or []:
             print("     | " + str(line)[:200], flush=True)
@@ -148,7 +157,8 @@ async def one_pack(c, pack: int, first: bool) -> dict:
         rt = row["round_trip"]
         print(f"   export -> import: {rt.get('export')}, install "
               f"{(rt.get('install') or {}).get('install')} "
-              f"({(rt.get('install') or {}).get('mods_installed')} mods), boot "
+              f"({(rt.get('install') or {}).get('mods_installed')} mods; "
+              f"{_moved(rt.get('install') or {})}), boot "
               f"{((rt.get('install') or {}).get('boot') or {}).get('outcome')}", flush=True)
     elif row["boot"]["outcome"] != "ready":
         print("     | " + row["boot"].get("log_tail", "")[-800:].replace("\n", "\n     | "),

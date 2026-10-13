@@ -17,9 +17,10 @@ Flow, whichever archive shape we get:
      app/provision.py, which also reads the Forge/NeoForge launch arguments
      back out of what the installer wrote. Those arguments are the single
      most error-prone part of a modded server, so they are read, not typed.
-  3. Lay the pack's files over the top in bounded-size batches (zip ->
-     upload -> the node extracts), so memory stays flat regardless of pack
-     size.
+  3. Have the node download the mods that have a published address itself
+     (fetch_many, into its own cache), and lay the rest of the pack's files
+     over the top in bounded-size batches (zip -> upload -> the node
+     extracts), so memory stays flat regardless of pack size.
   4. Record exactly what was installed in .blessforge.json for later
      version switching, update checks and diagnostics.
 """
@@ -66,18 +67,24 @@ class PackEntry:
     moment it was fetched until the moment the last batch finished uploading.
     An entry is a *reference*: a cached jar's path, a member of the pack
     archive, or -- only for things generated on the fly -- actual bytes.
+
+    A mod with a published address, SHA-1 and size also carries those
+    (`url`, `sha1`): the node fetches it itself, and the local copy is only
+    uploaded if the node cannot.
     """
 
-    __slots__ = ("target", "path", "member", "blob", "size")
+    __slots__ = ("target", "path", "member", "blob", "size", "url", "sha1")
 
     def __init__(self, target: str, *, path: Path | None = None,
                  member: str | None = None, blob: bytes | None = None,
-                 size: int = 0):
+                 size: int = 0, url: str | None = None, sha1: str | None = None):
         self.target = target
         self.path = path
         self.member = member
         self.blob = blob
         self.size = size
+        self.url = url
+        self.sha1 = sha1
 
     def write_into(self, archive: zipfile.ZipFile,
                    source: zipfile.ZipFile | None) -> None:
@@ -531,9 +538,17 @@ async def _download_manifest_mods(
                         # Mods tab, the manifest and the summary all already
                         # know how to show it.
                         disabled_client.append(disk_name)
+                    # The jar was read here for the checks above; the node
+                    # fetches its own copy from the same address when it can
+                    # be told exactly what to expect -- a hash, and a size
+                    # this copy agrees with. Otherwise this copy is uploaded.
+                    size = cached.stat().st_size if cached else len(blob or b"")
+                    published = sub or meta
+                    url, sha1 = published.get("download_url"), published.get("sha1")
+                    remote = bool(url and sha1 and published.get("size") == size)
                     results.append(PackEntry(
-                        target, path=cached, blob=blob,
-                        size=(cached.stat().st_size if cached else len(blob or b"")),
+                        target, path=cached, blob=blob, size=size,
+                        url=url if remote else None, sha1=sha1 if remote else None,
                     ))
                     origin = ({
                         "source": "modrinth",
@@ -735,6 +750,61 @@ async def _push_batches(
             await engine.delete_paths(server_id, [zip_name])
         except Exception:
             job.log_line(f"Could not remove temp archive {zip_name}", "warn")
+
+
+async def _fetch_on_node(job: Job, server_id: str, items: list[PackEntry],
+                         start_pct: float, end_pct: float) -> set[int]:
+    """Have the node download these mods itself, from the address each was
+    published at, as one fetch_many install step.
+
+    Every jar used to be downloaded here, zipped into a batch, uploaded to
+    the node and unpacked there: written three times, and for a node across
+    the internet, the whole pack sent over its line. The node now fetches
+    them from the mod site, checks each against its SHA-1 and size, and
+    keeps them in a cache of its own that every server on it shares.
+
+    Returns the ids of the entries now in place. Whatever it could not fetch
+    -- a host it does not allow, a file that kept failing its check, an
+    agent too old to know the step -- is left to the batch upload, from the
+    copy already here, so the install never depends on it.
+    """
+    if not items:
+        return set()
+    total_mb = sum(e.size for e in items) / 1048576
+    job.set_step(f"The node is downloading {len(items)} mods ({total_mb:.0f} MB)", start_pct)
+
+    def moved(p: dict) -> None:
+        if p.get("total"):
+            job.set_step(f"The node is downloading mods ({p.get('done', 0)}/{p['total']})",
+                         start_pct + (end_pct - start_pct) * p.get("done", 0) / p["total"])
+
+    spec = {"fetch_many": [{"url": e.url, "path": e.target, "sha1": e.sha1,
+                            "size": e.size} for e in items]}
+    try:
+        result = await engine.install(server_id, spec, on_progress=moved)
+    except engine.EngineError as e:
+        failed = (e.body or {}).get("failed") if isinstance(e.body, dict) else None
+        if not isinstance(failed, list) or not failed:
+            job.log_line(f"The node could not download the mods itself ({e}); "
+                         "uploading them from here instead.", "warn")
+            return set()
+        missing = {f.get("path") for f in failed if isinstance(f, dict)}
+        job.log_line(f"The node could not download {len(missing)} of {len(items)} mods; "
+                     "uploading those from here instead:", "warn")
+        for f in failed[:10]:
+            job.log_line(f"  - {f.get('path')}: {f.get('error')}", "warn")
+        return {id(e) for e in items if e.target not in missing}
+    if result.get("fetched") != len(items):
+        # An agent from before fetch_many ignores the step and says "done".
+        job.log_line("This node's agent does not download mods itself (it is older "
+                     "than this panel); uploading them from here instead.", "warn")
+        return set()
+    p = result.get("progress") or {}
+    cached = int(p.get("cached") or 0)
+    job.log_line(f"The node downloaded {len(items)} mods ({total_mb:.0f} MB) straight "
+                 "from the mod sites" + (f"; {cached} it already had in its cache"
+                                         if cached else ""))
+    return {id(e) for e in items}
 
 
 # The loader ladder -- "the server exists" is not the same as "this server
@@ -1046,11 +1116,21 @@ async def install_modpack(
     # nothing has to be downloaded back off the node to find that out.
     await _identify_overlay(job, zf, records)
 
+    # Mods with a published address go straight from the mod site to the
+    # node; only what it cannot fetch -- the pack's own files, anything with
+    # no address or hash, and whatever the node failed on -- is uploaded.
+    remote = [e for e in payload if e.url]
+    on_node = await _fetch_on_node(job, server_id, remote, 60, 80)
+    fetched_count = len(on_node)
+    upload_from = 80 if remote else 60
+    payload = [e for e in payload if id(e) not in on_node]
+    remote.clear()
     total_mb = sum(e.size for e in payload) / 1048576
     uploaded_count = len(payload)
-    job.log_line(f"Uploading {uploaded_count} files ({total_mb:.0f} MB) to the instance")
+    if payload:
+        job.log_line(f"Uploading {uploaded_count} files ({total_mb:.0f} MB) to the instance")
 
-    await _push_batches(job, server_id, payload, 60, 92, "Uploading pack files",
+    await _push_batches(job, server_id, payload, upload_from, 92, "Uploading pack files",
                         source=zf)
     # Entries are references, not bytes, but dropping them still releases the
     # archive's member table for a pack with thousands of files. Counted
@@ -1216,6 +1296,7 @@ async def install_modpack(
         "mods_installed": len([r for r in records if r.get("file", "").endswith(".jar")]),
         "client_only_disabled": sorted(set(disabled_mods)),
         "files_uploaded": uploaded_count,
+        "files_fetched_by_node": fetched_count,
         "port": port,
         "problems": problems,
         "blocked_by_author": blocked_by_author,

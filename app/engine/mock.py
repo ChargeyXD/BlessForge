@@ -11,9 +11,10 @@ and reading a binary file as text fails.
 It does not run anything. `power` flips a flag and writes a few plausible
 console lines; `install` lays down the files a loader installer would have
 left (a `run.sh` and its args file for Forge/NeoForge) so the code that
-reads them back has something real to read. Two hooks exist for tests:
-`fail_fetch` / `fail_run` make the next install step fail, and
-`inject(server_id, line)` appends a console line.
+reads them back has something real to read; a `fetch_many` step takes its
+files from `cdn` (url -> bytes), checked as the agent checks them. Two
+hooks exist for tests: `fail_fetch` / `fail_run` make the next install step
+fail, and `inject(server_id, line)` appends a console line.
 
 With `seed=True` it starts with two servers -- "Sakura SMP" (NeoForge
 1.21.1, running, three players) and "Paper Survival" (Paper 1.21.4, stopped)
@@ -22,6 +23,7 @@ With `seed=True` it starts with two servers -- "Sakura SMP" (NeoForge
 from __future__ import annotations
 
 import collections
+import hashlib
 import io
 import json
 import posixpath
@@ -83,6 +85,9 @@ class MockEngine:
         self.fail_fetch: str | None = None
         self.fail_run: str | None = None
         self.fetched: list[str] = []
+        # fetch_many: what the "mod sites" serve, and the paths it placed.
+        self.cdn: dict[str, bytes] = {}
+        self.fetched_many: list[str] = []
         self.installs: list[dict] = []
         self.commands: list[tuple[str, str]] = []
         if seed:
@@ -250,7 +255,7 @@ class MockEngine:
         st.update(running=True, crashed=False, started=time.time(), cpu=12.0,
                   mem=1_200_000_000, mem_percent=30.0, online=0)
 
-    async def install(self, server_id: str, spec: dict) -> dict:
+    async def install(self, server_id: str, spec: dict, on_progress=None) -> dict:
         """Lay down what an installer would leave. No network, no processes."""
         self._record(server_id)
         output: list[str] = []
@@ -263,6 +268,8 @@ class MockEngine:
             name = fetch.get("filename") or posixpath.basename(fetch.get("url") or "x.jar")
             self._put(server_id, ".", name, b"PK\x05\x06" + b"\x00" * 18)
             output.append(f"downloaded {name}")
+        many = spec.get("fetch_many") or None
+        fetched = self._fetch_many(server_id, many, output, on_progress) if many else None
         run = spec.get("run") or None
         if run:
             if self.fail_run:
@@ -277,7 +284,37 @@ class MockEngine:
                 pass
         self.installs.append(dict(spec))
         root = self._root(server_id)
-        return {"ok": True, "files": sorted(root), "output": output}
+        return {"ok": True, "files": sorted(root), "output": output, "fetched": fetched}
+
+    def _fetch_many(self, server_id: str, items: list, output: list[str],
+                    on_progress) -> int:
+        """The node downloading files itself, from `self.cdn` (url -> bytes)
+        standing in for the mod sites. Each is checked against its SHA-1 and
+        size as the agent checks it, a URL the stand-in does not have fails
+        as a 404 would, and the failures come back by path, the rest in
+        place -- the agent's answer, shape and all."""
+        failed = []
+        for item in items:
+            url, rel = item.get("url") or "", item.get("path") or ""
+            data = self.cdn.get(url)
+            if data is None:
+                failed.append({"path": rel, "url": url, "error": f"{url} answered 404"})
+                continue
+            if (len(data) != int(item.get("size") or -1)
+                    or hashlib.sha1(data).hexdigest() != str(item.get("sha1") or "").lower()):
+                failed.append({"path": rel, "url": url, "error": "its SHA-1 does not match"})
+                continue
+            parts = _clean(rel)
+            self._put(server_id, "/".join(parts[:-1]) or ".", parts[-1], data)
+            self.fetched_many.append(rel)
+        placed = len(items) - len(failed)
+        output.append(f"fetched {placed} of {len(items)} files")
+        if on_progress is not None:
+            on_progress({"done": len(items), "total": len(items), "failed": len(failed)})
+        if failed:
+            raise EngineError(f"{len(failed)} of {len(items)} files could not be fetched", 500,
+                              {"output": output, "fetched": placed, "failed": failed})
+        return placed
 
     def _simulate_installer(self, server_id: str, spec: dict) -> list[str]:
         family = (spec.get("family") or "").lower()

@@ -32,6 +32,13 @@ DEFAULT_IMAGES = {
     25: "ghcr.io/chargeyxd/blessforge-runtime:java25",
 }
 
+# Where the node may download mods from itself (the fetch_many install step):
+# the CurseForge and Modrinth CDNs. A CurseForge downloadUrl is on
+# edge.forgecdn.net and redirects to mediafilez.forgecdn.net; Modrinth's
+# files are on cdn.modrinth.com.
+DEFAULT_DOWNLOAD_HOSTS = ("edge.forgecdn.net", "mediafilez.forgecdn.net",
+                          "cdn.modrinth.com")
+
 
 @dataclass
 class AgentConfig:
@@ -97,6 +104,16 @@ class AgentConfig:
             return self.game_bind_ip
         return "host.docker.internal" if os.path.exists("/.dockerenv") else "127.0.0.1"
 
+    # --- the node's own downloads (agent/downloads.py) ---------------------------
+    # The only hosts it fetches mods from, redirects included. A panel can
+    # name the files but not make the node fetch from anywhere else; a file
+    # on any other host is refused, and the panel uploads that one itself.
+    download_hosts: list[str] = field(default_factory=lambda: list(DEFAULT_DOWNLOAD_HOSTS))
+    download_concurrency: int = 8
+    # The download cache (state_dir/cache), by SHA-1 and shared by every
+    # server here: the least recently used files go once it is over this.
+    download_cache_gb: float = 10
+
     # --- process runtime: development only -------------------------------------
     # Runs the server as a plain process with no isolation at all. Refused
     # unless explicitly allowed, and never on a node that sells servers.
@@ -135,6 +152,9 @@ def load(path: Path | str | None = None) -> AgentConfig:
         raise ValueError(f"runtime must be docker or process, not {cfg.runtime!r}")
     if cfg.memory_mode not in ("hard", "soft"):
         raise ValueError(f"memory_mode must be hard or soft, not {cfg.memory_mode!r}")
+    if not isinstance(cfg.download_hosts, list) or not all(
+            isinstance(h, str) and h for h in cfg.download_hosts):
+        raise ValueError("download_hosts must be a list of host names")
     if cfg.runtime == "process" and not cfg.allow_unsafe_process_runtime:
         raise ValueError(
             "runtime = \"process\" runs servers with NO isolation and is for "

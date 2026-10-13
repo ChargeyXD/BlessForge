@@ -40,6 +40,10 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     that has to wait on one says so in its console before it waits (6.8);
   * each image is looked up once per process, not at every start, and one
     pruned since is fetched again when a create cannot find it (6.10);
+  * the node downloads a pack's mods itself (fetch_many): in parallel, only
+    from the hosts it allows (redirects too), checked by SHA-1 and size
+    before anything lands, retried, written through the jail as copies of
+    its own cache, never links (3a);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1485,6 +1489,261 @@ async def test_addons_off_loop():
         await until(lambda: a.sup.servers[sid].running is None)
 
 
+# --- 3a the node downloads the mods itself; 7.8 once per node ------------------------------
+
+
+class CDN:
+    """A stand-in for the mod sites, on 127.0.0.1, counting every request.
+
+    /f/<name> serves the file; /flaky/<name> fails twice, then serves it;
+    /bad/<name> serves it with a byte changed; /long/<name> with bytes too
+    many; /hop/<name> redirects to /f/<name>; /out/<name> redirects to the
+    same server under the name `localhost`, which the node does not allow;
+    anything else is a 404."""
+
+    def __init__(self):
+        import collections
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.files: dict[str, bytes] = {}
+        self.hits: collections.Counter = collections.Counter()
+        self.delay = 0.0
+        self.inflight = self.most = 0
+        lock = threading.Lock()
+        cdn = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, body=b"", headers=()):
+                self.send_response(code)
+                for k, v in headers:
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                with lock:
+                    cdn.hits[self.path] += 1
+                    n = cdn.hits[self.path]
+                    cdn.inflight += 1
+                    cdn.most = max(cdn.most, cdn.inflight)
+                try:
+                    time.sleep(cdn.delay)
+                    _, route, name = (self.path.split("/", 2) + ["", ""])[:3]
+                    data = cdn.files.get(name)
+                    if data is None:
+                        return self._send(404)
+                    if route == "f" or (route == "flaky" and n > 2):
+                        return self._send(200, data)
+                    if route == "flaky":
+                        return self._send(500)
+                    if route == "bad":
+                        return self._send(200, data[:-1] + bytes([data[-1] ^ 1]))
+                    if route == "long":
+                        return self._send(200, data + b"more")
+                    if route == "hop":
+                        return self._send(302, headers=[("Location", f"/f/{name}")])
+                    if route == "out":
+                        return self._send(302, headers=[(
+                            "Location", f"http://localhost:{cdn.port}/f/{name}")])
+                    return self._send(404)
+                finally:
+                    with lock:
+                        cdn.inflight -= 1
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.daemon_threads = True
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def entry(self, route: str, name: str, path: str | None = None,
+              host: str = "127.0.0.1") -> dict:
+        import hashlib
+        data = self.files[name]
+        return {"url": f"http://{host}:{self.port}/{route}/{name}",
+                "path": path or f"mods/{name}",
+                "sha1": hashlib.sha1(data).hexdigest(), "size": len(data)}
+
+    def total(self) -> int:
+        return sum(self.hits.values())
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+async def install_done(c, sid: str, job: str, seconds: float = 60) -> dict:
+    end = time.time() + seconds
+    rec = {}
+    while time.time() < end:
+        rec = (await c.get(f"/v1/servers/{sid}/install/{job}")).json()
+        if rec.get("status") in ("done", "error"):
+            return rec
+        await asyncio.sleep(0.05)
+    return rec
+
+
+async def fetch(c, sid: str, items: list[dict]) -> dict:
+    r = await c.post(f"/v1/servers/{sid}/install", json={"fetch_many": items})
+    assert r.status_code == 200, r.text
+    return await install_done(c, sid, r.json()["job_id"])
+
+
+def lands(folder: pathlib.Path, item: dict, data: bytes) -> bool:
+    """On disk, byte for byte, read back through the jail -- which refuses a
+    file with another hard link -- and with no other link to it."""
+    try:
+        got = files.read_bytes(folder, item["path"])
+    except files.JailError:
+        return False
+    return got == data and (folder / item["path"]).stat().st_nlink == 1
+
+
+async def test_fetch_many():
+    section("3a the node downloads a pack's mods itself")
+    import os
+    import random
+    from agent import downloads
+    cdn = CDN()
+    rng = random.Random(7)
+    mods = [f"mod{i:02d}.jar" for i in range(16)]
+    for i, name in enumerate(mods):
+        cdn.files[name] = rng.randbytes(150_000 + i * 997)
+    cdn.files["big.jar"] = rng.randbytes(3 * 1048576 + 17)     # several chunks
+    for name in ("flaky.jar", "bad.jar", "long.jar", "hop.jar", "secret.jar", "far.jar",
+                 "linked.jar", "gone.jar"):
+        cdn.files[name] = rng.randbytes(40_000)
+    saved = downloads.BACKOFF
+    downloads.BACKOFF = (0.05, 0.05, 0.05)
+    s1, s2 = "fefefefe-0000-0000-0000-000000000001", "fefefefe-0000-0000-0000-000000000002"
+    try:
+        async with Agent(process_cfg("fetch", download_hosts=["127.0.0.1"])) as a:
+            c = a.client
+            for i, sid in enumerate((s1, s2)):
+                await c.put(f"/v1/servers/{sid}", json={"name": f"F{i}", "port": 30400 + i})
+            one, two = a.sup.folder(s1), a.sup.folder(s2)
+            pack = [cdn.entry("f", n) for n in mods] + [cdn.entry("f", "big.jar")]
+            # The same jar twice under two names, as a pack can ship it.
+            pack.append(cdn.entry("f", "mod00.jar", "mods/mod00.jar.disabled"))
+            cdn.delay = 0.25
+            # Made once per agent (its SSL context is the 60-100 ms 6.3 is
+            # about); what is measured here is the fetching.
+            downloads.client()
+            with LoopProbe() as probe:
+                rec = await fetch(c, s1, pack)
+            cdn.delay = 0.0
+            check("fetch_many: every file lands at its path, byte for byte",
+                  rec.get("status") == "done" and all(
+                      lands(one, e, cdn.files[e["url"].rsplit("/", 1)[1]]) for e in pack),
+                  rec.get("error"))
+            check("...several at once, never more than download_concurrency (8)",
+                  4 <= cdn.most <= 8, f"{cdn.most} at once")
+            check("...each downloaded once, even a jar the pack ships twice",
+                  all(v == 1 for v in cdn.hits.values()) and len(cdn.hits) == len(mods) + 1
+                  and rec["progress"]["downloaded"] == len(mods) + 1
+                  and rec["progress"]["cached"] == 1, dict(rec.get("progress") or {}))
+            check("...and the panel is told how many are in place", rec.get("fetched") == len(pack))
+            check("...with progress in the install's output and the server's console",
+                  any(ln.startswith("fetching 18 files") for ln in rec["output"])
+                  and any("fetched 18 of 18 files: 17 downloaded, 1 from this node's cache"
+                          in ln for ln in rec["output"])
+                  and any(ln.startswith("[install] fetching")
+                          for ln in a.sup.servers[s1].console.lines), rec["output"][-2:])
+            check("...without stalling the event loop",
+                  probe.worst < 0.25, f"worst {probe.worst * 1000:.0f} ms")
+            cached = a.sup.cache.path(pack[0]["sha1"])
+            served = one / pack[0]["path"]
+            check("the server's copy is a copy, not a link to the node's cache",
+                  cached.stat().st_nlink == 1 and served.stat().st_nlink == 1
+                  and cached.stat().st_ino != served.stat().st_ino
+                  and not served.is_symlink())
+
+            before = cdn.total()
+            rec = await fetch(c, s2, pack)
+            check("a second server on the same pack downloads nothing at all",
+                  rec.get("status") == "done" and cdn.total() == before
+                  and rec["progress"]["cached"] == len(pack)
+                  and all(lands(two, e, cdn.files[e["url"].rsplit("/", 1)[1]]) for e in pack),
+                  dict(rec.get("progress") or {}))
+
+            outside = TMP / "fetch-outside.jar"
+            outside.write_bytes(b"not yours")
+            os.symlink(outside, one / "mods" / "linked.jar")
+            odd = [cdn.entry("flaky", "flaky.jar"), cdn.entry("hop", "hop.jar"),
+                   cdn.entry("bad", "bad.jar"), cdn.entry("long", "long.jar"),
+                   cdn.entry("f", "secret.jar", host="localhost"),
+                   cdn.entry("out", "far.jar"), cdn.entry("f", "linked.jar"),
+                   {**cdn.entry("f", "gone.jar"),
+                    "url": f"http://127.0.0.1:{cdn.port}/f/nothing-here.jar"}]
+            rec = await fetch(c, s1, odd)
+            failed = {f["path"]: f["error"] for f in rec.get("failed") or []}
+            check("a download that fails twice is retried with backoff and lands",
+                  lands(one, odd[0], cdn.files["flaky.jar"])
+                  and cdn.hits["/flaky/flaky.jar"] == 3, cdn.hits["/flaky/flaky.jar"])
+            check("a redirect to an allowed host is followed",
+                  lands(one, odd[1], cdn.files["hop.jar"]) and cdn.hits["/f/hop.jar"] == 1)
+            check("a file whose SHA-1 does not match is refused after its tries, and "
+                  "nothing lands", "SHA-1" in failed.get("mods/bad.jar", "")
+                  and not (one / "mods/bad.jar").exists()
+                  and cdn.hits["/bad/bad.jar"] == downloads.ATTEMPTS, failed.get("mods/bad.jar"))
+            check("so is one longer than its size, cut off as soon as it is",
+                  "larger than" in failed.get("mods/long.jar", "")
+                  and not (one / "mods/long.jar").exists(), failed.get("mods/long.jar"))
+            check("an address off the allowlist is refused without a request",
+                  "download_hosts" in failed.get("mods/secret.jar", "")
+                  and cdn.hits["/f/secret.jar"] == 0, failed.get("mods/secret.jar"))
+            check("a redirect to a host off the allowlist is refused, not followed",
+                  "localhost is not a download host" in failed.get("mods/far.jar", "")
+                  and cdn.hits["/out/far.jar"] == 1 and cdn.hits["/f/far.jar"] == 0
+                  and not (one / "mods/far.jar").exists(), failed.get("mods/far.jar"))
+            check("a 404 is not retried", "404" in failed.get("mods/gone.jar", "")
+                  and cdn.hits["/f/nothing-here.jar"] == 1, failed.get("mods/gone.jar"))
+            check("a write onto a link in the folder is refused by the jail; the file "
+                  "outside is untouched", "mods/linked.jar" in failed
+                  and outside.read_bytes() == b"not yours", failed.get("mods/linked.jar"))
+            check("the install fails naming what failed, the rest in place",
+                  rec.get("status") == "error" and "6 of 8 files" in (rec.get("error") or "")
+                  and rec.get("fetched") == 2, rec.get("error"))
+            leftovers = [p.name for p in one.rglob("*") if ".tmp" in p.name or ".part" in p.name]
+            leftovers += [p.name for p in a.sup.cache.tmp.glob("*")]
+            check("no part or temp file is left behind, in the folder or the cache",
+                  not leftovers, leftovers)
+
+            good = cdn.entry("f", "mod01.jar")
+            for bad in ({**good, "path": "../escape.jar"}, {**good, "sha1": ""},
+                        {**good, "size": 0}, {**good, "url": "file:///etc/passwd"}):
+                r = await c.post(f"/v1/servers/{s1}/install", json={"fetch_many": [bad]})
+                if r.status_code != 400:
+                    break
+            r2 = await c.post(f"/v1/servers/{s1}/install", json={"fetch_many": [good, good]})
+            check("a list with a path outside the folder, no SHA-1, no size, a non-http "
+                  "address or a path twice is the request's 400",
+                  r.status_code == 400 and r2.status_code == 400, (r.text, r2.text))
+
+            spoiled = a.sup.cache.path(good["sha1"])
+            spoiled.write_bytes(b"\0" * good["size"])
+            rec = await fetch(c, s2, [{**good, "path": "mods/again.jar"}])
+            check("a damaged cache entry is caught by the hash on the way in, and "
+                  "fetched again", rec.get("status") == "done"
+                  and lands(two, {"path": "mods/again.jar"}, cdn.files["mod01.jar"])
+                  and cdn.hits["/f/mod01.jar"] == 2, rec.get("output", [])[-2:])
+
+            a.sup.cache.limit = 0
+            rec = await fetch(c, s2, [cdn.entry("f", "mod02.jar", "mods/kept.jar")])
+            check("a cache over its limit is trimmed after an install, oldest first; "
+                  "the server keeps its files", rec.get("status") == "done"
+                  and not [p for p in a.sup.cache.root.glob("??/*")]
+                  and lands(two, {"path": "mods/kept.jar"}, cdn.files["mod02.jar"]))
+    finally:
+        downloads.BACKOFF = saved
+        cdn.close()
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1503,6 +1762,7 @@ async def main():
     await test_addons_off_loop()
     await test_runtime_images()
     await test_image_cache()
+    await test_fetch_many()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

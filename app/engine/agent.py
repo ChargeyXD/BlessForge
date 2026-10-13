@@ -284,21 +284,33 @@ class AgentEngine:
         if held is not None:
             held["at"] = -1e9
 
-    async def install(self, server_id: str, spec: dict) -> dict:
+    async def install(self, server_id: str, spec: dict, on_progress=None) -> dict:
         job = await self._call("POST", f"/v1/servers/{server_id}/install", json=spec)
         deadline = time.time() + int(spec.get("timeout") or 900) + 120
+        seen = None
         while time.time() < deadline:
             rec = await self._call("GET", f"/v1/servers/{server_id}/install/{job['job_id']}")
             if rec["status"] == "done":
                 return {"ok": True, "files": rec.get("files") or [],
-                        "output": rec.get("output") or []}
+                        "output": rec.get("output") or [],
+                        "fetched": rec.get("fetched"), "progress": rec.get("progress")}
             if rec["status"] == "error":
                 raise EngineError(rec.get("error") or "the install failed", 500,
-                                  {"output": rec.get("output") or []})
+                                  {"output": rec.get("output") or [],
+                                   "fetched": rec.get("fetched"),
+                                   "failed": rec.get("failed")})
             if rec["status"] == "waiting":
                 # Queued behind another install on the node: its own clock
                 # starts when it does.
                 deadline = time.time() + int(spec.get("timeout") or 900) + 120
+            progress = rec.get("progress")
+            if progress and progress != seen:
+                # A pack's mods on a slow line can take longer than any fixed
+                # deadline; one still moving is not stuck.
+                seen = progress
+                deadline = time.time() + int(spec.get("timeout") or 900) + 120
+                if on_progress is not None:
+                    on_progress(progress)
             await asyncio.sleep(1.0)
         raise EngineError("the install did not finish in time", 504)
 

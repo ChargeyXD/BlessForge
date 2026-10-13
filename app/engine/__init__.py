@@ -231,8 +231,12 @@ async def power(server_id: str, action: str) -> None:
     await (await _driver(server_id)).power(server_id, power_action(action))
 
 
-async def install(server_id: str, spec: dict) -> dict:
-    return await (await _driver(server_id)).install(server_id, spec)
+async def install(server_id: str, spec: dict, on_progress=None) -> dict:
+    """`on_progress(progress)` is called as a fetch_many step moves."""
+    drv = await _driver(server_id)
+    if on_progress is None:
+        return await drv.install(server_id, spec)
+    return await drv.install(server_id, spec, on_progress=on_progress)
 
 
 async def set_runtime(server_id: str, mc_version: str,

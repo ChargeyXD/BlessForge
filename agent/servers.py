@@ -31,9 +31,7 @@ import uuid as uuidlib
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from agent import addons, clients, files
+from agent import addons, downloads, files
 from agent.config import AgentConfig
 from agent.containers import RuntimeError_, argv_of, limits_of
 
@@ -221,6 +219,8 @@ class Supervisor:
         self.install_slots = asyncio.Semaphore(max(1, int(cfg.max_concurrent_installs)))
         self.booting: dict[str, asyncio.Task] = {}
         self.queued: dict[str, asyncio.Task] = {}
+        # Mods the node downloads itself, by SHA-1, shared by every server.
+        self.cache = downloads.Cache(cfg.state_dir / "cache", cfg.download_cache_gb)
 
     # --- desired state -----------------------------------------------------------
 
@@ -910,6 +910,9 @@ class Supervisor:
         srv = self.get(uuid)
         if srv.running is not None:
             raise RuntimeError_("stop the server before installing into it", 409)
+        if "fetch_many" in spec:
+            # A bad list is the request's 400, not an install that fails later.
+            spec = {**spec, "fetch_many": downloads.check_entries(spec["fetch_many"])}
         job_id = uuidlib.uuid4().hex[:12]
         record = {"id": job_id, "status": "running", "output": [], "error": None,
                   "started": time.time()}
@@ -942,6 +945,19 @@ class Supervisor:
             fetch = spec.get("fetch")
             if fetch:
                 await self._download(folder, fetch, out)
+            many = spec.get("fetch_many")
+            if many:
+                got = await downloads.fetch_many(
+                    self.cache, folder, many, self.cfg.download_hosts,
+                    self.cfg.download_concurrency, out, record)
+                # The panel checks the count: an agent from before fetch_many
+                # would have ignored the step and still said "done".
+                record["fetched"] = got["fetched"]
+                if got["failed"]:
+                    # The rest are in place; the panel sends these itself.
+                    record["failed"] = got["failed"]
+                    raise RuntimeError_(f"{len(got['failed'])} of {len(many)} files "
+                                        "could not be fetched", 502)
             run = spec.get("run")
             if run:
                 if not isinstance(run, list) or not all(isinstance(a, str) for a in run):
@@ -982,10 +998,7 @@ class Supervisor:
         # Streamed into the jail's temp file; the checksum is compared before
         # the file is renamed into place, so a corrupt download never lands.
         with files.open_file(folder, name, "wb") as fh:
-            c = clients.client("downloads", lambda: httpx.AsyncClient(
-                timeout=600, follow_redirects=True,
-                headers={"User-Agent": "BlessForge-agent"}))
-            async with c.stream("GET", url) as r:
+            async with downloads.client().stream("GET", url) as r:
                 if r.status_code != 200:
                     raise RuntimeError_(f"{url} answered {r.status_code}", 502)
                 async for chunk in r.aiter_bytes(1024 * 1024):
