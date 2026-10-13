@@ -1833,6 +1833,52 @@ async def test_brought_jars():
               rec.get("failed"))
 
 
+# --- the `fetch` step: only from the loaders' hosts -----------------------------------------
+
+
+async def test_loader_hosts():
+    section("fetch (loader installers): only from the hosts the node allows")
+    import hashlib
+    cdn = CDN()
+    cdn.files["installer.jar"] = b"PK installer" * 100
+    sha1 = hashlib.sha1(cdn.files["installer.jar"]).hexdigest()
+    sid = "10ade700-0000-0000-0000-000000000001"
+    try:
+        for label, hosts in (("default", None), ("test", ["127.0.0.1"])):
+            cfg = process_cfg(f"loaderhosts-{label}",
+                              **({"loader_hosts": hosts} if hosts else {}))
+            async with Agent(cfg) as a:
+                c = a.client
+                await c.put(f"/v1/servers/{sid}", json={"name": "L", "port": 30700})
+
+                async def install(route):
+                    url = f"http://127.0.0.1:{cdn.port}/{route}/installer.jar"
+                    job = (await c.post(f"/v1/servers/{sid}/install", json={"fetch": {
+                        "url": url, "filename": "installer.jar", "sha1": sha1}})).json()
+                    await until(lambda: a.sup.installs[job["job_id"]]["status"]
+                                in ("done", "error"), 10)
+                    return a.sup.installs[job["job_id"]]
+                before = cdn.total()
+                if hosts is None:
+                    rec = await install("f")
+                    check("a fetch from a host that is not a loader's is refused, unasked",
+                          rec["status"] == "error" and "loader_hosts" in (rec["error"] or "")
+                          and cdn.total() == before, rec["error"])
+                else:
+                    rec = await install("hop")
+                    check("...from an allowed one it lands, redirects followed and checked",
+                          rec["status"] == "done" and (a.sup.folder(sid) / "installer.jar")
+                          .read_bytes() == cdn.files["installer.jar"], rec["error"])
+                    (a.sup.folder(sid) / "installer.jar").unlink()
+                    rec = await install("out")
+                    check("...and a redirect to a host it does not allow is refused",
+                          rec["status"] == "error" and "localhost" in (rec["error"] or "")
+                          and not (a.sup.folder(sid) / "installer.jar").exists(),
+                          rec["error"])
+    finally:
+        cdn.close()
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1853,6 +1899,7 @@ async def main():
     await test_image_cache()
     await test_fetch_many()
     await test_brought_jars()
+    await test_loader_hosts()
     await test_one_download_per_node()
     if LIVE:
         await test_readopt_live()

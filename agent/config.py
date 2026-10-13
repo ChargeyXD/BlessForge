@@ -38,6 +38,12 @@ DEFAULT_IMAGES = {
 # files are on cdn.modrinth.com.
 DEFAULT_DOWNLOAD_HOSTS = ("edge.forgecdn.net", "mediafilez.forgecdn.net",
                           "cdn.modrinth.com")
+# Where the install step `fetch` (one file: a loader installer or a server
+# jar, app/loaders.py) may download from: Mojang, the loaders' own sites.
+DEFAULT_LOADER_HOSTS = ("piston-data.mojang.com", "launcher.mojang.com",
+                        "meta.fabricmc.net", "maven.fabricmc.net",
+                        "maven.minecraftforge.net", "maven.neoforged.net",
+                        "fill-data.papermc.io", "api.papermc.io", "api.purpurmc.org")
 
 
 @dataclass
@@ -109,6 +115,7 @@ class AgentConfig:
     # name the files but not make the node fetch from anywhere else; a file
     # on any other host is refused, and the panel uploads that one itself.
     download_hosts: list[str] = field(default_factory=lambda: list(DEFAULT_DOWNLOAD_HOSTS))
+    loader_hosts: list[str] = field(default_factory=lambda: list(DEFAULT_LOADER_HOSTS))
     download_concurrency: int = 8
     # The download cache (state_dir/cache), by SHA-1 and shared by every
     # server here: the least recently used files go once it is over this.
@@ -152,9 +159,10 @@ def load(path: Path | str | None = None) -> AgentConfig:
         raise ValueError(f"runtime must be docker or process, not {cfg.runtime!r}")
     if cfg.memory_mode not in ("hard", "soft"):
         raise ValueError(f"memory_mode must be hard or soft, not {cfg.memory_mode!r}")
-    if not isinstance(cfg.download_hosts, list) or not all(
-            isinstance(h, str) and h for h in cfg.download_hosts):
-        raise ValueError("download_hosts must be a list of host names")
+    for name in ("download_hosts", "loader_hosts"):
+        hosts = getattr(cfg, name)
+        if not isinstance(hosts, list) or not all(isinstance(h, str) and h for h in hosts):
+            raise ValueError(f"{name} must be a list of host names")
     if cfg.runtime == "process" and not cfg.allow_unsafe_process_runtime:
         raise ValueError(
             "runtime = \"process\" runs servers with NO isolation and is for "

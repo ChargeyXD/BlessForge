@@ -31,6 +31,8 @@ import uuid as uuidlib
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from agent import addons, downloads, files
 from agent.config import AgentConfig
 from agent.containers import RuntimeError_, argv_of, limits_of
@@ -997,17 +999,33 @@ class Supervisor:
         got = 0
         # Streamed into the jail's temp file; the checksum is compared before
         # the file is renamed into place, so a corrupt download never lands.
+        # Only from Mojang and the loaders' own sites (loader_hosts), every
+        # redirect checked too: a panel that has been taken over cannot use
+        # this step to make the node fetch from anywhere it likes.
+        allowed = {h.lower().rstrip(".") for h in self.cfg.loader_hosts}
+        target = httpx.URL(url)
         with files.open_file(folder, name, "wb") as fh:
-            async with downloads.client().stream("GET", url) as r:
-                if r.status_code != 200:
-                    raise RuntimeError_(f"{url} answered {r.status_code}", 502)
-                async for chunk in r.aiter_bytes(1024 * 1024):
-                    got += len(chunk)
-                    if got > MAX_DOWNLOAD:
-                        raise RuntimeError_("that download is over 1 GB", 413)
-                    sha1.update(chunk)
-                    sha256.update(chunk)
-                    fh.write(chunk)
+            for _hop in range(downloads.MAX_REDIRECTS + 1):
+                if not downloads.host_allowed(target, allowed):
+                    raise RuntimeError_(f"{target.host or target} is not a loader host this "
+                                        "node allows (loader_hosts in agent.toml)", 403)
+                async with downloads.client().stream("GET", target,
+                                                     follow_redirects=False) as r:
+                    if r.is_redirect:
+                        target = target.join(r.headers["location"])
+                        continue
+                    if r.status_code != 200:
+                        raise RuntimeError_(f"{url} answered {r.status_code}", 502)
+                    async for chunk in r.aiter_bytes(1024 * 1024):
+                        got += len(chunk)
+                        if got > MAX_DOWNLOAD:
+                            raise RuntimeError_("that download is over 1 GB", 413)
+                        sha1.update(chunk)
+                        sha256.update(chunk)
+                        fh.write(chunk)
+                break
+            else:
+                raise RuntimeError_(f"{url}: more than {downloads.MAX_REDIRECTS} redirects", 502)
             for algo, h in (("sha1", sha1), ("sha256", sha256)):
                 want = (fetch.get(algo) or "").lower()
                 if want and h.hexdigest() != want:
