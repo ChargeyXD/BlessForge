@@ -32,6 +32,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     queue, and what it drops is counted and reported (7.7);
   * player pings go where the game ports are: host.docker.internal for an
     agent in a container, not its own 127.0.0.1 (6.4);
+  * the disk watchdog walks on a thread, and walks a server far from its
+    limit less often (6.7);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1165,6 +1167,43 @@ async def test_ping_target():
           AgentConfig(**base, ping_host="192.168.1.5").ping_target() == "192.168.1.5")
 
 
+# --- 6.7 the disk watchdog off the loop ---------------------------------------------------
+
+
+async def test_disk_watchdog():
+    section("6.7 the disk watchdog walks on a thread, and less often when far off")
+    from agent.servers import Supervisor
+    cfg = process_cfg("disk")
+    far, near = ("d1d1d1d1-0000-0000-0000-00000000000a", "d1d1d1d1-0000-0000-0000-00000000000b")
+    sup = Supervisor(cfg, FakeDocker({}), FakeEvents())
+    sup.put(far, {"name": "Far", "port": 30401, "limits": {"disk_mb": 1000}})
+    sup.put(near, {"name": "Near", "port": 30402, "limits": {"disk_mb": 1}})
+    (sup.folder(near) / "world.dat").write_bytes(b"x" * 950_000)    # 91% of 1 MB
+    for sid in (far, near):
+        sup.servers[sid].running = FakeRunning()
+    walks = []
+    real = files.usage
+
+    def slow_usage(folder, *a):
+        walks.append(folder.name)
+        time.sleep(0.4)          # a big pack's folder, as the loop would feel it
+        return real(folder, *a)
+
+    files.usage = slow_usage
+    try:
+        with LoopProbe() as probe:
+            await sup.check_disks()
+        first = list(walks)
+        await sup.check_disks()
+    finally:
+        files.usage = real
+    check("a pass walks each folder on a thread: the loop never waits on it",
+          sorted(first) == sorted([far, near]) and probe.worst < 0.2,
+          f"worst {probe.worst * 1000:.0f} ms")
+    check("...and the next pass skips the one far from its limit, not the one near it",
+          walks[len(first):] == [near], walks)
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1179,6 +1218,7 @@ async def main():
     await test_panel_fleet()
     await test_event_drops()
     await test_ping_target()
+    await test_disk_watchdog()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

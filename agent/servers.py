@@ -213,6 +213,8 @@ class Supervisor:
         self.specs_dir = cfg.state_dir / "servers"
         # The sampler's latest CPU and memory reading per running server.
         self.samples: dict[str, dict] = {}
+        # The disk watchdog's last measure per server: (bytes, when).
+        self.disk_seen: dict[str, tuple[int, float]] = {}
         # The boot queue (see _start): servers booting now, each holding a
         # slot, and servers waiting for one.
         self.boot_slots = asyncio.Semaphore(max(1, int(cfg.max_concurrent_boots)))
@@ -993,16 +995,33 @@ class Supervisor:
             await self.check_disks()
 
     async def check_disks(self) -> list[str]:
-        """One pass: stop every running server over its disk limit."""
+        """One pass: stop every running server over its disk limit.
+
+        A big pack's folder is a long walk, so it runs on a thread -- it used
+        to run on the event loop every minute for every server -- and a server
+        far from its limit is walked less often: every 10 minutes while under
+        half of it, every 2 under 90%, every pass beyond. (Project quotas,
+        where the kernel enforces the limit, are not set up by the agent;
+        disk_quota = "xfs"/"ext4" only turns this watchdog off.)
+        """
         stopped = []
+        now = time.monotonic()
         for srv in list(self.servers.values()):
             limit = limits_of(srv.spec)["disk_mb"]
             if not limit or srv.running is None:
                 continue
+            seen = self.disk_seen.get(srv.uuid)
+            if seen:
+                share = seen[0] / (limit * 1048576)
+                every = 600 if share < 0.5 else 120 if share < 0.9 else 0
+                if now - seen[1] < every:
+                    continue
             try:
-                used = files.usage(self.folder(srv.uuid))["total_bytes"]
+                used = (await asyncio.to_thread(files.usage,
+                                                self.folder(srv.uuid)))["total_bytes"]
             except Exception:       # noqa: BLE001
                 continue
+            self.disk_seen[srv.uuid] = (used, now)
             if used > limit * 1048576:
                 srv.console.feed(f"[BlessForge] This server uses {used // 1048576} MB "
                                  f"of its {limit} MB disk. Stopping it.")
