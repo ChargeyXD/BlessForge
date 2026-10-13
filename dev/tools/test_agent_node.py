@@ -28,6 +28,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     the node's RAM, and only a node set to refuse overcommit refuses (7.5);
   * the panel asks each node once per poll for every server's stats, and a
     node that does not answer shows its last state, marked, in seconds (7.6);
+  * a slow panel never blocks the node: events stay batched in a bounded
+    queue, and what it drops is counted and reported (7.7);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1105,6 +1107,37 @@ async def test_panel_fleet():
     panel_side._stats.pop("n-fleet", None)
 
 
+# --- 7.7 bounded queues, counted drops ----------------------------------------------------
+
+
+async def test_event_drops():
+    section("7.7 a slow panel never blocks the node; drops are counted and told")
+    from agent import events as events_mod
+    from agent.events import Events
+    sent = []
+
+    def panel(request: httpx.Request) -> httpx.Response:
+        sent.append(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"accepted": 1})
+
+    ev = Events(process_cfg("events"))
+    t0 = time.perf_counter()
+    for i in range(events_mod.MAX_QUEUED + 250):
+        ev.emit("stats", None, n=i)
+    took = time.perf_counter() - t0
+    check("emitting never waits on the panel, and the queue stays bounded",
+          took < 0.5 and len(ev.queue) == events_mod.MAX_QUEUED, f"{took:.3f}s")
+    check("...what it had to drop is counted", ev.dropped == 250, ev.dropped)
+    ev.panel = lambda: httpx.AsyncClient(transport=httpx.MockTransport(panel))
+    await ev.flush()
+    told = [e for e in sent[0]["events"] if e["type"] == "events_dropped"]
+    check("...and told to the panel with the next batch that gets through, once",
+          told and told[0]["count"] == 250, told)
+    await ev.flush()
+    check("...not again with the batch after",
+          not any(e["type"] == "events_dropped" for e in sent[1]["events"]))
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1117,6 +1150,7 @@ async def main():
     await test_install_slots()
     await test_committed_memory()
     await test_panel_fleet()
+    await test_event_drops()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

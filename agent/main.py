@@ -161,7 +161,12 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 "running": sum(1 for s in sup().servers.values() if s.running),
                 # What the running (and queued) servers' memory limits add
                 # up to, against ram_bytes: the node view's committed memory.
-                "committed_bytes": sup().committed_mb() * 1048576}
+                "committed_bytes": sup().committed_mb() * 1048576,
+                # A slow panel never blocks the node: its queues are bounded
+                # and what they drop is counted here.
+                "events_queued": len(state["events"].queue),
+                "events_dropped": state["events"].dropped,
+                "console_dropped": sum(s.console.dropped for s in sup().servers.values())}
 
     # --- servers ----------------------------------------------------------------
 

@@ -33,8 +33,14 @@ class Events:
         self.wake = asyncio.Event()
         self.sent = 0
         self.failures = 0
+        # Events lost to a full queue while the panel was away: counted,
+        # and told to the panel with the next batch that gets through.
+        self.dropped = 0
+        self.dropped_reported = 0
 
     def emit(self, kind: str, server: str | None = None, **data) -> None:
+        if len(self.queue) == self.queue.maxlen:
+            self.dropped += 1
         self.queue.append({"type": kind, "server": server, "at": time.time(), **data})
         if len(self.queue) >= FLUSH_AT:
             self.wake.set()
@@ -51,10 +57,14 @@ class Events:
         if not self.queue:
             return True
         batch = list(self.queue)[:500]
+        lost = self.dropped - self.dropped_reported
         try:
             r = await self.panel().post(
                 f"{self.cfg.panel_url.rstrip('/')}/api/agent/events",
-                json={"node": self.cfg.node_id, "events": batch},
+                json={"node": self.cfg.node_id,
+                      "events": batch + ([{"type": "events_dropped", "server": None,
+                                           "at": time.time(), "count": lost}]
+                                         if lost else [])},
                 headers=self.headers(), timeout=15)
             if r.status_code >= 400:
                 raise RuntimeError(f"the panel answered {r.status_code}")
@@ -66,6 +76,7 @@ class Events:
             return False
         for _ in batch:
             self.queue.popleft()
+        self.dropped_reported += lost
         self.sent += len(batch)
         self.failures = 0
         return True

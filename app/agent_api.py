@@ -34,7 +34,7 @@ LIVE: dict[str, dict] = {}
 # Events worth a line in the audit log -- the operator needs to be able to
 # find out afterwards that a server crash-looped at 3am.
 _AUDITED = {"crash", "crash_loop", "disk_full", "drift", "agent_started",
-            "port_changed"}
+            "port_changed", "events_dropped"}
 _STATUS = {"starting": "running", "running": "running", "offline": "stopped",
            # Waiting for a boot slot on its node: it will start by itself.
            "queued": "running"}
