@@ -180,6 +180,7 @@ RULES: list[Rule] = [
     _r("POST", "/api/instances/{server_id}/mods/blocked", "mods.manage", True),
     _r("POST", "/api/instances/{server_id}/perf/apply", "tune.apply", True),
     _r("POST", "/api/instances/{server_id}/cpu", "tune.apply", True),
+    _r("POST", "/api/instances/{server_id}/autostart", "tune.apply", True),
     _r("POST", "/api/instances/{server_id}/perf/install", "mods.manage", True),
     _r("POST", "/api/instances/{server_id}/pregen", "console.command", True),
     _r("POST", "/api/instances/{server_id}/spark/install", "mods.manage", True),

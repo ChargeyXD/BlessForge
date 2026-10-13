@@ -2080,6 +2080,25 @@ async def set_port(server_id: str, body: dict = Body(...)) -> dict:
         raise _err(e)
 
 
+@app.post("/api/instances/{server_id}/autostart")
+async def set_autostart(server_id: str, body: dict = Body(...)) -> dict:
+    """Start this server by itself: when its node comes up (after a reboot or
+    an agent update, through the boot queue) and again after a crash. Only
+    one server on a port may; a second is refused, naming the first."""
+    if not isinstance(body.get("enabled"), bool):
+        raise HTTPException(400, "enabled must be true or false")
+    try:
+        await engine.update_server(server_id, {"auto_start": body["enabled"]})
+        return {"auto_start": bool((await engine.get_server(server_id)).get("auto_start"))}
+    except engine.EngineError as e:
+        if e.status == 409 and isinstance(e.body, dict) and e.body.get("conflict"):
+            return JSONResponse({"detail": str(e), "conflict": e.body["conflict"]},
+                                status_code=409)
+        raise _err(e)
+    except Exception as e:
+        raise _err(e)
+
+
 @app.post("/api/instances/{server_id}/cpu")
 async def set_cpu(server_id: str, body: dict = Body(...)) -> dict:
     """CPU weight under contention (`cpu_shares`, 1024 = an equal share) and

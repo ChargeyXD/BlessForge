@@ -339,7 +339,14 @@ export async function render(ctx) {
                   onchange: (e) => setAutoPort(e.target.checked),
                 }),
                 h('span', 'Port: automatic — at each start, this port if it is '
-                  + 'free, otherwise the first free one in the range')),
+                  + 'free, otherwise the first free one (in the range when it can)')),
+              h('label.check', { style: { display: 'flex', gap: '8px', margin: '8px 0' } },
+                h('input', {
+                  type: 'checkbox', checked: !!port.auto_start,
+                  onchange: (e) => setAutoStart(e.target, e.target.checked),
+                }),
+                h('span', 'Start by itself — when this machine or its node comes up, '
+                  + 'and again after a crash. One server per port.')),
               h('button.btn.sm.block', { onclick: savePort },
                 hl(), icon('save', 13), h('span', 'Set the port in both places')),
               h('div.field', { style: { marginTop: '12px' } },
@@ -775,6 +782,18 @@ export async function render(ctx) {
       toast(res.cpuset ? `Pinned to cores ${res.cpuset} from the next start.`
         : 'Not pinned: any core, from the next start.', 'ok');
     } catch (e) { toastError(e); }
+  }
+
+  async function setAutoStart(box, enabled) {
+    try {
+      await api.post(`/api/instances/${ctx.id}/autostart`, { enabled });
+      toast(enabled ? 'Starts by itself when its node comes up, and after a crash.'
+        : 'Starts only when someone starts it.', 'ok');
+      await load();
+    } catch (e) {
+      box.checked = !enabled;
+      toastError(e);
+    }
   }
 
   async function setAutoPort(auto) {

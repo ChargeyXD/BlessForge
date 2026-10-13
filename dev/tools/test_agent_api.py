@@ -333,6 +333,21 @@ async def main():
               and twin_up and first_down, r.text[:200])
         r = await c.post(f"/api/instances/{sid}/action/switch_server")
         check("...and back", r.status_code == 200 and await until(lambda: _running(c, sid), 20))
+
+        # --- starting by itself: a switch a person can turn on ------------------------------
+        r = await c.post(f"/api/instances/{sid}/autostart", json={"enabled": True})
+        p = (await c.get(f"/api/instances/{sid}/port")).json()
+        check("auto-start can be turned on from the panel (there was no way to before)",
+              r.status_code == 200 and r.json() == {"auto_start": True}
+              and p.get("auto_start") is True, (r.text[:200], p.get("auto_start")))
+        r = await c.post(f"/api/instances/{twin}/autostart", json={"enabled": True})
+        check("...a second server on the same port is refused, naming the first",
+              r.status_code == 409 and r.json().get("conflict", {}).get("server") == sid,
+              r.text[:200])
+        r = await c.post(f"/api/instances/{sid}/autostart", json={"enabled": "yes"})
+        r2 = await c.post(f"/api/instances/{sid}/autostart", json={"enabled": False})
+        check("...anything but true/false is a 400, and it turns off again",
+              r.status_code == 400 and r2.json() == {"auto_start": False}, r.text[:200])
         r = await c.post(f"/api/instances/{twin}/port", json={"auto": True})
         r2 = await c.post(f"/api/instances/{twin}/action/start_server")
 

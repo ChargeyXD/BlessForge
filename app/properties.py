@@ -393,6 +393,7 @@ async def port_status(server_id: str) -> dict:
         "properties_port": props_port,
         "query_port": query_port,
         "auto": bool((server.get("limits") or {}).get("port_auto")),
+        "auto_start": bool(server.get("auto_start")),
         "taken_by_apps": await _taken_by_apps(server_id),
         "in_use_by_others": taken,
         "published_range": list(PUBLISHED_RANGE),
