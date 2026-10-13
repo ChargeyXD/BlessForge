@@ -272,8 +272,11 @@ async def ensure_local() -> bool:
         node = await s.get(Node, LOCAL_NODE_ID)
     if node is not None and path.exists():
         return False
+    # The agent is a container here: it reaches the game ports it published
+    # on the host through host.docker.internal (extra_hosts in the compose).
     extra: dict = {"listen_port": port, "game_bind_ip": "0.0.0.0",
-                   "state_dir": "/var/lib/blessforge-agent"}
+                   "state_dir": "/var/lib/blessforge-agent",
+                   "ping_host": "host.docker.internal"}
     if config.LOCAL_SERVERS_ROOT:
         extra["servers_root"] = config.LOCAL_SERVERS_ROOT
     panel_url = config.LOCAL_PANEL_URL or config.PUBLIC_API_URL

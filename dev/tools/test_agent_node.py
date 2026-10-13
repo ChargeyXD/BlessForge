@@ -30,6 +30,8 @@ What design/AGENT-REWORK-BRIEF.md items 6 and 7 need to be true:
     node that does not answer shows its last state, marked, in seconds (7.6);
   * a slow panel never blocks the node: events stay batched in a bounded
     queue, and what it drops is counted and reported (7.7);
+  * player pings go where the game ports are: host.docker.internal for an
+    agent in a container, not its own 127.0.0.1 (6.4);
 
 The agent runs in this process (its real app, lifespan and all) on the
 PROCESS runtime; the Docker parts that need a daemon run with --live.
@@ -1138,6 +1140,31 @@ async def test_event_drops():
           not any(e["type"] == "events_dropped" for e in sent[1]["events"]))
 
 
+# --- 6.4 where player pings go ------------------------------------------------------------
+
+
+async def test_ping_target():
+    section("6.4 player pings go where the game ports are")
+    from agent import config as agent_config
+    base = dict(node_id="n", token_id="t", token="t", panel_url="http://x",
+                panel_public_key=PUB)
+    real = agent_config.os.path.exists
+    try:
+        agent_config.os.path.exists = lambda p: p == "/.dockerenv"
+        in_box = AgentConfig(**base, game_bind_ip="0.0.0.0").ping_target()
+        agent_config.os.path.exists = lambda p: False
+        on_host = AgentConfig(**base, game_bind_ip="0.0.0.0").ping_target()
+    finally:
+        agent_config.os.path.exists = real
+    check("an agent in a container pings the host it published the ports on",
+          in_box == "host.docker.internal", in_box)
+    check("...one running on the host itself pings 127.0.0.1", on_host == "127.0.0.1")
+    check("...a game address that is one address is pinged there",
+          AgentConfig(**base, game_bind_ip="10.8.0.2").ping_target() == "10.8.0.2")
+    check("...and ping_host, when set, wins",
+          AgentConfig(**base, ping_host="192.168.1.5").ping_target() == "192.168.1.5")
+
+
 async def main():
     await test_file_ops_off_loop()
     await test_stats_sampler()
@@ -1151,6 +1178,7 @@ async def main():
     await test_committed_memory()
     await test_panel_fleet()
     await test_event_drops()
+    await test_ping_target()
     if LIVE:
         await test_readopt_live()
         await test_ports_live()

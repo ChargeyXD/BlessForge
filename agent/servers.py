@@ -788,9 +788,7 @@ class Supervisor:
         if srv.state != "running" or now - srv.pinged_at < PING_EVERY:
             return
         srv.pinged_at = now
-        host = self.cfg.game_bind_ip
-        if not host or host in ("0.0.0.0", "::"):
-            host = "127.0.0.1"
+        host = self.cfg.ping_target()
         from agent.ping import ping
         result = await ping(host, int(srv.spec.get("port") or 25565))
         if result is None:

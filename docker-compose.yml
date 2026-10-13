@@ -316,6 +316,10 @@ services:
     mem_limit: 256m
     networks:
       - blessforge
+    # Its player pings go to the game ports it published on this machine,
+    # which from inside this container is host.docker.internal.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       BLESSFORGE_AGENT_CONFIG: "/node/agent.toml"
       BLESSFORGE_AGENT_WAIT: "1"

@@ -64,6 +64,8 @@ async def main():
           and str(cfg.servers_root).replace("\\", "/") == "/DATA/AppData/blessforge/servers"
           and cfg.listen_port == 8443 and cfg.runtime == "docker"
           and cfg.game_bind_ip == "0.0.0.0", (cfg.node_id, cfg.panel_url, cfg.listen_port))
+    check("...whose player pings go to the host, not the agent's own container",
+          cfg.ping_target() == "host.docker.internal", cfg.ping_host)
     if os.name != "nt":
         check("...readable by its owner only", oct(path.stat().st_mode & 0o777) == "0o600",
               oct(path.stat().st_mode & 0o777))

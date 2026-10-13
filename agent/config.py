@@ -83,6 +83,19 @@ class AgentConfig:
     # panel and confirmed by a person -- not refused. A node that sells
     # servers can make it a refusal here.
     refuse_overcommit: bool = False
+    # Where the agent pings its servers for who is online. Blank: the game
+    # address, or -- when that is every address -- this machine, which for
+    # an agent in a container (the one-box install) is host.docker.internal,
+    # not 127.0.0.1: inside the container 127.0.0.1 is the container itself
+    # and every ping was refused.
+    ping_host: str = ""
+
+    def ping_target(self) -> str:
+        if self.ping_host:
+            return self.ping_host
+        if self.game_bind_ip and self.game_bind_ip not in ("0.0.0.0", "::"):
+            return self.game_bind_ip
+        return "host.docker.internal" if os.path.exists("/.dockerenv") else "127.0.0.1"
 
     # --- process runtime: development only -------------------------------------
     # Runs the server as a plain process with no isolation at all. Refused

@@ -47,6 +47,9 @@ class FakeRunning:
 class Cfg:
     game_bind_ip = "127.0.0.1"
 
+    def ping_target(self):
+        return self.game_bind_ip
+
 
 def supervisor():
     sup = Supervisor.__new__(Supervisor)
