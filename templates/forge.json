@@ -4,7 +4,7 @@
   "title": "Forge",
   "kind": "mods",
   "order": 1,
-  "logo": "/assets/loader-forge.jpg",
+  "logo": "/assets/loader-forge.png",
   "blurb": "The oldest and largest mod ecosystem. Almost every big modpack is Forge or NeoForge.",
   "mod_directory": "mods",
   "source": "MinecraftForge",

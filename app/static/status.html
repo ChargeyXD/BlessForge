@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Which servers are up, and who is on.">
+<title>Server status</title>
+<link rel="icon" href="/static/icon.png">
+<link rel="stylesheet" href="/static/vendor/fonts.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" media="print" onload="this.media='all';this.onload=null"
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400..800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Potta+One&display=swap">
+<link rel="stylesheet" href="/static/css/theme.css">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/shrine.css">
+<link rel="modulepreload" href="/static/js/core.js">
+<script type="module" src="/static/js/status.js"></script>
+</head>
+<body class="statuspage">
+<noscript>
+  <p style="max-width:560px;margin:60px auto;font-family:system-ui,sans-serif">
+    This page reads the servers' status as you watch it, so it needs JavaScript.
+    The same numbers are at <a href="/api/status">/api/status</a>.</p>
+</noscript>
+<canvas id="petals" aria-hidden="true"></canvas>
+<main id="status" tabindex="-1"></main>
+</body>
+</html>

@@ -136,7 +136,7 @@ export async function render(ctx) {
     }
 
     if (!all.length && !(listing.blocked_by_author || []).length) {
-      mount(listHost, empty('fox-mascot.png',
+      mount(listHost, empty('idle',
         `Nothing in ${dir}/ yet`,
         ctx.plugins
           ? 'This is a Paper-family server, so it loads Bukkit plugins from '

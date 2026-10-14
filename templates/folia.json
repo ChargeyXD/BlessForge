@@ -4,7 +4,7 @@
   "title": "Folia",
   "kind": "plugins",
   "order": 5,
-  "logo": "/assets/loader-paper.png",
+  "logo": "/assets/loader-folia.webp",
   "blurb": "Paper's regionised-threading fork, for very large player counts. Not every plugin supports it.",
   "mod_directory": "plugins",
   "source": "PaperMC",

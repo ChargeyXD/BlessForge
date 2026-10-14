@@ -134,14 +134,14 @@ export async function render() {
 
       !all.length
         ? (state.health?.ready
-          ? empty('fox-mascot.png', 'Nothing to organise yet',
+          ? empty('placeblock', 'Nothing to organise yet',
             'Racks group servers, and there are none yet. Make one, or install '
             + 'a modpack, and it will turn up in the open yard.',
             h('a.btn.primary', { href: '#/create' }, hl(),
               h('span', 'Create a server')),
             h('a.btn', { href: '#/discover' }, hl(),
               h('span', 'Browse modpacks')))
-          : empty('chargey-peek.png', 'No node is answering yet',
+          : empty('sneakwalk', 'No node is answering yet',
             'BlessForge cannot reach the node that runs the servers. '
             + 'Settings lists exactly what is missing.',
             h('a.btn.primary', { href: '#/settings' }, hl(),

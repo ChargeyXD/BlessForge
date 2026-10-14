@@ -58,7 +58,7 @@ export async function render() {
   try {
     meta = await api.get('/api/roulette/meta');
   } catch (e) {
-    mount(node, empty('chargey-failed.png', 'The roulette will not load', e.message));
+    mount(node, empty('hurt', 'The roulette will not load', e.message));
     return { node };
   }
 

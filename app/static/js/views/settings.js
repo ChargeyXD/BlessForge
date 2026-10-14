@@ -12,26 +12,40 @@
 import {
   h, hl, mount, icon, api, toast, toastError, pill, bytes, num, ago,
   empty, loadingFox, confirmDialog, promptDialog, modal, close, frag,
-  segmented, toggle, field, copyText, readTheme, applyTheme,
+  segmented, toggle, field, copyText, readTheme, applyTheme, mascot, spinner,
 } from '../core.js';
 import { run } from '../jobs.js';
 import { state, refreshHealth, topActions, engineLabel } from '../app.js';
 import { session, isAdmin } from '../auth.js';
 
 export async function render() {
+  return build('you');
+}
+
+/* The machine-wide panels, for The Gate (views/gate.js): connections,
+   assistant, upkeep. Same builder, so a panel is written once. */
+export async function machine(section) {
+  return build(section);
+}
+
+async function build(which = 'you') {
   const node = h('div.wrap');
   mount(node, loadingFox('Reading settings'));
-
-  const [health, cache, updates, ai, endpoints, decisions, tuning]
+  const mine = which === 'you';
+  // Only the machine-wide sections need the machine's readings, and only an
+  // admin may have them; Settings itself asks for nothing it does not show.
+  let [health, cache, updates, ai, endpoints, decisions, tuning]
     = await Promise.all([
-      refreshHealth(),
-      api.get('/api/cache').catch(() => null),
-      api.get('/api/updates').catch(() => null),
-      api.get('/api/ai/status').catch(() => null),
-      api.get('/api/ai/endpoints').catch(() => null),
-      api.get('/api/whitelist').catch(() => ({ items: [], counts: {} })),
-      api.get('/api/ai/tuning').catch(() => null),
+      mine ? null : refreshHealth(),
+      which === 'upkeep' ? api.get('/api/cache').catch(() => null) : null,
+      which === 'upkeep' ? api.get('/api/updates').catch(() => null) : null,
+      which === 'assistant' ? api.get('/api/ai/status').catch(() => null) : null,
+      which === 'assistant' ? api.get('/api/ai/endpoints').catch(() => null) : null,
+      which === 'upkeep' ? api.get('/api/whitelist').catch(() => ({ items: [], counts: {} }))
+        : { items: [], counts: {} },
+      which === 'assistant' ? api.get('/api/ai/tuning').catch(() => null) : null,
     ]);
+  const tokensHost = h('div');
   // The toggle is the one thing on this screen the user can change that the
   // server owns, so it is mirrored locally rather than re-fetched: a repaint
   // must not undo a switch that has already been written.
@@ -42,39 +56,16 @@ export async function render() {
   const listHost = h('div');
 
   function paint() {
-    const adminHost = h('div');
-    // Loaded on demand, and only for an admin. The server refuses these
-    // endpoints to anyone else regardless; not asking for them keeps a
-    // 403 out of the console on every visit to Settings.
-    if (isAdmin()) {
-      import('./admin.js')
-        .then((m) => m.adminPanel())
-        .then((panel) => mount(adminHost,
-          h('div.panel.adm-panel', { style: { marginTop: '18px' } },
-            h('header', icon('shield', 15), h('h3', 'Administration'),
-              h('span.sp', 'admins only')),
-            h('div.pad', panel))))
-        .catch((e) => mount(adminHost,
-          h('div.note.bad', { style: { marginTop: '18px' } },
-            `The admin panel would not load: ${e.message}`)));
-    }
-
-    mount(node,
-      h('div.sec-head.mon',
-        h('div',
-          h('p.eyebrow', 'BlessForge · ', h('b', 'version 2.1')),
-          h('h2', 'Settings'))),
-
-      /* Your own account, for everybody. An admin can reset anybody's
-         password; this is how you change your OWN, which needs the
-         current one and is therefore a different operation. */
-      h('div.panel', { style: { marginBottom: '18px' } },
+    const panels = {
+      account: () => h('div.panel',
         h('header', icon('user', 15), h('h3', 'Your account'),
           h('span.sp', session.user?.username || '')),
         h('div.pad',
           h('div.acct-row',
+            h('span.acct-seal', { 'aria-hidden': 'true' },
+              (session.user?.display || session.user?.username || '?').slice(0, 1).toUpperCase()),
             h('div',
-              h('div.acct-name', session.user?.display || session.user?.username),
+              h('div.acct-name.brush', session.user?.display || session.user?.username),
               h('div.mono.muted',
                 `${session.user?.role || 'member'} · signed in for up to `
                 + `${session.sessionDays} days`)),
@@ -86,224 +77,347 @@ export async function render() {
             + 'An admin can sort both out — there is no self-service reset '
             + 'here on purpose.'))),
 
-      adminHost,
+      role: () => h('div.panel',
+        h('header', icon('shield', 15), h('h3', 'What you may do')),
+        h('div.pad',
+          h('p.muted', { style: { fontSize: '12.5px' } },
+            session.user?.is_admin ? 'An admin may do everything, on every server.'
+              : 'Your role, plus anything an admin added for you. Grants on single '
+                + 'servers are listed under them.'),
+          h('div.chiprow.role-seals', ...(session.user?.permissions || []).map((p) =>
+            h('span.role-seal', icon('check', 11), h('span', p)))),
+          Object.keys(session.user?.server_permissions || {}).length
+            ? h('div', { style: { marginTop: '12px' } },
+              ...Object.entries(session.user.server_permissions).map(([sid, perms]) =>
+                h('div.grant-line',
+                  h('a', { href: `#/i/${sid}/overview` },
+                    state.instanceById.get(sid)?.name || sid.slice(0, 8)),
+                  h('span.muted', ` — ${perms.join(', ')}`))))
+            : null)),
 
-      h('div.grid.g2', { style: { alignItems: 'start' } },
-        /* --- connections ------------------------------------- */
-        h('div.panel',
-          h('header', icon('link', 15), h('h3', 'Connections')),
-          h('div.pad', { style: { display: 'grid', gap: '12px' } },
-            checkRow('Servers', health.checks?.engine,
-              engineLabel(health.checks?.engine?.driver || health.config?.engine),
-              health.checks?.engine?.ok
-                ? `${health.checks.engine.servers} servers on `
-                  + `${health.checks.engine.nodes} node`
-                  + `${health.checks.engine.nodes === 1 ? '' : 's'} · `
-                  + `${health.checks.engine.latency_ms} ms`
-                : null),
-            checkRow('Database', health.checks?.database,
-              health.checks?.database?.url,
-              health.checks?.database?.ok
-                ? (health.checks.database.production_ready
-                  ? `Postgres · ${health.checks.database.url}`
-                  : 'SQLite fallback — fine for trying it, not for real '
-                    + 'accounts. Set DATABASE_URL to a Postgres.')
-                : null),
-            checkRow('Job queue', health.checks?.queue,
-              health.checks?.queue?.mode === 'worker' ? 'Redis + worker' : 'in-process',
-              health.checks?.queue?.ok
-                ? (health.checks.queue.mode === 'worker'
-                  ? `${health.checks.queue.workers} worker`
-                    + `${health.checks.queue.workers === 1 ? '' : 's'} · `
-                    + `${health.checks.queue.queued} waiting`
-                  : 'jobs run inside the API; a restart stops an install')
-                : null),
-            checkRow('CurseForge', health.checks?.curseforge,
-              'api.curseforge.com'),
-            checkRow('Modrinth', health.checks?.modrinth, 'api.modrinth.com'),
-            checkRow('Storage', health.checks?.storage,
-              health.checks?.storage?.path,
-              health.checks?.storage?.free_gb
-                ? `${health.checks.storage.free_gb} GB free` : null),
-            h('p.muted', { style: { fontSize: '12.5px' } },
-              'These are set from environment variables in the compose file — '
-              + 'BlessForge never writes them, because a container that '
-              + 'rewrites its own configuration loses it on the next pull.'),
-            h('button.btn.sm.ghost.block', {
-              onclick: async () => {
-                await refreshHealth();
-                toast('Re-checked.', 'ok');
-                render().then((v) => mount(document.querySelector('#main'), v.node));
-              },
-            }, icon('refresh', 13), h('span', 'Check again')),
-          )),
+      tokens: () => h('div.panel', h('header', icon('key', 15), h('h3', 'API tokens'),
+        h('span.sp', 'for scripts and bots')), h('div.pad', tokensHost)),
 
-        /* --- appearance ------------------------------------- */
-        h('div.panel',
-          h('header', icon('sun', 15), h('h3', 'Appearance')),
-          h('div.pad', { style: { display: 'grid', gap: '12px' } },
-            h('div.field', { style: { margin: 0 } },
-              h('label', 'Theme'),
-              segmented([
-                { value: 'system', label: 'System' },
-                { value: 'light', label: 'Light' },
-                { value: 'dark', label: 'Dark' },
-              ], readTheme(), (v) => { applyTheme(v); paint(); }, 'Theme')),
-            h('p.muted', { style: { fontSize: '12.5px' } },
-              'Light and dark are both complete palettes, not one inverted — '
-              + 'the dark set desaturates rather than flipping, so the pink '
-              + 'stays pink instead of turning fluorescent.'),
-            h('div', { style: { position: 'relative', textAlign: 'center',
-              padding: '10px 0' } },
-              h('div.fox-halo'),
-              h('img.fox', { src: '/assets/fox-mascot.png', alt: '',
-                style: { width: '120px', margin: '0 auto' } })),
-          )),
+      gateLink: () => (isAdmin() ? h('a.gate-door', { href: '#/gate' },
+        h('span.gd-torii', { 'aria-hidden': 'true' }, icon('torii', 30)),
+        h('span', h('b.brush', 'The Gate'),
+          h('span.muted', 'Accounts, nodes, the status page, every token, connections, '
+            + 'the assistant, upkeep and the ledger live there.')),
+        icon('arrowRight', 16)) : null),
 
-        /* --- cache ------------------------------------------- */
-        cache ? h('div.panel',
-          h('header', icon('db', 15), h('h3', 'Download cache')),
-          h('div.pad', { style: { display: 'grid', gap: '12px' } },
-            h('div.kpis',
-              h('div.kpi', h('div.lbl', 'Holding'),
-                h('div.v', { style: { fontSize: '20px' } }, `${cache.used_gb} GB`),
-                h('div.sub', `ceiling ${cache.limit_gb} GB`)),
-              h('div.kpi', h('div.lbl', 'State'),
-                h(`div.v${cache.over ? '.bad' : '.ok'}`,
-                  { style: { fontSize: '20px' } },
-                  cache.over ? 'over' : 'fine'),
-                h('div.sub', cache.over ? 'the oldest go first'
-                  : 'nothing to prune'))),
-            h('p.muted', { style: { fontSize: '12.5px' } },
-              'Everything in here is a copy of something CurseForge or '
-              + 'Modrinth will hand out again, so deleting it costs bandwidth '
-              + 'and nothing else. Imported exports are kept somewhere '
-              + 'separate — those exist nowhere else.'),
-            h('button.btn.sm.ghost.block', {
-              onclick: async () => {
-                try {
-                  const r = await api.post('/api/cache/prune');
-                  toast(`${r.pruned} files removed, ${bytes(r.freed)} freed.`,
-                    'ok');
-                } catch (e) { toastError(e); }
-              },
-            }, icon('trash', 13), h('span', 'Prune now')))) : null,
-
-        /* --- updates ----------------------------------------- */
-        updates ? h('div.panel',
-          h('header', icon('refresh', 15), h('h3', 'Scheduled update checks')),
-          h('div.pad', { style: { display: 'grid', gap: '12px' } },
-            h('div.kpis',
-              h('div.kpi', h('div.lbl', 'Mods with updates'),
-                h('div.v', { style: { fontSize: '20px' } },
-                  String(updates.total ?? 0)),
-                h('div.sub', 'across every managed server')),
-              h('div.kpi', h('div.lbl', 'Last sweep'),
-                h('div.v', { style: { fontSize: '16px' } },
-                  updates.checked_at ? ago(updates.checked_at) : 'never'),
-                h('div.sub', `every ${updates.every_hours} h`))),
-            h('button.btn.sm.ghost.block', {
-              onclick: () => run('/api/updates/check', {}, {
-                title: 'Checking every server for mod updates',
-              }),
-            }, icon('search', 13), h('span', 'Sweep now')))) : null,
-
-        /* --- assistant --------------------------------------- */
-        ai ? h('div.panel',
-          h('header', icon('flask', 15), h('h3', 'Troubleshooting assistant')),
-          h('div.pad', { style: { display: 'grid', gap: '12px' } },
-            h('div.chiprow',
-              pill(ai.available ? 'available' : 'unavailable',
-                ai.available ? 'ok' : 'dead'),
-              ai.model ? pill(ai.model, 'ghost') : null),
-            h('p.muted', { style: { fontSize: '12.5px' } },
-              ai.available
-                ? `Pointed at ${ai.url}. The deterministic checks run first `
-                  + 'and are fed in as evidence — the model explains and '
-                  + 'prioritises, it is not the detector.'
-                : (ai.reason || 'Not configured.')),
-            ai.hint ? h('div.note.warn', ai.hint) : null,
-
-            /* --- silent tuning ------------------------------------
-               The only place this feature is visible when it is
-               working. Everything else it does happens on the Tune
-               screen without being asked. */
-            tuning ? h('div', { style: { display: 'grid', gap: '10px',
-              borderTop: '2px solid var(--rule)', paddingTop: '12px' } },
-            toggle('Let it tune servers quietly', tuneOn, async (v) => {
-              try {
-                const res = await api.post('/api/ai/tuning', { enabled: v });
-                // `chosen` is the switch; `enabled` is the switch AND a
-                // container that has AI_ENABLED set. They differ, and the
-                // toggle must show the switch.
-                tuneOn = !!(res.chosen ?? res.enabled);
-                toast(tuneOn
-                  ? 'On. The Tune screen will fold its suggestions in as they '
-                    + 'arrive.'
-                  : 'Off. Tuning is deterministic again.',
-                res.persisted === false ? 'warn' : 'ok');
-                if (res.persisted === false) {
-                  toast('Not written to disk — /data is not writable, so this '
-                    + 'lasts until the container restarts.', 'warn',
-                  { timeout: 9000 });
-                }
-              } catch (e) {
-                tuneOn = !v;
-                toastError(e);
-              }
+      connections: () => h('div.panel',
+        h('header', icon('link', 15), h('h3', 'Connections')),
+        h('div.pad', { style: { display: 'grid', gap: '12px' } },
+          checkRow('Servers', health.checks?.engine,
+            engineLabel(health.checks?.engine?.driver || health.config?.engine),
+            health.checks?.engine?.ok
+              ? `${health.checks.engine.servers} servers on `
+                + `${health.checks.engine.nodes} node`
+                + `${health.checks.engine.nodes === 1 ? '' : 's'} · `
+                + `${health.checks.engine.latency_ms} ms`
+              : null),
+          checkRow('Database', health.checks?.database,
+            health.checks?.database?.url,
+            health.checks?.database?.ok
+              ? (health.checks.database.production_ready
+                ? `Postgres · ${health.checks.database.url}`
+                : 'SQLite fallback — fine for trying it, not for real '
+                  + 'accounts. Set DATABASE_URL to a Postgres.')
+              : null),
+          checkRow('Job queue', health.checks?.queue,
+            health.checks?.queue?.mode === 'worker' ? 'Redis + worker' : 'in-process',
+            health.checks?.queue?.ok
+              ? (health.checks.queue.mode === 'worker'
+                ? `${health.checks.queue.workers} worker`
+                  + `${health.checks.queue.workers === 1 ? '' : 's'} · `
+                  + `${health.checks.queue.queued} waiting`
+                : 'jobs run inside the API; a restart stops an install')
+              : null),
+          checkRow('CurseForge', health.checks?.curseforge, 'api.curseforge.com'),
+          checkRow('Modrinth', health.checks?.modrinth, 'api.modrinth.com'),
+          checkRow('Storage', health.checks?.storage,
+            health.checks?.storage?.path,
+            health.checks?.storage?.free_gb
+              ? `${health.checks.storage.free_gb} GB free` : null),
+          h('p.muted', { style: { fontSize: '12.5px' } },
+            'These are set from environment variables in the compose file — '
+            + 'BlessForge never writes them, because a container that '
+            + 'rewrites its own configuration loses it on the next pull.'),
+          h('button.btn.sm.ghost.block', {
+            onclick: async () => {
+              health = await refreshHealth();
+              toast('Re-checked.', 'ok');
               paint();
-            }, {
-              disabled: !tuning.ai_enabled,
-              help: 'On the Tune screen it quietly sharpens the heap, the GC '
-                + 'flags and a few server.properties values for the pack that '
-                + 'is actually installed, and says in one line why each number '
-                + 'moved. It never blocks the page and never asks you '
-                + 'anything.',
+            },
+          }, icon('refresh', 13), h('span', 'Check again')),
+        )),
+
+      appearance: () => h('div.panel',
+        h('header', icon('sun', 15), h('h3', 'Appearance')),
+        h('div.pad', { style: { display: 'grid', gap: '12px' } },
+          h('div.field', { style: { margin: 0 } },
+            h('label', 'Theme'),
+            segmented([
+              { value: 'system', label: 'System' },
+              { value: 'light', label: 'Light' },
+              { value: 'dark', label: 'Dark' },
+            ], readTheme(), (v) => { applyTheme(v); paint(); }, 'Theme')),
+          h('p.muted', { style: { fontSize: '12.5px' } },
+            'Light and dark are both complete palettes, not one inverted — '
+            + 'the dark set desaturates rather than flipping, so the pink '
+            + 'stays pink instead of turning fluorescent. Ctrl K jumps anywhere.'),
+          h('div', { style: { position: 'relative', textAlign: 'center',
+            padding: '10px 0' } },
+            h('div.fox-halo'),
+            mascot('piglindance', 110, { cls: 'fox' })),
+        )),
+
+      cache: () => (cache ? h('div.panel',
+        h('header', icon('db', 15), h('h3', 'Download cache')),
+        h('div.pad', { style: { display: 'grid', gap: '12px' } },
+          h('div.kpis',
+            h('div.kpi', h('div.lbl', 'Holding'),
+              h('div.v', { style: { fontSize: '20px' } }, `${cache.used_gb} GB`),
+              h('div.sub', `ceiling ${cache.limit_gb} GB`)),
+            h('div.kpi', h('div.lbl', 'State'),
+              h(`div.v${cache.over ? '.bad' : '.ok'}`,
+                { style: { fontSize: '20px' } },
+                cache.over ? 'over' : 'fine'),
+              h('div.sub', cache.over ? 'the oldest go first'
+                : 'nothing to prune'))),
+          h('p.muted', { style: { fontSize: '12.5px' } },
+            'Everything in here is a copy of something CurseForge or '
+            + 'Modrinth will hand out again, so deleting it costs bandwidth '
+            + 'and nothing else. Imported exports are kept somewhere '
+            + 'separate — those exist nowhere else.'),
+          h('button.btn.sm.ghost.block', {
+            onclick: async () => {
+              try {
+                const r = await api.post('/api/cache/prune');
+                toast(`${r.pruned} files removed, ${bytes(r.freed)} freed.`,
+                  'ok');
+              } catch (e) { toastError(e); }
+            },
+          }, icon('trash', 13), h('span', 'Prune now')))) : null),
+
+      updates: () => (updates ? h('div.panel',
+        h('header', icon('refresh', 15), h('h3', 'Scheduled update checks')),
+        h('div.pad', { style: { display: 'grid', gap: '12px' } },
+          h('div.kpis',
+            h('div.kpi', h('div.lbl', 'Mods with updates'),
+              h('div.v', { style: { fontSize: '20px' } },
+                String(updates.total ?? 0)),
+              h('div.sub', 'across every managed server')),
+            h('div.kpi', h('div.lbl', 'Last sweep'),
+              h('div.v', { style: { fontSize: '16px' } },
+                updates.checked_at ? ago(updates.checked_at) : 'never'),
+              h('div.sub', `every ${updates.every_hours} h`))),
+          h('button.btn.sm.ghost.block', {
+            onclick: () => run('/api/updates/check', {}, {
+              title: 'Checking every server for mod updates',
             }),
-            h('p.muted', { style: { fontSize: '12px' } },
-              'Everything it proposes is clamped against the same host '
-              + 'arithmetic that produced the number in the first place — a '
-              + 'heap can never exceed the measured ceiling, flags come from '
-              + 'a fixed list with per-flag ranges, and anything outside that '
-              + 'is dropped and counted. If the model is off, missing, '
-              + `unreachable or slower than ${tuning.timeout_seconds ?? 25} s, `
-              + 'the deterministic optimizer is what you get.'),
-            !tuning.ai_enabled
-              ? h('div.note.warn', 'AI_ENABLED is false in this container\'s '
-                + 'environment, so this cannot be switched on here.')
-              : null) : null,
+          }, icon('search', 13), h('span', 'Sweep now')))) : null),
 
-            endpoints?.items?.length > 1
-              ? h('div.field', { style: { margin: 0 } },
-                h('label', 'Endpoint'),
-                h('select.inp', {
-                  onchange: async (e) => {
-                    try {
-                      await api.post('/api/ai/endpoint', { url: e.target.value });
-                      toast('Endpoint switched, and remembered.', 'ok');
-                    } catch (err) { toastError(err); }
-                  },
-                }, ...endpoints.items.map((i) => h('option', {
-                  value: i.url, selected: i.url === endpoints.active,
-                }, `${i.label || i.url}`))))
-              : null,
-            !ai.available && ai.models
-              ? h('button.btn.sm.block', {
-                onclick: () => run('/api/ai/pull', {}, { title: 'Pull the model' }),
-              }, hl(), icon('download', 13), h('span', 'Pull the model')) : null,
-          )) : null,
-      ),
+      assistant: () => (ai ? assistantPanel() : h('div.note', 'The assistant is not configured.')),
 
-      /* --- the allow / block list -------------------------- */
-      h('div.panel', { style: { marginTop: '18px' } },
+      decisions: () => h('div.panel',
         h('header', icon('shieldCheck', 15), h('h3', 'Client-only decisions'),
           h('span.sp', `${list.counts?.allow ?? 0} allowed · `
             + `${list.counts?.block ?? 0} blocked`)),
         h('div.pad', listHost)),
+    };
 
-      h('div.torii', { style: { marginTop: '26px' } }, toriiSvg()),
+    const layouts = {
+      you: [['account', 'role'], ['tokens'], ['appearance', 'gateLink']],
+      connections: [['connections']],
+      assistant: [['assistant']],
+      upkeep: [['cache', 'updates'], ['decisions']],
+    };
+    const rows = layouts[which] || layouts.you;
+    mount(node,
+      which === 'you' ? h('header.page-head',
+        h('div', h('p.eyebrow', 'BlessForge · ', h('b', 'yours')),
+          h('h1.brush.ph-title', 'Settings'),
+          h('p.lede', 'Your sign-in, your keys and how the shrine looks to you. '
+            + (isAdmin() ? 'Everything about the whole install is behind The Gate.' : ''))),
+        mascot('wave', 84, { cls: 'ph-fox' })) : null,
+      ...rows.map((names) => h(`div.grid.${names.length > 1 ? 'g2' : 'g1'}.set-row`,
+        { style: { alignItems: 'start' } }, ...names.map((n) => panels[n]()))),
     );
-    paintList();
+    if (rows.flat().includes('decisions')) paintList();
+    if (rows.flat().includes('tokens')) paintTokens();
+  }
+
+  /* --- your API tokens ------------------------------------------
+     A token acts as you with less: the permissions you tick, and only
+     the servers you pick. It is shown once, when it is made; the list
+     only ever has its first eleven characters. */
+  async function paintTokens() {
+    mount(tokensHost, spinner('Reading your tokens'));
+    let data;
+    try { data = await api.get('/api/auth/tokens'); } catch (e) {
+      mount(tokensHost, h('div.note.bad', e.message)); return;
+    }
+    mount(tokensHost,
+      h('p.muted', { style: { fontSize: '13px' } },
+        'For scripts, Discord bots and Home Assistant: send it as ',
+        h('code', 'Authorization: Bearer bf_…'),
+        '. A token can never do more than you can, and cannot reach accounts, other '
+        + 'tokens or the admin side. An account with two-factor sign-in uses one as its '
+        + 'SFTP password.'),
+      h('div.btnrow', { style: { margin: '10px 0 14px' } },
+        h('button.btn.sm.primary', { onclick: () => newToken(data) }, hl(), icon('plus', 13),
+          h('span', 'Make a token'))),
+      data.items.length ? h('div.modlist', ...data.items.map((t) => h('div.modrow',
+        h('div.ico', icon('key', 15)),
+        h('div.who',
+          h('div.nm', t.name),
+          h('div.fn', `${t.prefix}… · made ${ago(t.created)}`
+            + `${t.last_used ? ` · used ${ago(t.last_used)}` : ' · never used'}`
+            + `${t.expires ? ` · expires ${new Date(t.expires * 1000).toLocaleDateString()}` : ''}`),
+          h('div.tags', ...t.permissions.map((p) => pill(p, 'ghost')),
+            t.servers.length ? pill(`${t.servers.length} server${t.servers.length === 1 ? '' : 's'}`, 'info')
+              : pill('every server you can reach', 'ok'))),
+        h('div.acts', h('button.btn.xs.danger', {
+          onclick: async () => {
+            const ok = await confirmDialog({ title: `Revoke ${t.name}?`,
+              message: 'Anything using it stops working at once.', confirmLabel: 'Revoke it',
+              danger: true, art: 'vanish' });
+            if (!ok) return;
+            try { await api.del(`/api/auth/tokens/${t.id}`); paintTokens(); } catch (e) { toastError(e); }
+          },
+        }, icon('trash', 11), h('span', 'Revoke'))))))
+        : h('div.note', 'No tokens yet.'));
+  }
+
+  function newToken(data) {
+    const name = h('input.inp', { placeholder: 'Discord bot' });
+    const perms = new Set(['server.view']);
+    const servers = new Set();
+    let days = 90;
+    const permChips = h('div.chiprow');
+    const serverChips = h('div.chiprow');
+    const paintChips = () => {
+      mount(permChips, ...data.grantable.map((p) => h('button.chip', { type: 'button',
+        'aria-pressed': String(perms.has(p)),
+        onclick: () => { if (perms.has(p)) perms.delete(p); else perms.add(p); paintChips(); } }, p)));
+      mount(serverChips, ...state.instances.map((s) => h('button.chip', { type: 'button',
+        'aria-pressed': String(servers.has(s.server_id)),
+        onclick: () => {
+          if (servers.has(s.server_id)) servers.delete(s.server_id); else servers.add(s.server_id);
+          paintChips();
+        } }, s.name || s.server_id.slice(0, 8))));
+    };
+    paintChips();
+    modal({
+      title: 'Make an API token',
+      wide: true,
+      body: h('div',
+        field('Name', name, 'So you know later what uses it.'),
+        h('div.field', h('label', 'It may'), permChips),
+        h('div.field', h('label', 'On these servers'), serverChips,
+          h('div.help', 'None picked: every server you can reach.')),
+        h('div.field', h('label', 'Expires'), segmented([
+          { value: 7, label: '7 days' }, { value: 30, label: '30 days' },
+          { value: 90, label: '90 days' }, { value: 365, label: 'A year' },
+          { value: 0, label: 'Never' }], days, (v) => { days = v; }, 'Expires'))),
+      footer: h('div.btnrow',
+        h('button.btn.ghost', { onclick: () => close() }, h('span', 'Cancel')),
+        h('button.btn.primary', {
+          onclick: async () => {
+            if (!name.value.trim()) { name.focus(); return; }
+            try {
+              const made = await api.post('/api/auth/tokens', {
+                name: name.value.trim(), permissions: [...perms], servers: [...servers],
+                expires_days: days || null });
+              showOnce(made);
+              paintTokens();
+            } catch (e) { toastError(e, 'No token was made'); }
+          },
+        }, hl(), h('span', 'Make it'))),
+    });
+  }
+
+  function showOnce(made) {
+    let saved = false;
+    const done = h('button.btn.primary', { disabled: true, onclick: () => close() }, hl(),
+      h('span', 'Done'));
+    modal({
+      title: 'Your new token — shown once',
+      dismissable: false,
+      body: h('div',
+        h('div.note.warn', h('b', 'Copy it now'),
+          'BlessForge keeps only its fingerprint. Close this and it cannot be shown again; '
+          + 'you would make a new one.'),
+        h('pre.token-once.mono', made.token),
+        h('div.btnrow', { style: { margin: '10px 0' } },
+          h('button.btn.sm', { onclick: () => copyText(made.token, 'The token') }, hl(),
+            icon('copy', 12), h('span', 'Copy'))),
+        toggle('I have saved it somewhere safe', false, (v) => { saved = v; done.disabled = !saved; })),
+      footer: h('div.btnrow', done),
+    });
+  }
+
+  function assistantPanel() {
+    return h('div.panel',
+      h('header', icon('flask', 15), h('h3', 'Troubleshooting assistant')),
+      h('div.pad', { style: { display: 'grid', gap: '12px' } },
+        h('div.chiprow',
+          pill(ai.available ? 'available' : 'unavailable',
+            ai.available ? 'ok' : 'dead'),
+          ai.model ? pill(ai.model, 'ghost') : null),
+        h('p.muted', { style: { fontSize: '12.5px' } },
+          ai.available
+            ? `Pointed at ${ai.url}. The deterministic checks run first `
+              + 'and are fed in as evidence — the model explains and '
+              + 'prioritises, it is not the detector.'
+            : (ai.reason || 'Not configured.')),
+        ai.hint ? h('div.note.warn', ai.hint) : null,
+        tuning ? h('div', { style: { display: 'grid', gap: '10px',
+          borderTop: '2px solid var(--rule)', paddingTop: '12px' } },
+        toggle('Let it tune servers quietly', tuneOn, async (v) => {
+          try {
+            const res = await api.post('/api/ai/tuning', { enabled: v });
+            tuneOn = !!(res.chosen ?? res.enabled);
+            toast(tuneOn
+              ? 'On. The Tune screen will fold its suggestions in as they arrive.'
+              : 'Off. Tuning is deterministic again.',
+            res.persisted === false ? 'warn' : 'ok');
+          } catch (e) {
+            tuneOn = !v;
+            toastError(e);
+          }
+          paint();
+        }, {
+          disabled: !tuning.ai_enabled,
+          help: 'On the Tune screen it quietly sharpens the heap, the GC '
+            + 'flags and a few server.properties values for the pack that '
+            + 'is actually installed, and says in one line why each number '
+            + 'moved. It never blocks the page and never asks you anything.',
+        }),
+        !tuning.ai_enabled
+          ? h('div.note.warn', 'AI_ENABLED is false in this container\'s '
+            + 'environment, so this cannot be switched on here.')
+          : null) : null,
+        endpoints?.items?.length > 1
+          ? h('div.field', { style: { margin: 0 } },
+            h('label', 'Endpoint'),
+            h('select.inp', {
+              onchange: async (e) => {
+                try {
+                  await api.post('/api/ai/endpoint', { url: e.target.value });
+                  toast('Endpoint switched, and remembered.', 'ok');
+                } catch (err) { toastError(err); }
+              },
+            }, ...endpoints.items.map((i) => h('option', {
+              value: i.url, selected: i.url === endpoints.active,
+            }, `${i.label || i.url}`))))
+          : null,
+        !ai.available && ai.models
+          ? h('button.btn.sm.block', {
+            onclick: () => run('/api/ai/pull', {}, { title: 'Pull the model' }),
+          }, hl(), icon('download', 13), h('span', 'Pull the model')) : null,
+      ));
   }
 
   function paintList() {

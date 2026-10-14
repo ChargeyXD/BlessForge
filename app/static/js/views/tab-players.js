@@ -123,7 +123,7 @@ export async function render(ctx) {
             : null,
 
           !c.known
-            ? empty('fox-mascot.png', 'Nobody has been here yet',
+            ? empty('wave', 'Nobody has been here yet',
               'Players appear once they connect. You can add someone to the '
               + 'whitelist or make them an operator before their first join.',
               h('button.btn.primary', { onclick: addPlayer }, hl(),

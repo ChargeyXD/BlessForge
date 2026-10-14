@@ -44,7 +44,7 @@ export async function render() {
     takenByApps = ports?.taken_by_apps || [];
   } catch (e) {
     mount(node, bannerIfUnhealthy() || null,
-      empty('chargey-failed.png', 'Could not read the loader catalogue',
+      empty('hurt', 'Could not read the loader catalogue',
         e.message + ' — the loaders\' own sites were unreachable. Check '
         + 'this container\'s route to the internet.',
         h('button.btn.primary', { onclick: () => render().then((v) =>
@@ -53,7 +53,7 @@ export async function render() {
     return { node };
   }
   if (!catalogue.length) {
-    mount(node, empty('chargey-failed.png', 'No loaders are available',
+    mount(node, empty('shake', 'No loaders are available',
       'None of the loaders\' own projects answered.'));
     return { node };
   }
@@ -381,8 +381,8 @@ export async function render() {
             h('div.pad', { style: { display: 'grid', gap: '12px' } },
               h('div', { style: { position: 'relative', textAlign: 'center' } },
                 h('div.fox-halo'),
-                h('img.fox', {
-                  src: '/assets/fox-mascot.png', alt: '',
+                h('img.fox.mascot', {
+                  src: '/assets/mascot/placeblock.gif', alt: '',
                   style: { width: '130px', margin: '0 auto' },
                 })),
               summaryRow('Software', `${c.title} ${form.minecraft}`),

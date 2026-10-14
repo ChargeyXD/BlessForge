@@ -44,6 +44,8 @@ const GROUPS = [
     { key: 'plugins', label: 'Plugins', kanji: '具', when: (i) => i.plugins, down: true },
     { key: 'files', label: 'Files', kanji: '蔵', needs: 'files.read', down: true },
     { key: 'configs', label: 'Configs', kanji: '巻', needs: 'files.read', down: true },
+    // Only when Simple Voice Chat is in mods/ or plugins/ (app/voicechat.py).
+    { key: 'voice', label: 'Voice', kanji: '音', when: (i) => !!i.voice },
   ]],
   ['Care', [
     { key: 'tune', label: 'Tune', kanji: '調', down: true },
@@ -695,6 +697,12 @@ export async function render({ params }) {
 
   paintHead();
   paintTabs();
+  // Whether Simple Voice Chat is here decides whether its slip hangs. Asked
+  // once, after the shelf is up, so the page never waits on it.
+  api.get(`/api/instances/${id}/voicechat`).then((v) => {
+    ctx.voice = v?.present ? v : null;
+    if (ctx.voice && !disposed) paintTabs();
+  }).catch(() => {});
 
   /* --- the tab itself ---------------------------------------- */
   const loaders = {
@@ -712,6 +720,7 @@ export async function render({ params }) {
     schedules: () => import('./tab-schedules.js'),
     undo: () => import('./tab-backups.js'),
     rules: () => import('./tab-rules.js'),
+    voice: () => import('./tab-voice.js'),
   };
   const load = loaders[params.tab] || loaders.overview;
 
@@ -734,6 +743,7 @@ export async function render({ params }) {
     schedules: { bar: 1, rows: 5 },
     undo: { bar: 1, rows: 5 },
     rules: { panels: 3 },
+    voice: { panels: 2 },
   };
   const tabShownAt = Date.now();
   mount(bodyHost, pageSkeleton(TAB_SHAPES[params.tab] || { rows: 6 }));

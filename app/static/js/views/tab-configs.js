@@ -112,7 +112,7 @@ export async function render(ctx) {
       h('div.empty-slot',
         h('div', { style: { position: 'relative', display: 'inline-block' } },
           h('div.fox-halo'),
-          h('img.fox', { src: '/assets/fox-head.png', alt: '',
+          h('img.fox.mascot', { src: '/assets/mascot/idle.gif', alt: '',
             style: { width: '110px' } })),
         h('p', { style: { marginTop: '12px' } },
           'Pick a file on the left. It opens here, and stays here while you '

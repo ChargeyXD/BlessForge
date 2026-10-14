@@ -441,7 +441,7 @@ export async function render() {
 
     const drop = h('div.drop', { tabIndex: 0, role: 'button',
       'aria-label': 'Choose a modpack export to upload' },
-      h('img', { src: '/assets/allay-helping.png', alt: '',
+      h('img.mascot', { src: '/assets/mascot/eat.gif', alt: '',
         style: { width: '90px', marginBottom: '10px' } }),
       h('h3', 'Drop a CurseForge export here'),
       h('p.muted', { style: { fontSize: '13.5px', maxWidth: '56ch',

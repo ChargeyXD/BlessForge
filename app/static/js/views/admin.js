@@ -67,6 +67,90 @@ export async function adminPanel() {
   return node;
 }
 
+/* The two halves on their own, for The Gate's sections. */
+export async function registerPanel() {
+  const node = h('div.adm');
+  const usersHost = h('div');
+  async function paintUsers() {
+    mount(usersHost, spinner('Reading the register'));
+    try {
+      await loadMeta();
+      const { items } = await api.get('/api/admin/users');
+      mount(usersHost, h('div.ofuda-wall.stagger',
+        ...items.map((u) => userCard(u, paintUsers))));
+    } catch (e) {
+      mount(usersHost, h('div.note.bad', e.message));
+    }
+  }
+  mount(node,
+    h('div.adm-head',
+      h('div',
+        h('h3.adm-title', 'The register'),
+        h('p.adm-sub.mono', 'Who may open this shrine, and how far in')),
+      h('button.btn.sm.primary', { onclick: () => editUser(null, paintUsers) },
+        hl(), icon('plus', 13), h('span', 'New account'))),
+    usersHost);
+  paintUsers();
+  return node;
+}
+
+export function ledgerPanel() {
+  return ledger();
+}
+
+/* Per-server grants for one account: what they may do on each server
+   they were given, on top of their role (app/access.py). */
+async function serversOf(u) {
+  let data;
+  try {
+    data = await api.get(`/api/admin/users/${encodeURIComponent(u.username)}/servers`);
+  } catch (e) { toastError(e); return; }
+  const grants = new Map((data.items || []).map((g) => [g.server_id, new Set(g.permissions)]));
+  const host = h('div');
+  const paint = () => mount(host,
+    h('p.muted', { style: { fontSize: '12.5px' } },
+      `On top of ${u.username}'s role (${u.role}). Pick a server, then what they may do there; `
+      + 'seeing the server is always included.'),
+    ...state.instances.map((srv) => {
+      const set = grants.get(srv.server_id) || new Set();
+      return h('div.grant-row',
+        h('div.gr-name', h('b', srv.name || srv.server_id.slice(0, 8)),
+          set.size ? pill(`${set.size} granted`, 'ok') : h('span.muted', 'nothing here')),
+        h('div.chiprow', ...(data.grantable || []).map((perm) => h('button.chip', {
+          type: 'button', 'aria-pressed': String(set.has(perm)),
+          onclick: () => {
+            if (set.has(perm)) set.delete(perm); else set.add(perm);
+            grants.set(srv.server_id, set);
+            paint();
+          },
+        }, perm))));
+    }));
+  paint();
+  modal({
+    title: `${u.display || u.username} — per-server rights`,
+    wide: true,
+    body: host,
+    footer: h('div.btnrow',
+      h('button.btn.ghost', { onclick: () => close() }, h('span', 'Cancel')),
+      h('button.btn.primary', {
+        onclick: async () => {
+          try {
+            const before = new Map((data.items || []).map((g) => [g.server_id, g.permissions]));
+            for (const srv of state.instances) {
+              const now = [...(grants.get(srv.server_id) || [])];
+              const was = before.get(srv.server_id) || [];
+              if (now.length === was.length && now.every((x) => was.includes(x))) continue;
+              await api.post(`/api/admin/users/${encodeURIComponent(u.username)}/servers/`
+                + `${srv.server_id}`, { permissions: now });
+            }
+            close();
+            toast('Saved.', 'ok');
+          } catch (e) { toastError(e); }
+        },
+      }, hl(), h('span', 'Save'))),
+  });
+}
+
 function userCard(u, repaint) {
   const me = u.username === session.user?.username;
   const locked = (u.locked_until || 0) * 1000 > Date.now();
@@ -105,6 +189,8 @@ function userCard(u, repaint) {
           icon('edit', 11), h('span', 'Edit')),
         h('button.btn.xs.ghost', { onclick: () => resetPassword(u, repaint) },
           icon('key', 11), h('span', 'Set password')),
+        u.is_admin ? null : h('button.btn.xs.ghost', { onclick: () => serversOf(u) },
+          icon('server', 11), h('span', 'Servers')),
         locked
           ? h('button.btn.xs.gold', {
             onclick: async () => {

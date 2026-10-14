@@ -88,7 +88,8 @@ uptime, rack tag, actions.
   blossoms (players) — restyled.
 - **Ofuda shelf** (v2 slips, v1 groups):
   - *Run* — Overview 祭 · Console 声 · Players 人 · **History 史** (new)
-  - *Build* — Mods / Plugins 具 · Files 蔵 · Configs 巻
+  - *Build* — Mods / Plugins 具 · Files 蔵 · Configs 巻 · **Voice 音** (only when
+    Simple Voice Chat is installed)
   - *Care* — Tune 調 · Diagnose 診 · **Backups 守** (new) ·
     **Schedules 暦** (new) · Undo 戻 · **Rules 札** (new)
   Counts on slips; the current slip drops and turns rose; tabs a state
@@ -107,6 +108,12 @@ New tabs:
   create / edit (action, when: every N minutes · daily at · weekly on ·
   cron, with the next five runs previewed), presets (daily restart with
   warnings, announcement, backup every N hours), run now, pause, delete.
+- **Voice** — Simple Voice Chat: its own UDP port (from 24454 up, never a
+  game port or another server's voice port; "Pick a free one"), the forwarding
+  reminder, and the mod's settings (distances, codec, groups, recording,
+  spectators, force, voice host) written into its voicechat-server.properties.
+  The panel writes that file at setup and checks the port before every start
+  (app/voicechat.py).
 - **Rules** — how it stops (stop command, grace period), what counts as a
   clean exit (codes), whether a crash restarts it; the server jar (Paper /
   Purpur / Folia build, *Update now*, *Follow new builds* = a nightly
@@ -114,14 +121,14 @@ New tabs:
   account).
 
 ### Settings `#/settings` (yours)
-Account (password), **Two-factor sign-in** (QR + key, confirm with a code,
-recovery codes shown once with copy / download, turn off, new codes), **API
-tokens** (yours: create with a permission subset, servers and expiry —
-shown once; revoke), Appearance, what your role may do.
+Account (password), **API tokens** (yours: create with a permission subset,
+servers and expiry — shown once; revoke), Appearance, what your role may do.
+Two-factor *setup* screens are left out by choice (the backend and the
+sign-in code step exist; nobody can turn it on from the UI yet).
 
 ### The Gate `#/gate/<section>` (admins)
 A torii entrance with two kitsune seals. Sections: **Keepers** (accounts, roles,
-reset password, reset 2FA, per-server grants), **Nodes**, **Status page**
+reset password, per-server grants), **Nodes**, **Status page**
 (on/off, title, blurb, which servers, address, show names; preview link),
 **Tokens** (everyone's; revoke), Connections, Assistant, Upkeep, Ledger,
 Sessions. These are the admin halves of today's Settings.

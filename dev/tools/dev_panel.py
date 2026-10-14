@@ -88,11 +88,21 @@ async def _seed() -> None:
     ids = ["aaaa1111", "bbbb2222", *made.values()]
     names = {"aaaa1111": "Sakura SMP", "bbbb2222": "Paper Survival",
              **{v: k for k, v in made.items()}}
+    ports = {sid: int((await engine.get_server(sid)).get("server_port") or 25565) for sid in ids}
     async with db.session() as s:
         have = set((await s.execute(select(Server.uuid))).scalars().all())
         for sid in ids:
             if sid not in have:
-                s.add(Server(uuid=sid, name=names[sid], port=25565, status="running"))
+                s.add(Server(uuid=sid, name=names[sid], port=ports[sid], status="running"))
+
+    # Simple Voice Chat on two servers: a mod on one, a plugin on the other,
+    # each given its own UDP port.
+    from app import voicechat
+    jar = b"PK\x05\x06" + b"\x00" * 18
+    await engine.upload_file("aaaa1111", "mods", "voicechat-neoforge-1.21.1-2.5.26.jar", jar)
+    await engine.upload_file(made["Lobby"], "plugins", "voicechat-bukkit-2.5.26.jar", jar)
+    for sid in ("aaaa1111", made["Lobby"]):
+        await voicechat.ensure(sid)
 
     # Three days of history for the two seeded servers and the lobby.
     now = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)

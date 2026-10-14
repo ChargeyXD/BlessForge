@@ -429,6 +429,7 @@ export const api = {
   get: (p, o) => request('GET', p, o),
   post: (p, body, o) => request('POST', p, { ...o, body: body ?? {} }),
   put: (p, body, o) => request('PUT', p, { ...o, body: body ?? {} }),
+  patch: (p, body, o) => request('PATCH', p, { ...o, body: body ?? {} }),
   del: (p, o) => request('DELETE', p, o),
   upload: (p, form, o) => request('POST', p, { ...o, form }),
   raw: (p, o) => request('GET', p, { ...o, raw: true }),

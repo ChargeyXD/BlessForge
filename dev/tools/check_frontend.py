@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import json
 import re
 import subprocess
 import sys
@@ -98,7 +99,7 @@ def check_imports() -> None:
 
 # --- 3. every referenced asset exists ----------------------------------
 
-_ASSET = re.compile(r"""['"`]/assets/([A-Za-z0-9._-]+)['"`]""")
+_ASSET = re.compile(r"""['"`]/assets/([A-Za-z0-9._/-]+)['"`]""")
 _ASSET_TPL = re.compile(r"""`/assets/\$\{[^}]+\}`""")
 _STATIC_REF = re.compile(r"""['"]/static/([A-Za-z0-9._/-]+)['"]""")
 
@@ -142,19 +143,36 @@ def check_assets() -> None:
             check(f"/static/{ref} exists", target.is_file(),
                   "" if target.is_file() else "not in app/static/")
     # Art passed through a variable (empty(), loader logos) is named as a
-    # bare string at its call site, so those are caught too.
-    named |= set(re.findall(r"""empty\(\s*'([A-Za-z0-9._-]+)'""",
-                            "\n".join(p.read_text(encoding="utf-8")
-                                      for p in js_files())))
+    # bare string at its call site, so those are caught too. A name with no
+    # dot is a mascot (core.js artImage): /assets/mascot/<name>.gif.
+    every = "\n".join(p.read_text(encoding="utf-8") for p in js_files())
+    art = set(re.findall(r"""empty\(\s*'([A-Za-z0-9._-]+)'""", every))
+    art |= set(re.findall(r"""\bart:\s*'([A-Za-z0-9._-]+)'""", every))
+    for name in art:
+        named.add(name if "." in name else f"mascot/{name}.gif")
+    # mascot('<name>') at a call site, and every name core.js lists.
+    for name in set(re.findall(r"""mascot\(\s*'([A-Za-z0-9-]+)'""", every)):
+        named.add(f"mascot/{name}.gif")
+    core = (JS / "core.js").read_text(encoding="utf-8")
+    listed = re.search(r"export const MASCOTS = \[(.*?)\];", core, re.S)
+    check("core.js lists the mascots", listed is not None)
+    if listed:
+        for name in re.findall(r"'([A-Za-z0-9-]+)'", listed.group(1)):
+            named.add(f"mascot/{name}.gif")
     for name in sorted(named):
         check(f"asset exists: {name}", (img / name).is_file(),
               "" if (img / name).is_file() else "not in app/static/img/")
+    # Every loader template's logo, which the create screen shows.
+    for tpl in sorted((ROOT / "templates").glob("*.json")):
+        logo = (json.loads(tpl.read_text(encoding="utf-8")).get("logo") or "")
+        name = logo.removeprefix("/assets/")
+        check(f"template logo exists: {tpl.stem} -> {name}", bool(name) and (img / name).is_file())
 
 
 # --- 4. every API path the front end calls is a real route -------------
 
 _CALL = re.compile(
-    r"""api\.(?:get|post|put|del|upload|raw)\(\s*[`'"]([^`'"]*)""")
+    r"""api\.(?:get|post|put|patch|del|upload|raw)\(\s*[`'"]([^`'"]*)""")
 _RUN = re.compile(r"""(?:run|runAwait)\(\s*[`'"]([^`'"]*)""")
 _ES = re.compile(r"""new EventSource\(\s*[`'"]([^`'"]*)""")
 # One level of nesting, because call sites interpolate helper calls that
@@ -266,7 +284,11 @@ def check_layering() -> None:
     """
     theme = (STATIC / "css" / "theme.css").read_text(encoding="utf-8")
     app = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
-    rules = _rules(theme) + _rules(app)
+    # shrine.css (the combined design) layers over both; its rules are held to
+    # the same contract -- it must not reorder the blob or bring back z:-1.
+    shrine_path = STATIC / "css" / "shrine.css"
+    shrine = shrine_path.read_text(encoding="utf-8") if shrine_path.is_file() else ""
+    rules = _rules(theme) + _rules(app) + _rules(shrine)
 
     def find(selector: str, prop: str) -> str | None:
         """The last declared value for `prop` on a rule naming `selector`.

@@ -125,7 +125,7 @@ export async function render(ctx) {
       return frag(
         passReport(),
         firstBootCard(),
-        empty('parrot-vibing.gif',
+        empty('celebrate',
           diag.complete === false
             ? 'Nothing found — but not everything ran'
             : 'Nothing looks wrong',
@@ -716,7 +716,7 @@ export async function render(ctx) {
 
   function logsView() {
     if (!diag.has_logs) {
-      return empty('shulker-guard.gif', 'There is no log to read',
+      return empty('idle', 'There is no log to read',
         'This instance has produced neither a log nor a crash report. That is '
         + 'itself the finding: the server was rejected before the JVM started, '
         + 'which means the EULA gate, the Java version, or memory.',
