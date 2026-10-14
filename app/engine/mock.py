@@ -492,6 +492,26 @@ class MockEngine:
             self._put(server_id, "/".join(parent_parts + parts[:-1]) or ".",
                       parts[-1], zf.read(info))
 
+    async def compress(self, server_id: str, rel_paths: list[str], dest_rel: str) -> str:
+        buf = io.BytesIO()
+
+        async def add(zf: zipfile.ZipFile, rel: str) -> None:
+            _, _, node = self._get(server_id, rel)
+            if node is None:
+                return
+            if isinstance(node, _Dir):
+                for meta in (await self.list_dir(server_id, rel)).values():
+                    await add(zf, meta["path"])
+            else:
+                zf.writestr("/".join(_clean(rel)), node.data)
+
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for rel in rel_paths:
+                await add(zf, rel)
+        parts = _clean(dest_rel)
+        self._put(server_id, "/".join(parts[:-1]) or ".", parts[-1], buf.getvalue())
+        return dest_rel
+
     async def download_file(self, server_id: str, rel_path: str) -> bytes:
         _, _, node = self._get(server_id, rel_path)
         if node is None:

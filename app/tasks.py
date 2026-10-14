@@ -175,12 +175,12 @@ async def smoke_test(job: Job, server_id: str, timeout: int = 300) -> dict:
 
 @task("export_instance")
 async def export_instance(job: Job, server_id: str, include_disabled: bool = False,
-                          bundle_others: bool = True) -> dict:
+                          bundle_others: bool = True, include_configs: bool = True) -> dict:
     """Write a server out as a CurseForge pack, onto the shared /data volume."""
     from app import exporter
     result = await exporter.export_instance(
         job, server_id, include_disabled=include_disabled,
-        bundle_others=bundle_others)
+        bundle_others=bundle_others, include_configs=include_configs)
     blob = result.pop("bytes")
     path = config.DATA_DIR / "exports" / result["filename"]
     path.parent.mkdir(parents=True, exist_ok=True)

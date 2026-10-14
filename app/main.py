@@ -1256,12 +1256,14 @@ async def export_instance(
     server_id: str,
     include_disabled: bool = Body(False, embed=True),
     bundle_others: bool = Body(True, embed=True),
+    include_configs: bool = Body(True, embed=True),
 ) -> dict:
     """Write this server out as a CurseForge modpack archive."""
     job = await _job_for("export", "Export pack", server_id)
     await registry.submit(job, "export_instance", server_id=server_id,
                           include_disabled=bool(include_disabled),
-                          bundle_others=bool(bundle_others))
+                          bundle_others=bool(bundle_others),
+                          include_configs=bool(include_configs))
     return {"job_id": job.id}
 
 

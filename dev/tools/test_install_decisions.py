@@ -401,12 +401,107 @@ async def main():
           whitelist.blocks("somemod-3.0.jar"))
     whitelist._reset_for_tests()
 
+    await author_declared_client()
+    await export_carries_configs()
     await server_pack_without_metadata()
     await node_fetches_mods()
 
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed")
     return 0 if passed == len(results) else 1
+
+
+async def export_carries_configs():
+    """A server exported as a CurseForge pack carries the pack's own configs
+    in overrides/ -- not just its mod list -- and never the world or logs."""
+    import json as _json
+    from app import curseforge, exporter
+    mock = MockEngine(seed=False)
+    engine.configure("mock", drivers={"local": mock})
+    sid = await engine.create_server(name="Export", port=25790, memory_mb=4096,
+                                     mc_version="1.20.1", loader="forge")
+    await engine.upload_file(sid, "mods", "create-1.0.jar", b"jar")
+    await engine.upload_file(sid, "mods", "hud-1.0.jar.disabled", b"jar")
+    await engine.upload_file(sid, "config", "create-common.toml", b"speed = 2")
+    await engine.upload_file(sid, "config/sub", "deep.json", b"{}")
+    await engine.upload_file(sid, "defaultconfigs", "server.toml", b"x = 1")
+    await engine.upload_file(sid, "kubejs/server_scripts", "recipes.js", b"//")
+    await engine.upload_file(sid, "world", "level.dat", b"world")
+    await engine.upload_file(sid, "logs", "latest.log", b"log")
+    await engine.write_manifest(sid, {
+        "schema": 1, "minecraft": "1.20.1", "loader": "forge",
+        "pack": {"name": "Beyond Depth (server)", "version": "13.0.1"},
+        "mods": [{"file": "mods/create-1.0.jar", "source": "curseforge",
+                  "project_id": 328085, "file_id": 111},
+                 {"file": "mods/hud-1.0.jar", "source": "curseforge",
+                  "project_id": 999, "file_id": 222}]})
+
+    async def no_build(mc, loader):
+        return "forge-47.4.0"
+    real = curseforge.loader_build_id
+    curseforge.loader_build_id = no_build
+    try:
+        out = await exporter.export_instance(Job("t", "t"), sid)
+    finally:
+        curseforge.loader_build_id = real
+    with zipfile.ZipFile(io.BytesIO(out["bytes"])) as z:
+        names = set(z.namelist())
+        doc = _json.loads(z.read("manifest.json"))
+    check("an export lists the enabled CurseForge mods, not the disabled client one",
+          [f["projectID"] for f in doc["files"]] == [328085], doc["files"])
+    check("...and carries config/, defaultconfigs/ and kubejs/ in overrides/",
+          {"overrides/config/create-common.toml", "overrides/config/sub/deep.json",
+           "overrides/defaultconfigs/server.toml",
+           "overrides/kubejs/server_scripts/recipes.js"} <= names, sorted(names))
+    check("...never the world or the logs",
+          not any(n.startswith(("overrides/world", "overrides/logs")) for n in names))
+    check("...and leaves no temporary archive behind on the server",
+          ".blessforge-export-configs.zip" not in await engine.list_dir(sid, "."))
+    check("...and says so in its result", out.get("config_files") == 4, out.get("config_files"))
+
+
+async def author_declared_client():
+    """An install with no review asks Modrinth, by SHA-1, which mods their
+    authors say do not run on a server -- Beyond Depth shipped 62 of them."""
+    from app import modrinth, whitelist
+
+    async def fake_versions(hashes):
+        return {h: {"mod_id": "p-" + h} for h in hashes if h in ("aa", "bb", "cc")}
+
+    async def fake_projects(ids):
+        sides = {"p-aa": "unsupported", "p-bb": "required", "p-cc": "unsupported"}
+        return {i: {"id": i, "slug": i, "title": i.upper(), "server_side": sides[i]}
+                for i in ids}
+
+    real = (modrinth.versions_from_hashes, modrinth.get_projects)
+    modrinth.versions_from_hashes, modrinth.get_projects = fake_versions, fake_projects
+    whitelist._reset_for_tests()
+    await whitelist.add("allowed-1.0.jar", name="Allowed", verdict="allow")
+    try:
+        records = [{"file": "mods/hud-1.0.jar", "sha1": "aa"},
+                   {"file": "mods/content-1.0.jar", "sha1": "bb"},
+                   {"file": "mods/allowed-1.0.jar", "sha1": "cc"},
+                   {"file": "mods/unknown-1.0.jar", "sha1": "dd"},
+                   {"file": "mods/already-1.0.jar", "sha1": "aa", "client_only": True}]
+        payload = [installer.PackEntry(r["file"] + (".disabled" if r.get("client_only")
+                                                    else "")) for r in records]
+        disabled: list[str] = []
+        off = await installer._author_declared_client(Job("t", "t"), records[:4], payload,
+                                                      disabled)
+        targets = sorted(e.target for e in payload)
+        check("a mod its author marks server_side unsupported is installed disabled",
+              "mods/hud-1.0.jar.disabled" in targets and off == ["hud-1.0.jar"]
+              and disabled == ["hud-1.0.jar"], (off, targets))
+        check("...with the reason on its record",
+              records[0].get("client_only") and "not supported on servers"
+              in records[0]["client_only_reasons"][0], records[0])
+        check("a server mod, one Modrinth does not know, and one the operator allowed "
+              "stay enabled",
+              {"mods/content-1.0.jar", "mods/unknown-1.0.jar", "mods/allowed-1.0.jar"}
+              <= set(targets), targets)
+    finally:
+        modrinth.versions_from_hashes, modrinth.get_projects = real
+        whitelist._reset_for_tests()
 
 
 async def server_pack_without_metadata():

@@ -25,6 +25,13 @@ from app.jobs import Job
 
 DISABLED_SUFFIX = ".disabled"
 
+# The pack's own settings -- what makes it this pack and not just its mod
+# list -- carried in overrides/ the way a CurseForge pack carries them. Never
+# the world, logs, the loader's libraries or the mods folder.
+CONFIG_FOLDERS = ("config", "defaultconfigs", "kubejs", "global_packs", "openloader",
+                  "scripts", "paxi")
+_CONFIGS_ZIP = ".blessforge-export-configs.zip"
+
 
 def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._ -]+", "", name).strip() or "pack"
@@ -32,7 +39,8 @@ def _safe(name: str) -> str:
 
 async def export_instance(job: Job, server_id: str, *,
                           include_disabled: bool = False,
-                          bundle_others: bool = True) -> dict:
+                          bundle_others: bool = True,
+                          include_configs: bool = True) -> dict:
     """Build a CurseForge modpack zip from what is installed."""
     job.set_step("Reading the install manifest", 5)
     manifest = await engine.read_manifest(server_id)
@@ -97,6 +105,33 @@ async def export_instance(job: Job, server_id: str, *,
             job.set_step(f"Fetching jars ({i + 1}/{len(others)})",
                          40 + 40 * (i + 1) / len(others))
 
+    # Zipped on the node in one go and fetched as one file: a big pack's
+    # config/ is thousands of small files, and one request each was the
+    # slow way.
+    configs: dict[str, bytes] = {}
+    if include_configs:
+        try:
+            top = await engine.list_dir(server_id, ".")
+        except Exception:       # noqa: BLE001
+            top = {}
+        present = [f for f in CONFIG_FOLDERS if (top.get(f) or {}).get("dir")]
+        if present:
+            job.set_step(f"Packing {', '.join(present)}", 82)
+            try:
+                await engine.compress(server_id, present, _CONFIGS_ZIP)
+                blob = await engine.download_file(server_id, _CONFIGS_ZIP)
+                with zipfile.ZipFile(io.BytesIO(blob)) as src:
+                    for info in src.infolist():
+                        if not info.is_dir() and info.filename.split("/")[0] in present:
+                            configs[info.filename] = src.read(info)
+            except Exception as e:      # noqa: BLE001 -- the mod list still exports
+                job.log_line(f"Could not pack the configs: {e}", "warn")
+            finally:
+                try:
+                    await engine.delete_paths(server_id, [_CONFIGS_ZIP])
+                except Exception:       # noqa: BLE001
+                    pass
+
     job.set_step("Writing the archive", 85)
     doc = {
         "minecraft": {
@@ -123,6 +158,8 @@ async def export_instance(job: Job, server_id: str, *,
         f"  loader       {loader_id or loader}\n"
         f"  mods         {len(cf_files)} from CurseForge"
         + (f", {len(bundled)} bundled in overrides" if bundled else "")
+        + (f"\n  configs      {len(configs)} files from "
+           + ", ".join(sorted({p.split('/')[0] + '/' for p in configs})) if configs else "")
         + ("\n  disabled     included\n" if include_disabled else "\n")
         + (f"  not exported {len(skipped)} recorded but no longer on disk\n"
            if skipped else "")
@@ -137,11 +174,14 @@ async def export_instance(job: Job, server_id: str, *,
         z.writestr("README.txt", readme)
         for fname, blob in bundled.items():
             z.writestr(f"overrides/mods/{fname}", blob)
+        for rel, blob in configs.items():
+            z.writestr(f"overrides/{rel}", blob)
 
     archive = buf.getvalue()
     job.log_line(
         f"Export written: {len(cf_files)} CurseForge mods"
         + (f", {len(bundled)} bundled" if bundled else "")
+        + (f", {len(configs)} config files" if configs else "")
         + f", {len(archive) / 1048576:.1f} MB"
     )
     return {
@@ -152,6 +192,7 @@ async def export_instance(job: Job, server_id: str, *,
         "loader": loader_id or loader,
         "curseforge_mods": len(cf_files),
         "bundled": sorted(bundled),
+        "config_files": len(configs),
         "not_bundled": [o["file"] for o in others if o["file"] not in bundled],
         "skipped": skipped,
     }

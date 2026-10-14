@@ -586,6 +586,7 @@ async def _download_manifest_mods(
                         "switched_off_in_pack": switched_off_here,
                         "wrong_loader_reason": why[0] if wrong_loader else None,
                         "identified_at": time.time(),
+                        "sha1": published.get("sha1"),
                     })
                 except Exception as e:
                     problems.append({
@@ -1154,6 +1155,10 @@ async def install_modpack(
     # nothing has to be downloaded back off the node to find that out.
     await _identify_overlay(job, zf, records)
 
+    # No review decided which mods are client-only, so ask the authors.
+    if skip_client_only and excluded is None and to_disable is None:
+        await _author_declared_client(job, records, payload, disabled_mods)
+
     # Mods with a published address go straight from the mod site to the
     # node; only what it cannot fetch -- the pack's own files, anything with
     # no address or hash, and whatever the node failed on -- is uploaded.
@@ -1408,6 +1413,73 @@ async def install_modpack(
     return summary
 
 
+async def _author_declared_client(job: Job, records: list[dict], payload: list,
+                                  disabled_mods: list[str]) -> list[str]:
+    """Install disabled the mods whose authors say they do not run on a server.
+
+    The pre-install review asks Modrinth about every jar by SHA-1; an install
+    without one only judged each jar by its own contents, and that misses
+    most client mods -- they declare no side. Beyond Depth went onto a server
+    with 62 mods their own authors mark server_side "unsupported" (shaders
+    patchers, HUDs, menus, animation and particle mods), and the ones whose
+    mixins reach client code from the common side made Create and The
+    Undergarden fail at CONSTRUCT, blamed on them, where repair cannot act.
+
+    One batch call for the whole pack. Disabled, not removed; the operator's
+    allow list wins; and a mod a staying mod needs is put back by the first
+    boot's repair, which re-enables a disabled jar that provides a missing
+    library unless the jar itself is client-side by its own metadata.
+    """
+    if not config.MODRINTH_ENABLED:
+        return []
+    jars = {r["sha1"]: r for r in records
+            if r.get("sha1") and str(r.get("file", "")).lower().endswith(".jar")
+            and not r.get("client_only") and not r.get("wrong_loader")
+            and not r.get("switched_off_in_pack")}
+    if not jars:
+        return []
+    job.set_step(f"Asking Modrinth which of {len(jars)} mods run on a server", 59)
+    hashes = list(jars)
+    versions: dict[str, dict] = {}
+    for start in range(0, len(hashes), 250):
+        try:
+            versions.update(await modrinth.versions_from_hashes(hashes[start:start + 250]))
+        except Exception:       # noqa: BLE001 -- best effort: the boot still decides
+            continue
+    try:
+        projects = await modrinth.get_projects(
+            {v.get("mod_id") for v in versions.values() if v.get("mod_id")})
+    except Exception:           # noqa: BLE001
+        return []
+    from app import whitelist
+    by_target = {e.target: e for e in payload}
+    off: list[str] = []
+    for sha, version in versions.items():
+        rec = jars.get(sha)
+        project = projects.get(version.get("mod_id"))
+        if not rec or not project or project.get("server_side") != "unsupported":
+            continue
+        base = posixpath.basename(rec["file"])
+        pid = rec.get("project_id")
+        if whitelist.allows(base, project_id=str(pid) if pid else None):
+            continue            # the operator has seen it run on a server
+        entry = by_target.get(rec["file"])
+        if entry is None:
+            continue
+        entry.target += ".disabled"
+        rec["client_only"] = True
+        rec["client_only_reasons"] = [
+            f"its author marks it as not supported on servers (Modrinth: "
+            f"{project.get('title') or project.get('slug')})"]
+        disabled_mods.append(base)
+        off.append(base)
+    if off:
+        job.log_line(
+            f"{len(off)} mod(s) their authors mark as client-only were installed "
+            "disabled: " + ", ".join(sorted(off)[:8]) + ("..." if len(off) > 8 else ""))
+    return off
+
+
 async def _identify_overlay(job: Job, zf, records: list[dict]) -> None:
     """Match a server pack's jars to catalogue projects, from the archive.
 
@@ -1454,6 +1526,7 @@ async def _identify_overlay(job: Job, zf, records: list[dict]) -> None:
                 by_fp[fp] = r
             try:
                 by_sha[modrinth.sha1(blob)] = r
+                r["sha1"] = modrinth.sha1(blob)
             except Exception:       # noqa: BLE001
                 pass
         del blobs

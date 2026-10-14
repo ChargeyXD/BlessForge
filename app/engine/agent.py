@@ -410,6 +410,14 @@ class AgentEngine:
         await self._call("POST", f"/v1/servers/{server_id}/files/extract",
                          json={"path": rel_zip_path}, timeout=3600)
 
+    async def compress(self, server_id: str, rel_paths: list[str], dest_rel: str) -> str:
+        """Zip files or folders on the node itself (links skipped, never
+        followed) -- one archive to fetch instead of a file at a time."""
+        out = await self._call("POST", f"/v1/servers/{server_id}/files/compress",
+                               json={"paths": list(rel_paths), "dest": dest_rel},
+                               timeout=3600)
+        return (out or {}).get("path") or dest_rel
+
     async def download_file(self, server_id: str, rel_path: str) -> bytes:
         return await self._call("GET", f"/v1/servers/{server_id}/files/raw",
                                 params={"path": rel_path}, timeout=600)

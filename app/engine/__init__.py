@@ -321,6 +321,11 @@ async def extract(server_id: str, rel_zip_path: str) -> None:
     await (await _driver(server_id)).extract(server_id, rel_zip_path)
 
 
+async def compress(server_id: str, rel_paths: list[str], dest_rel: str) -> str:
+    """Zip files or folders into dest_rel, in the server folder, on the node."""
+    return await (await _driver(server_id)).compress(server_id, rel_paths, dest_rel)
+
+
 async def download_file(server_id: str, rel_path: str) -> bytes:
     return await (await _driver(server_id)).download_file(server_id, rel_path)
 
