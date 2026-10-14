@@ -33,6 +33,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid as uuidlib
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -719,8 +720,11 @@ async def _push_batches(
     except OSError:
         scratch = Path(tempfile.gettempdir())
 
+    # Unique per install: two installs in the same second shared batch names,
+    # and one deleted the other's archive before it was uploaded.
+    batch_tag = uuidlib.uuid4().hex[:8]
     for i, batch in enumerate(batches, 1):
-        zip_name = f".studio-batch-{int(time.time())}-{i}.zip"
+        zip_name = f".studio-batch-{int(time.time())}-{batch_tag}-{i}.zip"
         local = scratch / zip_name
         def build(path=local, entries=batch) -> None:
             with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:

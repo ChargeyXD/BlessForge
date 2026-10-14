@@ -693,4 +693,7 @@ async def node_fetches_mods():
           (result.get("files_fetched_by_node"), sorted(on_disk)))
 
 
-sys.exit(asyncio.run(main()))
+# Guarded: the installer fingerprints jars in worker processes, which import
+# this module again -- unguarded, every run of the suite ran it three times.
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
