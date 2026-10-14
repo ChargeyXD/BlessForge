@@ -128,6 +128,8 @@ RULES: list[Rule] = [
     _r("GET", "/api/instances/{server_id}/stats", "server.view", True),
     _r("GET", "/api/instances/{server_id}/history", "server.view", True),
     _r("GET", "/api/instances/{server_id}/jar", "server.view", True),
+    _r("GET", "/api/instances/{server_id}/voicechat", "server.view", True),
+    _r("POST", "/api/instances/{server_id}/voicechat", "config.edit", True),
     _r("POST", "/api/instances/{server_id}/jar/update", "mods.manage", True),
     _r("GET", "/api/instances/{server_id}/port", "server.view", True),
     _r("POST", "/api/instances/{server_id}/port", "tune.apply", True),

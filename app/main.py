@@ -833,6 +833,17 @@ async def _prepare_for_start(server_id: str) -> dict:
     except Exception as e:
         out["java_error"] = str(e)
 
+    # Simple Voice Chat on its own UDP port, checked at every start: a jar
+    # dropped in by hand, or two configs edited to the same port, are sorted
+    # out here rather than discovered as a voice chat nobody can reach.
+    try:
+        from app import voicechat
+        voice = await voicechat.ensure(server_id)
+        if voice and voice.get("moved_from"):
+            out["voice"] = f"voice chat moved to UDP {voice['port']}"
+    except Exception:       # noqa: BLE001 -- never a reason not to start
+        pass
+
     try:
         eula = await engine.read_file(server_id, "eula.txt")
         if eula.split("\n", 1)[0].lower() not in (
@@ -2187,6 +2198,46 @@ async def take_world_backup(server_id: str, request: Request,
                      server_id=server_id, detail=str((body or {}).get("reason") or "manual"),
                      ip=_client_ip(request))
     return {"job_id": job.id}
+
+
+@app.get("/api/instances/{server_id}/voicechat")
+async def voicechat_status(server_id: str) -> dict:
+    """Simple Voice Chat on this server: installed or not, its UDP port, and
+    the settings the Voice section offers."""
+    from app import voicechat
+    try:
+        return await voicechat.status(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/voicechat")
+async def voicechat_save(server_id: str, request: Request, body: dict = Body(...)) -> dict:
+    """Change Voice Chat's settings and/or its UDP port. `port: "auto"` picks
+    a free one. Takes effect at the next start."""
+    from app import voicechat
+    port = body.get("port")
+    values = body.get("values") if isinstance(body.get("values"), dict) else {}
+    try:
+        if port == "auto":
+            # Forget the one it has, then take the lowest free one.
+            await voicechat._store_port(server_id, None)
+            out = await voicechat.configure(
+                server_id, values, port=await voicechat.allocate(server_id))
+        else:
+            out = await voicechat.configure(
+                server_id, values, port=int(port) if port not in (None, "") else None)
+    except voicechat.VoiceChatError as e:
+        raise HTTPException(e.status, str(e))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "The voice port is a number.")
+    except Exception as e:
+        raise _err(e)
+    await auth.audit(actor=request.state.user["username"], action="config.voicechat",
+                     server_id=server_id,
+                     detail=f"UDP {out.get('port')}; " + ", ".join(out.get("changed") or []),
+                     ip=_client_ip(request))
+    return out
 
 
 @app.get("/api/instances/{server_id}/jar")

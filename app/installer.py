@@ -1358,6 +1358,16 @@ async def install_modpack(
            if summary["client_only_disabled"] else "")
     )
 
+    # Simple Voice Chat, if the pack has it: a UDP port of its own and its
+    # config written now, before the first boot would write 24454 for it --
+    # the port every other voice server on this machine wants too.
+    from app import voicechat
+    voice = await voicechat.ensure(server_id, job)
+    if voice:
+        summary["voice"] = {"port": voice.get("port"), "kind": voice.get("kind")}
+        job.log_line(f"Simple Voice Chat is set up on UDP {voice.get('port')}: forward "
+                     "that port as well as the game port for players outside your network.")
+
     # Installed is not running. Boot it once and fix what that boot proves
     # broken -- a missing library, a client mod a server pack should not have
     # shipped -- so the operator gets a server that starts, not a list of

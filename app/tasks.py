@@ -65,6 +65,18 @@ async def switch_pack_version(job: Job, **params) -> dict:
     return await installer.switch_pack_version(job, **params)
 
 
+async def _with_voice(job: Job, server_id: str | None, result: Any) -> Any:
+    """After anything that can add Simple Voice Chat: give it its own UDP
+    port and write its config, so it is ready on the next start."""
+    if not server_id:
+        return result
+    from app import voicechat
+    voice = await voicechat.ensure(server_id, job)
+    if voice and isinstance(result, dict):
+        result["voice"] = {"port": voice.get("port"), "kind": voice.get("kind")}
+    return result
+
+
 @task("preflight")
 async def preflight(job: Job, **params) -> dict:
     from app import installer
@@ -74,7 +86,8 @@ async def preflight(job: Job, **params) -> dict:
 @task("create_server")
 async def create_server(job: Job, **params) -> dict:
     from app import provision
-    return await provision.create_empty(job, **params)
+    result = await provision.create_empty(job, **params)
+    return await _with_voice(job, (result or {}).get("server_id"), result)
 
 
 @task("reinstall_loader")
@@ -95,13 +108,15 @@ async def install_roll(job: Job, **params) -> dict:
 @task("add_mod")
 async def add_mod(job: Job, server_id: str, **params) -> dict:
     from app import mods
-    return await mods.add_mod_with_dependencies(job, server_id, **params)
+    result = await mods.add_mod_with_dependencies(job, server_id, **params)
+    return await _with_voice(job, server_id, result)
 
 
 @task("install_plugin")
 async def install_plugin(job: Job, server_id: str, **params) -> dict:
     from app import plugins
-    return await plugins.install(job, server_id, **params)
+    result = await plugins.install(job, server_id, **params)
+    return await _with_voice(job, server_id, result)
 
 
 @task("identify_mods")
