@@ -257,6 +257,32 @@ class ServerUser(Base):
     permissions: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
 
 
+class ServerStat(Base):
+    """One reading of a server: players, CPU and memory (app/history.py).
+
+    `res` is the minutes the row stands for: 1 for the last 48 hours, then 15
+    (averaged, peak players kept). `samples` is how many one-minute readings
+    it holds and `up` how many of those found the server running, so uptime
+    stays exact after the roll-up. Unique per server, time and resolution, so
+    two processes recording the same minute insert it once."""
+    __tablename__ = "server_stats"
+    __table_args__ = (UniqueConstraint("server_id", "at", "res",
+                                       name="uq_server_stats_server_at_res"),
+                      Index("ix_server_stats_server_at", "server_id", "at"))
+    id: Mapped[int] = _pk()
+    server_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("servers.uuid", ondelete="CASCADE"), nullable=False)
+    at: Mapped[dt.datetime] = mapped_column(TS, nullable=False)
+    res: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    samples: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    online: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_players: Mapped[int | None] = mapped_column(Integer)
+    cpu: Mapped[float | None] = mapped_column(Float)
+    mem: Mapped[int | None] = mapped_column(BigInteger)
+    mem_limit: Mapped[int | None] = mapped_column(BigInteger)
+
+
 class Backup(Base):
     __tablename__ = "backups"
     id: Mapped[int] = _pk()

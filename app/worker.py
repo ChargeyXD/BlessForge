@@ -56,8 +56,11 @@ async def startup(ctx) -> None:
     ctx["sweep"] = asyncio.create_task(_sweep_forever())
     # Scheduled tasks. Runs are claimed in the database, so every worker can
     # run the loop and each task still fires once.
-    from app import schedules
+    from app import history, schedules
     ctx["schedules"] = asyncio.create_task(schedules.run_forever())
+    # Stats history: one row per server per minute, the unique key keeping
+    # it one however many workers record.
+    ctx["history"] = asyncio.create_task(history.run_forever())
     log.info("worker %s ready (engine %s, database %s)",
              OWNER, eng.kind(), db.redacted_url())
 
@@ -74,7 +77,7 @@ async def _nodes_until_found() -> None:
 
 
 async def shutdown(ctx) -> None:
-    for key in ("sweep", "heartbeat", "nodes", "schedules"):
+    for key in ("sweep", "heartbeat", "nodes", "schedules", "history"):
         task = ctx.get(key)
         if task:
             task.cancel()

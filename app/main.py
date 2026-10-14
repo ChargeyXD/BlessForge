@@ -85,8 +85,9 @@ async def _lifespan(_app: FastAPI):
     background = [asyncio.create_task(jobs_heartbeat())]
     if not config.REDIS_URL:
         background.append(asyncio.create_task(watcher.run_forever()))
-        from app import schedules
+        from app import history, schedules
         background.append(asyncio.create_task(schedules.run_forever()))
+        background.append(asyncio.create_task(history.run_forever()))
     try:
         yield
     finally:
@@ -632,6 +633,28 @@ def _java_facts(server: dict, manifest: dict) -> dict:
         if facts["major"] and facts["required"] else None
     )
     return facts
+
+
+@app.get("/api/instances/{server_id}/history")
+async def instance_history(server_id: str, hours: int = 24) -> dict:
+    """Players, CPU and memory over the last `hours` (up to 30 days), with
+    uptime and peaks for the window."""
+    from app import history
+    return await history.for_server(server_id, hours)
+
+
+@app.get("/api/fleet/history")
+async def fleet_history(request: Request, hours: int = 24) -> dict:
+    """Players and running servers across every server this account may see."""
+    from sqlalchemy import select
+    from app import history
+    from app.db.models import Server
+    async with db.session() as s:
+        ids = list((await s.execute(select(Server.uuid))).scalars().all())
+    user = getattr(request.state, "user", None)
+    if user:
+        ids = [sid for sid in ids if auth.in_scope(user, sid, _rack_of)]
+    return await history.fleet(ids, hours)
 
 
 @app.get("/api/instances/{server_id}/stats")

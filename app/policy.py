@@ -93,6 +93,7 @@ RULES: list[Rule] = [
     _r("GET", "/api/nodes/ports", ANY),
     _r("POST", "/api/fleet/seen", ANY),
     _r("GET", "/api/fleet/groups", ANY),
+    _r("GET", "/api/fleet/history", ANY),      # filtered to the caller's scope
     _r("POST", "/api/fleet/groups", "racks.manage"),
     _r("POST", "/api/fleet/groups/plan", "racks.manage"),
     _r("DELETE", "/api/fleet/groups/{group_id}", "racks.manage"),
@@ -103,6 +104,7 @@ RULES: list[Rule] = [
     _r("DELETE", "/api/instances/{server_id}", "server.delete", True),
     _r("POST", "/api/instances/{server_id}/action/{action}", "server.power", True),
     _r("GET", "/api/instances/{server_id}/stats", "server.view", True),
+    _r("GET", "/api/instances/{server_id}/history", "server.view", True),
     _r("GET", "/api/instances/{server_id}/port", "server.view", True),
     _r("POST", "/api/instances/{server_id}/port", "tune.apply", True),
 
