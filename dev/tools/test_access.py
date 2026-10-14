@@ -326,6 +326,46 @@ async def through_http(a: str, b: str, admin_token: str):
               and a in mine["server_permissions"], (r5.status_code, r6.status_code))
 
 
+async def sftp(a: str):
+    """SFTP logins (the node asks the panel): a password alone must not walk
+    round two-factor sign-in, so such an account logs in with an API token."""
+    import types
+    from fastapi import HTTPException
+    from app import agent_api
+    from app.db.models import Node
+    async with db.session() as s:
+        s.add(Node(id="n1", fqdn="n1.test", token_id="t1", token_encrypted="x"))
+        await s.flush()
+        (await s.get(Server, a)).node_id = "n1"
+
+    async def fake_node(_authorization):
+        return types.SimpleNamespace(id="n1")
+    agent_api._node = fake_node
+
+    async def login(user: str, password: str):
+        try:
+            return await agent_api.agent_sftp_auth(
+                {"username": f"{user}.{a[:8]}", "password": password}, "Bearer x")
+        except HTTPException as e:
+            return e
+    out = await login("sam", PW)                   # sam has two-factor on by now
+    check("SFTP: a two-factor account's password alone is refused, with the way in",
+          isinstance(out, HTTPException) and out.status_code == 403
+          and "API token" in out.detail, getattr(out, "detail", out))
+    sam = await auth.find_user("sam")
+    tok = await access.create_token(sam, name="sftp", permissions=["files.read"])
+    out = await login("sam", tok["token"])
+    check("...an API token as the password works, with the token's limits",
+          isinstance(out, dict) and out["permissions"] == ["files.read"], out)
+    out = await login("eve", tok["token"])
+    check("...but only for the account it belongs to", isinstance(out, HTTPException))
+    await access.set_grant("guest1", a, ["files.read"])
+    out = await login("guest1", PW)
+    check("a grant's files.read opens SFTP on that server for a password account",
+          isinstance(out, dict) and out["server"] == a and out["permissions"] == ["files.read"],
+          out)
+
+
 async def admin_race():
     await _dbtest.fresh()
     await auth.bootstrap()
@@ -356,6 +396,7 @@ async def main():
     await two_factor()
     admin_token = await tokens_and_grants(a, b)
     await through_http(a, b, admin_token)
+    await sftp(a)
     await admin_race()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} checks passed ({_dbtest.label()})")

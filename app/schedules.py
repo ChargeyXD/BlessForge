@@ -9,7 +9,8 @@ A schedule is one row in `schedules`:
   * `cron` -- when: five cron fields (minute hour day month weekday), an alias
     (@hourly, @daily, @weekly, @midnight), or `@every <minutes>`. Empty for a
     step that only runs after its parent.
-  * `action` -- command, say, start, stop, restart, backup.
+  * `action` -- command, say, start, stop, restart, backup, update_jar (a
+    Paper/Purpur/Folia server onto its newest build, app/jarupdates.py).
   * `payload` -- the rest: name, command or message, tz, one_time, and for a
     chained step `parent` and `delay` (seconds after the parent ran); plus
     what happened last time (`last_run`, `last_result`, `last_ok`).
@@ -42,7 +43,7 @@ from app.db.models import Schedule
 
 log = logging.getLogger(__name__)
 
-ACTIONS = ("command", "say", "start", "stop", "restart", "backup")
+ACTIONS = ("command", "say", "start", "stop", "restart", "backup", "update_jar")
 TICK = 20                           # seconds between looks at the table
 MISSED_GRACE = 600                  # a run this late is skipped, not fired
 MAX_PER_SERVER = 64
@@ -375,6 +376,13 @@ async def _do(row: Schedule) -> tuple[bool, str]:
             made = await worldbackups.take(sid, reason=p.get("name") or "scheduled",
                                            keep=p.get("keep"))
             return True, f"backup {made.get('id')} ({made.get('size_human', '')})"
+        if row.action == "update_jar":
+            from app import jarupdates
+            out = await jarupdates.apply(sid)
+            if not out.get("updated"):
+                return True, f"already on the newest build ({out.get('current')})"
+            return True, (f"updated {out.get('from') or '?'} -> {out.get('to')}"
+                          + (", restarted" if out.get("restarted") else ""))
     except Exception as e:      # noqa: BLE001 -- recorded on the task
         return False, str(e)[:300]
     return False, f"unknown action {row.action}"

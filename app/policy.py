@@ -65,6 +65,9 @@ def _r(method: str, path: str, permission: str, scoped: bool = False) -> Rule:
 RULES: list[Rule] = [
     # --- open, because they are what the login screen itself needs ------
     _r("GET", "/api/healthz", PUBLIC),
+    # The public status page: off (404) until an admin switches it on, and
+    # then only the servers they chose (app/statuspage.py).
+    _r("GET", "/api/status", PUBLIC),
     _r("POST", "/api/auth/login", PUBLIC),
     _r("POST", "/api/auth/login/2fa", PUBLIC),  # the code step (challenge-bound)
     _r("GET", "/api/auth/session", PUBLIC),     # answers "are you logged in"
@@ -100,6 +103,7 @@ RULES: list[Rule] = [
     _r("*", "/api/admin/tokens/{token_id}", ADMIN),
     _r("GET", "/api/instances/{server_id}/access", ADMIN),
     _r("GET", "/api/admin/audit", ADMIN),
+    _r("*", "/api/admin/status-page", ADMIN),
     _r("GET", "/api/admin/audit/actions", ADMIN),
     _r("GET", "/api/admin/permissions", ADMIN),
 
@@ -111,6 +115,7 @@ RULES: list[Rule] = [
     _r("POST", "/api/fleet/seen", ANY),
     _r("GET", "/api/fleet/groups", ANY),
     _r("GET", "/api/fleet/history", ANY),      # filtered to the caller's scope
+    _r("GET", "/api/fleet/events", ANY),       # filtered to the caller's scope
     _r("POST", "/api/fleet/groups", "racks.manage"),
     _r("POST", "/api/fleet/groups/plan", "racks.manage"),
     _r("DELETE", "/api/fleet/groups/{group_id}", "racks.manage"),
@@ -122,6 +127,8 @@ RULES: list[Rule] = [
     _r("POST", "/api/instances/{server_id}/action/{action}", "server.power", True),
     _r("GET", "/api/instances/{server_id}/stats", "server.view", True),
     _r("GET", "/api/instances/{server_id}/history", "server.view", True),
+    _r("GET", "/api/instances/{server_id}/jar", "server.view", True),
+    _r("POST", "/api/instances/{server_id}/jar/update", "mods.manage", True),
     _r("GET", "/api/instances/{server_id}/port", "server.view", True),
     _r("POST", "/api/instances/{server_id}/port", "tune.apply", True),
 

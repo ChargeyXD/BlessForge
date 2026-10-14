@@ -643,6 +643,58 @@ async def instance_history(server_id: str, hours: int = 24) -> dict:
     return await history.for_server(server_id, hours)
 
 
+@app.get("/api/fleet/events")
+async def fleet_events(request: Request) -> Response:
+    """Server-sent events: a server starting, stopping, crashing, moving
+    port, and the live numbers, as the nodes report them (app/fleetbus.py).
+    Only servers this account may see."""
+    from app import fleetbus
+    user = getattr(request.state, "user", None)
+
+    def allowed(server_id: str) -> bool:
+        return auth.in_scope(user, server_id, _rack_of) if user else False
+
+    async def body():
+        async for chunk in fleetbus.stream(allowed):
+            if await request.is_disconnected():
+                break
+            yield chunk
+
+    return StreamingResponse(body(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/status")
+async def public_status() -> dict:
+    """The public status page's data. 404 while the page is switched off."""
+    from app import statuspage
+    view = await statuspage.public_view()
+    if view is None:
+        raise HTTPException(404, "Not found.")
+    return view
+
+
+@app.get("/api/admin/status-page")
+async def status_page_settings() -> dict:
+    from app import statuspage
+    return await statuspage.settings()
+
+
+@app.post("/api/admin/status-page")
+async def status_page_save(request: Request, body: dict = Body(...)) -> dict:
+    from app import statuspage
+    try:
+        saved = await statuspage.save(body)
+    except statuspage.StatusPageError as e:
+        raise HTTPException(400, str(e))
+    await auth.audit(actor=request.state.user["username"], action="admin.status_page",
+                     detail=("on" if saved["enabled"] else "off")
+                            + f", {len(saved['servers'])} server(s)",
+                     ip=_client_ip(request))
+    return saved
+
+
 @app.get("/api/fleet/history")
 async def fleet_history(request: Request, hours: int = 24) -> dict:
     """Players and running servers across every server this account may see."""
@@ -746,6 +798,8 @@ async def instance_action(server_id: str, action: str, confirm: bool = False) ->
         prepared = await _prepare_for_start(server_id)
     try:
         await engine.power(server_id, action)
+        from app import fleetbus
+        fleetbus.publish({"type": "power", "server": server_id, "action": action})
         return {"ok": True, "action": action, "prepared": prepared,
                 "upgraded": upgraded,
                 "why": ("This server was already marked as running, so it "
@@ -2133,6 +2187,40 @@ async def take_world_backup(server_id: str, request: Request,
                      server_id=server_id, detail=str((body or {}).get("reason") or "manual"),
                      ip=_client_ip(request))
     return {"job_id": job.id}
+
+
+@app.get("/api/instances/{server_id}/jar")
+async def jar_status(server_id: str) -> dict:
+    """The build this Paper/Purpur/Folia server runs and the newest one for
+    its Minecraft version."""
+    from app import jarupdates
+    try:
+        return await jarupdates.check(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/jar/update")
+async def jar_update(server_id: str, request: Request, body: dict = Body(default={})) -> dict:
+    """Back up, stop, swap the jar for the newest build, start again. A job."""
+    from app import jarupdates
+    try:
+        info = await jarupdates.check(server_id)
+    except Exception as e:
+        raise _err(e)
+    if not info["supported"]:
+        raise HTTPException(400, info.get("reason") or "This server's jar is not updated here.")
+    force = bool((body or {}).get("force"))
+    if not info["update_available"] and not force:
+        raise HTTPException(409, f"Already on the newest build ({info['current']}).")
+    job = await _job_for("jar_update", f"Update {info['family']} to build {info['latest']}",
+                         server_id)
+    await registry.submit(job, "jar_update", server_id=server_id, force=force)
+    await auth.audit(actor=request.state.user["username"], action="server.jar_update",
+                     server_id=server_id,
+                     detail=f"{info['family']} {info['current'] or '?'} -> {info['latest']}",
+                     ip=_client_ip(request))
+    return {"job_id": job.id, **info}
 
 
 @app.get("/api/instances/{server_id}/worldbackups/settings")
@@ -4322,6 +4410,17 @@ async def index() -> Response:
         media_type="text/html",
         headers={"Cache-Control": "no-cache, must-revalidate"},
     )
+
+
+@app.get("/status")
+async def status_page() -> Response:
+    """The public status page (its data is /api/status)."""
+    try:
+        html = (STATIC_DIR / "status.html").read_text(encoding="utf-8")
+    except OSError:
+        raise HTTPException(404, "Not found.")
+    return Response(content=html, media_type="text/html",
+                    headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/favicon.ico")

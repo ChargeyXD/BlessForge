@@ -35,6 +35,10 @@ LIVE: dict[str, dict] = {}
 # find out afterwards that a server crash-looped at 3am.
 _AUDITED = {"crash", "crash_loop", "disk_full", "drift", "agent_started",
             "port_changed", "events_dropped"}
+# What the fleet page is told the moment it happens (app/fleetbus.py), and
+# the numbers it shows live.
+_PUSHED = {"status", "crash", "crash_loop", "port_changed", "disk_full"}
+_LIVE_KEYS = ("running", "state", "cpu", "mem", "mem_percent", "online", "max")
 _STATUS = {"starting": "running", "running": "running", "offline": "stopped",
            # Waiting for a boot slot on its node: it will start by itself.
            "queued": "running"}
@@ -63,6 +67,7 @@ async def agent_events(body: dict = Body(...),
     events = body.get("events") or []
     if not isinstance(events, list):
         raise HTTPException(400, "events must be a list")
+    from app import fleetbus
     statuses: dict[str, str] = {}
     moved: dict[str, int] = {}
     version = None
@@ -76,6 +81,9 @@ async def agent_events(body: dict = Body(...),
                 if isinstance(stats, dict):
                     LIVE[str(sid)] = {**stats, "at": ev.get("at") or time.time(),
                                       "node": node.id}
+            fleetbus.publish({"type": "stats", "node": node.id, "servers": {
+                str(sid): {k: st.get(k) for k in _LIVE_KEYS if k in st}
+                for sid, st in ev["servers"].items() if isinstance(st, dict)}})
         elif kind == "status" and server:
             statuses[str(server)] = _STATUS.get(str(ev.get("state")), "stopped")
         elif kind == "port_changed" and server and isinstance(ev.get("port"), int):
@@ -83,6 +91,10 @@ async def agent_events(body: dict = Body(...),
             moved[str(server)] = int(ev["port"])
         elif kind == "agent_started":
             version = str(ev.get("version") or "")[:32]
+        if kind in _PUSHED and server:
+            fleetbus.publish({"type": kind, "server": str(server), "node": node.id,
+                              **{k: ev[k] for k in ("state", "port", "code", "oom")
+                                 if k in ev}})
         if kind in _AUDITED:
             detail = ", ".join(f"{k}={v}" for k, v in ev.items()
                                if k not in ("type", "server", "at"))[:400]
@@ -123,17 +135,32 @@ async def agent_sftp_auth(body: dict = Body(...),
     m = _SFTP_USER.match(str(body.get("username") or "").lower())
     if not m or not body.get("password"):
         raise HTTPException(403, "that login is not accepted")
-    try:
-        user = await auth.authenticate(m.group(1), str(body["password"]))
-    except auth.AuthError:
-        raise HTTPException(403, "that login is not accepted")
+    password = str(body["password"])
+    if password.startswith("bf_"):
+        # An API token as the password: how an account with two-factor
+        # sign-in uses SFTP, and it brings the token's limits with it.
+        from app import access
+        user = await access.token_user(password)
+        if not user or user["username"] != m.group(1):
+            raise HTTPException(403, "that login is not accepted")
+    else:
+        try:
+            user = await auth.authenticate(m.group(1), password)
+        except auth.AuthError:
+            raise HTTPException(403, "that login is not accepted")
+        if user.get("two_factor"):
+            # A password alone would walk round the second factor.
+            raise HTTPException(403, "this account uses two-factor sign-in: log in to "
+                                     "SFTP with an API token as the password")
+        async with db.session() as s:
+            user["grants"] = await auth._grants_of(s, user["id"])
     async with db.session() as s:
         rows = (await s.execute(select(Server).where(
             Server.node_id == node.id, Server.uuid.startswith(m.group(2))))).scalars().all()
     if len(rows) != 1 or not auth.in_scope(user, rows[0].uuid) \
-            or not auth.may(user, "files.read"):
+            or not auth.may(user, "files.read", rows[0].uuid):
         raise HTTPException(403, "that login is not accepted")
-    perms = [p for p in ("files.read", "files.write") if auth.may(user, p)]
+    perms = [p for p in ("files.read", "files.write") if auth.may(user, p, rows[0].uuid)]
     await auth.audit(actor=user["username"], action="sftp.login",
                      server_id=rows[0].uuid, detail=f"node {node.id}")
     return {"server": rows[0].uuid, "permissions": perms}

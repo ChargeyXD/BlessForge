@@ -179,6 +179,12 @@ async def world_backup(job: Job, server_id: str, reason: str = "") -> dict:
     return await worldbackups.take(server_id, reason=reason or "manual", job=job)
 
 
+@task("jar_update")
+async def jar_update(job: Job, server_id: str, force: bool = False) -> dict:
+    from app import jarupdates
+    return await jarupdates.apply(server_id, job, force=force)
+
+
 @task("world_restore")
 async def world_restore(job: Job, server_id: str, snapshot_id: str,
                         start_after: bool = True) -> dict:
