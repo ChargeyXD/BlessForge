@@ -19,9 +19,11 @@
 import {
   h, hl, mount, clear, icon, api, toast, toastError, $, $$,
   readTheme, applyTheme, prefs, loadingFox, empty, pill, ago, duration,
-  pageSkeleton, heldFor, dissolve,
+  pageSkeleton, heldFor, dissolve, mascot, debounce,
 } from './core.js';
-import { adoptRunning, onJobsChanged, jobsRunning, openDrawer, activeJobs } from './jobs.js';
+import {
+  adoptRunning, onJobsChanged, jobsRunning, openDrawer, activeJobs, mountTray,
+} from './jobs.js';
 import { startPetals } from './petals.js';
 import { refreshSession, loginScreen, session, may, isAdmin, logout }
   from './auth.js';
@@ -68,6 +70,11 @@ const routes = [
     skel: { head: 1, panels: 2 } },
   { name: 'settings', pattern: /^\/settings$/, load: () => import('./views/settings.js'),
     skel: { head: 1, panels: 3 } },
+  // The Gate: everything that is about the whole install rather than about
+  // you -- accounts, nodes, the status page, tokens, the ledger. Admins only;
+  // the server refuses the calls behind it to anybody else regardless.
+  { name: 'gate', pattern: /^\/gate(?:\/([a-z-]+))?$/, load: () => import('./views/gate.js'),
+    params: (m) => ({ section: m[1] || '' }), skel: { head: 1, panels: 2 } },
   {
     name: 'instance',
     pattern: /^\/i\/([^/]+)(?:\/([^/]+))?$/,
@@ -162,7 +169,7 @@ async function route() {
   } catch (e) {
     console.error(e);
     mount(main, h('div.wrap',
-      empty('chargey-failed.png', 'That screen would not load',
+      empty('hurt', 'That screen would not load',
         'A part of the interface failed to download. A reload usually fixes '
         + 'it; if it does not, the container may be mid-restart.',
         h('button.btn.primary', { onclick: () => location.reload() },
@@ -196,7 +203,7 @@ async function route() {
     console.error(e);
     if (token !== routeToken) return;
     mount(main, h('div.wrap',
-      empty('chargey-failed.png', 'This screen could not be drawn',
+      empty('hurt', 'This screen could not be drawn',
         e.message || String(e),
         h('button.btn.primary', { onclick: () => route() },
           hl(), h('span', 'Try again')))));
@@ -443,15 +450,23 @@ function startFleetPolling() {
    calls behind these screens regardless -- this only avoids offering a
    door that opens onto a permission error. */
 const NAV = [
-  { name: 'fleet', path: '/', label: 'Fleet', icon: 'server' },
-  { name: 'groups', path: '/groups', label: 'Racks', icon: 'layers' },
-  { name: 'create', path: '/create', label: 'New server', icon: 'plus',
-    needs: 'server.create' },
-  { name: 'discover', path: '/discover', label: 'Discover', icon: 'compass' },
-  { name: 'roulette', path: '/roulette', label: 'Mod Roulette', icon: 'dice',
-    needs: 'roulette.use' },
-  { name: 'settings', path: '/settings', label: 'Settings', icon: 'gear' },
+  { group: 'The shrine', items: [
+    { name: 'fleet', path: '/', label: 'Fleet', icon: 'server' },
+    { name: 'groups', path: '/groups', label: 'Racks', icon: 'layers' },
+  ] },
+  { group: 'Make', items: [
+    { name: 'create', path: '/create', label: 'New server', icon: 'plus',
+      needs: 'server.create' },
+    { name: 'discover', path: '/discover', label: 'Discover', icon: 'compass' },
+    { name: 'roulette', path: '/roulette', label: 'Mod Roulette', icon: 'dice',
+      needs: 'roulette.use' },
+  ] },
+  { group: 'Keep', items: [
+    { name: 'settings', path: '/settings', label: 'Settings', icon: 'gear' },
+    { name: 'gate', path: '/gate', label: 'The Gate', icon: 'torii', admin: true },
+  ] },
 ];
+const NAV_ITEMS = NAV.flatMap((g) => g.items);
 
 function lantern(glyph, second) {
   return h(`div.lantern${second ? '.l2' : ''}`, { 'aria-hidden': 'true' },
@@ -461,15 +476,19 @@ function lantern(glyph, second) {
 
 function buildRail() {
   return h('nav#rail', { 'aria-label': 'Primary' },
+    // The pink rope down the rail's edge, with its paper shide.
+    h('span.rail-rope', { 'aria-hidden': 'true' }),
     h('a.rail-brand', { href: '#/' },
-      h('img', { src: '/assets/appmark-fox.png', alt: '' }),
+      mascot('fox-prowl', 44, { cls: 'rail-mark' }),
       h('span',
         h('span.wm', 'BlessForge'),
         h('span.tag', 'Shrine of servers')),
     ),
-    h('div.rail-lanterns', lantern('森'), lantern('狐', true)),
+    h('div.rail-lanterns', lantern('狐'), lantern('祝', true)),
     h('div.rail-nav', { id: 'railnav' }),
     h('div.rail-fleet', { id: 'railfleet', 'aria-label': 'Servers' }),
+    // The companion: patrols a strip of grass, and reacts to the work.
+    buildCompanion(),
     // Who you are signed in as, and the way out. It sits above the
     // controls rather than in a menu behind an avatar: on a panel where
     // several people have different powers, "which of us am I right now"
@@ -483,9 +502,56 @@ function buildRail() {
       h('button.btn.sm.ghost', {
         id: 'activitybtn', onclick: () => openDrawer(),
       }, icon('activity', 14), h('span', 'Activity')),
-      h('span.pill.ghost', { id: 'healthpill' }, 'checking'),
+      h('span.conn', { id: 'healthpill', title: 'Checking the connection' },
+        h('span.conn-lamp', { 'aria-hidden': 'true' }), h('span', 'checking')),
     ),
   );
+}
+
+/* --- the companion -------------------------------------------
+   A pixel shrine-keeper walking a strip of grass above your name. It is
+   decoration, and says nothing only it knows: it mines while a job runs,
+   celebrates when one finishes, winces when one fails, and does a little
+   something when clicked. The patrol is a CSS animation, so if the timeline
+   never runs it simply stands at its post. */
+const EMOTES = [
+  ['wave', 'Hello!'], ['jump', 'Hup!'], ['piglindance', 'A little dance.'],
+  ['nod', 'All quiet here.'], ['eat', 'Snack break.'], ['skip', 'Tra-la.'],
+  ['sneakspam', 'Sneaky.'], ['mcjump', 'Boing.'], ['surprise', 'Oh!'],
+];
+let companionTimer = null;
+
+function buildCompanion() {
+  const sprite = mascot('walk', 40, { cls: 'cmp-sprite' });
+  const say = h('span.cmp-say', { 'aria-hidden': 'true' });
+  const walker = h('span.cmp-walker', sprite, say);
+  return h('div#companion.cmp', { 'aria-hidden': 'false' },
+    h('button.cmp-btn', {
+      type: 'button', 'aria-label': 'The shrine keeper (decoration)',
+      onclick: () => {
+        const [name, line] = EMOTES[Math.floor(Math.random() * EMOTES.length)];
+        companionDo(name, line, 2600);
+      },
+    }, walker),
+    h('span.cmp-grass', { 'aria-hidden': 'true' }));
+}
+
+function companionDo(name, line, ms = 0) {
+  const host = $('#companion');
+  if (!host) return;
+  const sprite = host.querySelector('.cmp-sprite');
+  const say = host.querySelector('.cmp-say');
+  sprite.src = `/assets/mascot/${name}.gif`;
+  say.textContent = line || '';
+  host.classList.toggle('talking', !!line);
+  host.classList.toggle('still', name !== 'walk');
+  clearTimeout(companionTimer);
+  if (ms) companionTimer = setTimeout(companionIdle, ms);
+}
+
+function companionIdle() {
+  if (jobsRunning()) companionDo('mine', 'Working on it…');
+  else companionDo('walk', '');
 }
 
 function paintWho() {
@@ -509,19 +575,30 @@ function paintNav() {
   const host = $('#railnav');
   if (!host) return;
   paintWho();
-  mount(host,
-    h('div.sec', 'BlessForge'),
-    ...NAV.filter((n) => !n.needs || may(n.needs)).map((n) => h('a.navlink', {
-      href: `#${n.path}`,
-      'aria-current': state.route.name === n.name ? 'page' : null,
-    }, hl(), icon(n.icon, 17), h('span', n.label),
-      n.name === 'fleet' && state.instances.length
-        ? h('span.count', String(state.instances.length))
-        : n.name === 'groups' && state.groups.groups.length
-          ? h('span.count', String(state.groups.groups.length)) : null)),
-  );
+  const allowed = (n) => (!n.needs || may(n.needs)) && (!n.admin || isAdmin());
+  const needs = state.instances.filter((s) => NEEDS_YOU.has(s.state)).length;
+  mount(host, ...NAV.map((g) => {
+    const items = g.items.filter(allowed);
+    if (!items.length) return null;
+    return [
+      h('div.sec', g.group),
+      ...items.map((n) => h('a.navlink', {
+        href: `#${n.path}`,
+        'aria-current': state.route.name === n.name ? 'page' : null,
+      }, hl(), icon(n.icon, 17), h('span', n.label),
+        n.name === 'fleet' && needs
+          ? h('span.count.alarm', { title: `${needs} need you` }, String(needs))
+          : n.name === 'fleet' && state.instances.length
+            ? h('span.count', String(state.instances.length))
+            : n.name === 'groups' && state.groups.groups.length
+              ? h('span.count', String(state.groups.groups.length)) : null)),
+    ];
+  }));
   paintTopbar();
 }
+
+/* States that put a server in the "Needs you" group, wherever it is shown. */
+export const NEEDS_YOU = new Set(['crashed', 'incomplete', 'orphan']);
 
 /* The rail is not the fleet.
    ------------------------------------------------------------
@@ -583,30 +660,121 @@ function paintFleetRail() {
   paintNav();
 }
 
+const LABELS = {
+  fleet: ['The fleet', 'every server on every node'],
+  groups: ['Racks', 'every server on its hook'],
+  create: ['New server', 'a loader, a version, an empty mods folder'],
+  discover: ['Discover', 'modpacks, mods and plugins'],
+  roulette: ['Mod Roulette', 'deal a pack you did not choose'],
+  settings: ['Settings', 'you, your sign-in and your keys'],
+  gate: ['The Gate', 'accounts, machines and the whole shrine'],
+};
+
 function paintTopbar() {
   const crumbs = $('#crumbs');
   if (!crumbs) return;
   const { name, params } = state.route;
-  const labels = {
-    fleet: ['Fleet', 'every server on every node'],
-    groups: ['Racks', 'every server on its hook'],
-    create: ['New server', 'a loader, a version, an empty mods folder'],
-    discover: ['Discover', 'modpacks, mods and plugins'],
-    roulette: ['Mod Roulette', 'deal a pack you did not choose'],
-    settings: ['Settings', 'connections, decisions, cache'],
-  };
   if (name === 'instance') {
     const inst = state.instanceById.get(params.id);
     mount(crumbs,
-      h('a.btn.icon.sm.ghost', { href: '#/', 'aria-label': 'Back to the fleet' },
-        icon('arrowLeft', 15)),
-      h('span.t', inst?.name || 'Instance'),
+      h('a.crumb-up', { href: '#/' }, icon('arrowLeft', 13), h('span', 'Fleet')),
+      h('span.crumb-sep', { 'aria-hidden': 'true' }, '/'),
+      h('span.t.brush', inst?.name || 'Server'),
       h('span.s', (params.tab || 'overview').replace(/-/g, ' ')));
   } else {
-    const [t, s] = labels[name] || ['BlessForge', ''];
-    mount(crumbs, h('span.t', t), s && h('span.s', s));
+    const [t, sub] = LABELS[name] || ['BlessForge', ''];
+    mount(crumbs, h('span.t.brush', t), sub && h('span.s', sub));
   }
 }
+
+/* --- jump to… (the palette) ----------------------------------
+   Screens, every server you can see, and the current server's tabs, one
+   keystroke away: Ctrl/⌘ K anywhere. Type to filter, Enter takes the first,
+   arrows move, Escape closes. Built fresh each time it opens, so it never
+   offers a server that has since been deleted. */
+const INSTANCE_TABS = [
+  ['overview', 'Overview'], ['console', 'Console'], ['players', 'Players'],
+  ['history', 'History'], ['mods', 'Mods'], ['files', 'Files'], ['configs', 'Configs'],
+  ['tune', 'Tune'], ['diagnose', 'Diagnose'], ['backups', 'Backups'],
+  ['schedules', 'Schedules'], ['undo', 'Undo'], ['rules', 'Rules'],
+];
+let paletteEl = null;
+
+function paletteItems() {
+  const items = NAV_ITEMS.filter((n) => (!n.needs || may(n.needs)) && (!n.admin || isAdmin()))
+    .map((n) => ({ label: n.label, hint: 'screen', icon: n.icon, path: n.path }));
+  for (const s of state.instances) {
+    items.push({ label: s.name || s.server_id, hint: [s.loader, s.minecraft, s.state]
+      .filter(Boolean).join(' · '), icon: 'server', path: `/i/${s.server_id}/overview` });
+  }
+  if (state.route.name === 'instance') {
+    const id = state.route.params.id;
+    const inst = state.instanceById.get(id);
+    for (const [key, label] of INSTANCE_TABS) {
+      items.push({ label: `${inst?.name || 'This server'} › ${label}`, hint: 'tab',
+        icon: 'chevronRight', path: `/i/${id}/${key}` });
+    }
+  }
+  return items;
+}
+
+export function openPalette() {
+  if (paletteEl) { paletteEl.querySelector('input')?.focus(); return; }
+  const all = paletteItems();
+  let shown = all;
+  let at = 0;
+  const list = h('ul.pal-list', { role: 'listbox', id: 'pal-list' });
+  const input = h('input.pal-inp', {
+    type: 'text', placeholder: 'Jump to a screen, a server or a tab…',
+    'aria-label': 'Jump to', role: 'combobox', 'aria-expanded': 'true',
+    'aria-controls': 'pal-list', autocomplete: 'off', spellcheck: 'false',
+  });
+  const opener = document.activeElement;
+  const closeIt = () => {
+    paletteEl?.remove();
+    paletteEl = null;
+    document.removeEventListener('keydown', onKey, true);
+    if (opener?.isConnected) opener.focus();
+  };
+  const pick = (item) => { closeIt(); if (item) go(item.path); };
+  const paint = () => {
+    mount(list, ...(shown.length ? shown.slice(0, 40).map((it, i) => h('li', {
+      role: 'option', 'aria-selected': String(i === at),
+      onmousedown: (e) => { e.preventDefault(); pick(it); },
+    }, icon(it.icon, 15), h('span.pal-lbl', it.label), h('span.pal-hint', it.hint)))
+      : [h('li.pal-none', 'Nothing by that name.')]));
+    list.children[at]?.scrollIntoView?.({ block: 'nearest' });
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeIt(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); at = Math.min(at + 1, shown.length - 1); paint(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); at = Math.max(at - 1, 0); paint(); }
+    else if (e.key === 'Enter') { e.preventDefault(); pick(shown[at]); }
+  };
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    shown = !q ? all : all.filter((it) => `${it.label} ${it.hint}`.toLowerCase().includes(q));
+    at = 0;
+    paint();
+  });
+  paletteEl = h('div#palette', { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Jump to' },
+    h('div.pal-scrim', { onclick: closeIt }),
+    h('div.pal-box',
+      h('div.pal-head', icon('search', 16), input, h('kbd', 'Esc')),
+      list));
+  document.body.append(paletteEl);
+  document.addEventListener('keydown', onKey, true);
+  paint();
+  setTimeout(() => input.focus(), 0);
+}
+
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    if (!$('#shell')) return;
+    e.preventDefault();
+    openPalette();
+  }
+});
 
 function cycleTheme() {
   const order = ['system', 'dark', 'light'];
@@ -638,10 +806,10 @@ function paintHealthPill() {
   if (!el) return;
   const hs = state.health;
   const ok = hs?.ready;
-  el.className = `pill ${ok ? 'ok' : 'bad'}`;
+  el.className = `conn ${ok ? 'ok' : 'bad'}`;
   clear(el);
-  el.append(h('span.dot.live', { 'aria-hidden': 'true' }),
-    ok ? 'connected' : 'setup needed');
+  el.append(h('span.conn-lamp', { 'aria-hidden': 'true' }),
+    h('span', ok ? 'connected' : 'setup needed'));
   el.title = ok
     ? `${engineLabel(hs.checks?.engine?.driver)} answered in `
       + `${hs.checks?.engine?.latency_ms ?? '?'} ms`
@@ -692,6 +860,7 @@ function buildShell() {
     },
       buildRail(),
       h('div#col',
+        h('div#banner'),
         h('header#topbar',
           h('button.btn.icon.sm.ghost', {
             id: 'railtoggle', 'aria-label': 'Show the server list',
@@ -701,11 +870,91 @@ function buildShell() {
           }, icon('menu', 16)),
           h('div.crumbs', { id: 'crumbs' }),
           h('div.btnrow', { id: 'topactions' }),
+          h('button.jump', {
+            type: 'button', onclick: () => openPalette(),
+            'aria-label': 'Jump to a screen, server or tab (Ctrl K)',
+          }, icon('search', 14), h('span', 'Jump to…'), h('kbd', 'Ctrl K')),
         ),
         h('main#main', { tabIndex: -1 }),
       ),
     ),
+    h('div#tray'),
   );
+  mountTray($('#tray'));
+  paintBanner();
+}
+
+/* The shipped password is still in use: a gold ofuda across the top of every
+   screen until it is changed, because it is the one risk a fresh install
+   carries and nothing else on the page would mention it. */
+function paintBanner() {
+  const host = $('#banner');
+  if (!host) return;
+  if (!session.defaultPasswordInUse) { clear(host); return; }
+  mount(host, h('div.ofuda-banner', { role: 'alert' },
+    h('span.ob-seal', { 'aria-hidden': 'true' }, '警'),
+    h('span', h('b', 'The default admin password is still in use. '),
+      'Anyone who knows BlessForge knows it. Change it before this is reachable '
+      + 'from outside your network.'),
+    isAdmin() ? h('a.btn.xs', { href: '#/settings' }, hl(), h('span', 'Change it')) : null));
+}
+
+/* --- live fleet ------------------------------------------------
+   The nodes report a start, a stop, a crash or a port change the moment it
+   happens (app/fleetbus.py). The fleet used to find out on its next poll,
+   up to fifteen seconds later; now it re-reads at once. The live numbers
+   in a stats event are written straight into the fleet, so the gauges move
+   without a request. The poll stays as the fallback for when the stream is
+   down. */
+let fleetEvents = null;
+
+function startFleetEvents() {
+  if (fleetEvents || typeof EventSource === 'undefined') return;
+  const reread = debounce(() => refreshInstances({ quiet: true }).catch(() => {}), 350);
+  const es = new EventSource('/api/fleet/events');
+  fleetEvents = es;
+  const onChange = () => reread();
+  for (const kind of ['status', 'crash', 'crash_loop', 'port_changed', 'power', 'lagged']) {
+    es.addEventListener(kind, onChange);
+  }
+  es.addEventListener('crash', (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      const name = state.instanceById.get(data.server)?.name || 'A server';
+      toast(`${name} crashed${data.oom ? ' -- killed for its memory limit' : ''}.`, 'bad',
+        { title: 'Crash' });
+      companionDo('hurt', 'Ouch.', 3000);
+    } catch { /* the re-read shows it anyway */ }
+  });
+  es.addEventListener('stats', (ev) => {
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
+    let changed = false;
+    for (const [sid, st] of Object.entries(data.servers || {})) {
+      const inst = state.instanceById.get(sid);
+      if (!inst) continue;
+      if (st.cpu !== undefined) inst.cpu = st.cpu;
+      if (st.mem_percent !== undefined) inst.mem = st.mem_percent;
+      if (st.mem !== undefined) inst.mem_bytes = st.mem;
+      if (st.online !== undefined) inst.players = st.online;
+      if (st.max !== undefined && st.max !== null) inst.max_players = st.max;
+      changed = true;
+    }
+    if (changed) emitLive();
+  });
+  es.onerror = () => {
+    // EventSource reconnects by itself; a closed one (the panel restarted
+    // with a different build) is opened again on the next health check.
+    if (es.readyState === EventSource.CLOSED) fleetEvents = null;
+  };
+}
+
+/* Live numbers repaint only the screens that asked for them, not every
+   subscriber -- a stats event every few seconds must not rebuild a form. */
+const liveSubscribers = new Set();
+export function onLive(fn) { liveSubscribers.add(fn); return () => liveSubscribers.delete(fn); }
+function emitLive() {
+  liveSubscribers.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
 }
 
 export function topActions(...nodes) {
@@ -786,12 +1035,23 @@ async function boot() {
   });
 
   window.addEventListener('hashchange', route);
+  let runningBefore = 0;
   onJobsChanged(() => {
     const btn = $('#activitybtn');
     if (!btn) return;
     const n = jobsRunning();
     mount(btn, icon('activity', 14),
       h('span', n ? `Activity · ${n}` : 'Activity'));
+    // The companion reacts: mines while something runs, celebrates or winces
+    // when the last one ends.
+    if (n && !runningBefore) companionDo('mine', 'Working on it…');
+    if (!n && runningBefore) {
+      const last = activeJobs().filter((j) => j.finishedAt)
+        .sort((a, b) => b.finishedAt - a.finishedAt)[0];
+      if (last?.status === 'error') companionDo('hurt', 'That one failed.', 3200);
+      else companionDo('celebrate', 'Done!', 2800);
+    }
+    runningBefore = n;
     // A job that creates or destroys a server changes the fleet.
     refreshInstances({ quiet: true }).catch(() => {});
   });
@@ -808,6 +1068,7 @@ async function boot() {
     if (state.health?.ready) {
       refreshInstances({ quiet: true }).catch(() => {});
       startFleetPolling();
+      startFleetEvents();
     }
   });
   // The racks are a local file read and do not depend on a node answering,
@@ -821,6 +1082,7 @@ async function boot() {
     if (document.hidden) return;
     refreshHealth().then(() => {
       if (state.health?.ready && !fleetTimer) startFleetPolling();
+      if (state.health?.ready) startFleetEvents();
     });
   }, 60000);
   // Coming back to the tab after a while, the first thing worth knowing is

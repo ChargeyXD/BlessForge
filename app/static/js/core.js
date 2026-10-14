@@ -268,6 +268,39 @@ const PATHS = {
   heart: 'M12 20s-7-4.5-7-9.5A4 4 0 0 1 12 8a4 4 0 0 1 7-.5C19 15.5 12 20 12 20z',
   compass: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM15.5 8.5l-2 5-5 2 2-5z',
   flask: 'M9 3h6M10 3v6L5 19a1.5 1.5 0 0 0 1.3 2h11.4A1.5 1.5 0 0 0 19 19l-5-10V3M7.5 14h9',
+  arrowRight: 'M4 12h16M14 6l6 6-6 6',
+  monitor: 'M3 4h18v12H3zM8 20h8M12 16v4',
+  torii: 'M3 5.5c3.5 1 14.5 1 18 0M5 9.5h14M7 6.6V21M17 6.6V21M12 7v2.5',
+  lantern: 'M10 3h4M12 3v2M7 8.5C7 6.5 9 5 12 5s5 1.5 5 3.5v7c0 2-2 3.5-5 3.5s-5-1.5-5-3.5zM7 9h10M7 15h10M12 19v2',
+  globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z',
+  node: 'M4 3h16v7H4zM4 14h16v7H4zM7.5 6.5h.01M7.5 17.5h.01M11 6.5h6M11 17.5h6M12 10v4',
+  container: 'M3 7.5l9-4.5 9 4.5v9L12 21l-9-4.5zM3 7.5l9 4.5 9-4.5M12 12v9',
+  log: 'M6 3h12v18H6zM9 7h6M9 11h6M9 15h3',
+  jvm: 'M4 4h16v16H4zM10 8c-1.3 0-1.6.6-1.6 1.6v.9c0 .8-.4 1.5-1.2 1.5.8 0 1.2.7 1.2 1.5v.9c0 1 .3 1.6 1.6 1.6M14 8c1.3 0 1.6.6 1.6 1.6v.9c0 .8.4 1.5 1.2 1.5-.8 0-1.2.7-1.2 1.5v.9c0 1-.3 1.6-1.6 1.6',
+  seal: 'M7 3h10v18H7zM10 7h4M10 10.5h4M12 14v4M10.5 16h3',
+  external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
+  grip: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
+  map: 'M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14',
+  tag: 'M3 12V4h8l10 10-8 8zM7.5 8h.01',
+  bell: 'M6 16v-5a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0',
+  command: 'M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z',
+  logout: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
+  hook: 'M12 3v7a4 4 0 1 1-4 4',
+  gauge: 'M4 18a8 8 0 1 1 16 0M12 18l4-6',
+  sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z',
+  datapack: 'M4 7l8-4 8 4-8 4zM4 7v10l8 4 8-4V7M8 9v4M16 9v4',
+  lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
+  move: 'M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4',
+  hash: 'M5 9h14M5 15h14M10 4L8 20M16 4l-2 16',
+  undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
+  send: 'M21 3L10 14M21 3l-7 18-4-7-7-4z',
+  swap: 'M7 4L3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7',
+  ping: 'M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0M12 12h.01',
+  calendar: 'M4 5h16v16H4zM4 10h16M8 3v4M16 3v4M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01',
+  chart: 'M4 4v16h16M7.5 15l3.5-4 3 2.5L19 8',
+  qr: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2v2',
+  fingerprint: 'M7 11a5 5 0 0 1 10 0v2a10 10 0 0 1-1.5 5M12 11v3a9 9 0 0 1-2 5.5M9.5 11.5v1.5a7 7 0 0 1-1.6 4.5M4.5 9a8 8 0 0 1 15 0M19.5 13.5a14 14 0 0 1-.5 3',
+  timer: 'M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 9v4l2.5 1.5M10 2h4',
 };
 
 export function icon(name, size = 16, extra = {}) {
@@ -415,13 +448,18 @@ export function qs(params) {
 
 let toastHost = null;
 
+const TOAST_MASCOT = { ok: 'celebrate', bad: 'hurt', warn: 'surprise', info: 'nod' };
+
 export function toast(message, kind = 'ok', { title, timeout } = {}) {
   if (!toastHost) {
     toastHost = h('div#toasts', { 'aria-live': 'polite', 'aria-atomic': 'false' });
     document.body.append(toastHost);
   }
+  // A slip of paper that drops from a cord, with the mascot for its kind:
+  // celebrate for done, hurt for failed, surprise for a warning.
   const node = h(`div.toast.${kind}`, { role: kind === 'bad' ? 'alert' : 'status' },
-    icon(kind === 'ok' ? 'check' : kind === 'bad' ? 'alert' : 'info', 18),
+    h('span.toast-cord', { 'aria-hidden': 'true' }),
+    mascot(TOAST_MASCOT[kind] || 'nod', 46, { cls: 'toast-mascot' }),
     h('div.msg', title && h('b', title), message),
     h('button.btn.icon.xs.ghost', {
       'aria-label': 'Dismiss', onclick: () => dismiss(node),
@@ -463,6 +501,8 @@ export function modal({ title, body, footer, wide, onClose, dismissable = true }
   const panel = h(`div.modal${wide ? '.wide' : ''}`, {
     role: 'dialog', 'aria-modal': 'true', 'aria-label': title || 'Dialog',
   },
+    // The torii beam the sheet hangs under: kasagi and nuki, drawn in CSS.
+    h('div.modal-beam', { 'aria-hidden': 'true' }, h('i'), h('b')),
     h('header',
       h('h3', title || ''),
       dismissable && h('button.btn.icon.sm.ghost', {
@@ -559,9 +599,7 @@ export function confirmDialog({
         // A picture on a destructive dialog is not decoration: it is half a
         // second of "wait, what am I about to do" before the muscle memory
         // reaches the confirm button.
-        art ? h('div', { style: { textAlign: 'center', marginBottom: '10px' } },
-          h('img', { src: `/assets/${art}`, alt: '',
-            style: { width: 'min(190px,46vw)' } })) : null,
+        art ? h('div.confirm-art', artImage(art, 120)) : null,
         h('p', message),
         detail && h('div.note.warn', { style: { marginTop: '12px' } }, detail),
         requireText && h('div.field', { style: { marginTop: '14px' } },
@@ -604,13 +642,91 @@ export function promptDialog({ title, label, value = '', placeholder, help,
   });
 }
 
+/* --- the shrine's objects -------------------------------------
+   The pieces the combined design (design/UI-COMBINED.md) builds every
+   screen from: the mascot, the hanko seal that names a state, the lantern
+   meter, the rope. Each is plain DOM with its look in shrine.css. */
+
+/* Every mascot animation the app ships, in /assets/mascot/. Listed so the
+   front-end check can confirm each one exists, and so a typo in a name is a
+   failing check rather than a broken image. */
+export const MASCOTS = [
+  'blockwalk', 'celebrate', 'death', 'eat', 'fox-crawl', 'fox-pounce',
+  'fox-prowl', 'hurt', 'idle', 'jump', 'mcjump', 'mine', 'nod', 'piglindance',
+  'placeblock', 'run', 'shake', 'skip', 'sneakspam', 'sneakwalk', 'sprint',
+  'stab', 'surprise', 'vanish', 'walk', 'wave',
+];
+
+/* Pixel art, so `pixelated` -- smoothing a 32px sprite up to 96px turns it to
+   mush. Decorative: every place a mascot appears says the same thing in words
+   next to it. */
+export function mascot(name, size = 96, { alt = '', cls = '' } = {}) {
+  const known = MASCOTS.includes(name) ? name : 'idle';
+  return h(`img.mascot${cls ? `.${cls}` : ''}`, {
+    src: `/assets/mascot/${known}.gif`, alt, width: size, height: size,
+    draggable: false, decoding: 'async',
+  });
+}
+
+/* `art` is a mascot name ('idle') or, for the few raster pieces left, a file
+   in /assets ('lucky-block.webp'). */
+export function artImage(art, size = 120, cls = '') {
+  if (!String(art).includes('.')) return mascot(art, size, { cls });
+  return h(`img${cls ? `.${cls}` : ''}`, { src: `/assets/${art}`, alt: '',
+    style: { width: `${size}px` } });
+}
+
+/* One word for a server's state, its hanko glyph and its tone. The glyphs are
+   the ones a shrine would stamp: 稼 at work, 起 rising, 休 resting, 倒 fallen,
+   未 unfinished, 迷 lost, 築 being built. */
+export const STATES = {
+  running: { glyph: '稼', label: 'Running', tone: 'ok' },
+  starting: { glyph: '起', label: 'Starting', tone: 'warn' },
+  stopping: { glyph: '止', label: 'Stopping', tone: 'warn' },
+  stopped: { glyph: '休', label: 'Stopped', tone: 'dead' },
+  crashed: { glyph: '倒', label: 'Crashed', tone: 'bad' },
+  incomplete: { glyph: '未', label: 'Unfinished', tone: 'gold' },
+  orphan: { glyph: '迷', label: 'Lost', tone: 'plum' },
+  installing: { glyph: '築', label: 'Building', tone: 'info' },
+};
+export const stateInfo = (key) => STATES[key] || STATES.stopped;
+
+export function seal(state, { size = 'md', label = true } = {}) {
+  const st = typeof state === 'string' ? stateInfo(state) : state;
+  return h(`span.seal.${st.tone}.${size}`, {
+    role: 'img', 'aria-label': st.label, title: st.label,
+  }, h('b', st.glyph), label ? h('small', st.label) : null);
+}
+
+/* A row of paper-lantern segments that light up with the reading. `null`
+   is not zero: an unknown reading lights nothing and says so in words, where
+   0% would light nothing and look like a fact. */
+export function lanternMeter(value, { segments = 10, warn = 60, hot = 85, title } = {}) {
+  const v = value === null || value === undefined || Number.isNaN(Number(value))
+    ? null : Math.max(0, Math.min(100, Number(value)));
+  const lit = v === null ? 0 : Math.max(v > 0 ? 1 : 0, Math.round((v / 100) * segments));
+  const tone = v === null ? 'unknown' : v >= hot ? 'hot' : v >= warn ? 'warm' : 'calm';
+  return h(`span.lmeter.${tone}`, {
+    role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': '100',
+    'aria-valuenow': v === null ? null : Math.round(v), title: title || null,
+  }, ...Array.from({ length: segments }, (_, i) => h(`i${i < lit ? '.on' : ''}`)));
+}
+
+/* The shimenawa: a twisted cord with paper shide hanging from it. Things
+   hang from it -- plaques, job slips, the tab shelf. */
+export function rope(kind = '') {
+  return h(`div.sh-rope${kind ? `.${kind}` : ''}`, { 'aria-hidden': 'true' },
+    h('span.shide'), h('span.shide'), h('span.shide'));
+}
+
+/* --- small shared widgets ------------------------------------ */
 /* --- small shared widgets ------------------------------------ */
 
 export function empty(art, title, message, ...actions) {
   return h('div.empty.anim-rise',
     h('div', { style: { position: 'relative' } },
       h('div.fox-halo'),
-      h('img.fox', { src: `/assets/${art}`, alt: '' })),
+      artImage(art, 132, 'fox')),
     h('h3', title),
     h('p', message),
     actions.length ? h('div.btnrow', { style: { justifyContent: 'center' } },
@@ -618,10 +734,10 @@ export function empty(art, title, message, ...actions) {
   );
 }
 
-export function loadingFox(label = 'Working') {
+export function loadingFox(label = 'Working', art = 'run') {
   return h('div.loading-fox',
-    h('img', { src: '/assets/fox-loading.gif', alt: '' }),
-    h('span', label));
+    mascot(art, 56),
+    h('span', label, h('span.dots', { 'aria-hidden': 'true' }, h('i'), h('i'), h('i'))));
 }
 
 /* The shape of a screen, before its data exists.

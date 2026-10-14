@@ -80,8 +80,8 @@ const LOG_IN_DOM = 90;
    answer to "is this still going", and the charm that carries it rides the
    rope at the job's own percent, so the art is also the position. */
 
-const ART_CARRY = '/assets/pig-loadbar.gif';   // something is being hauled
-const ART_WORK = '/assets/bee-working.gif';    // something is being worked on
+const ART_CARRY = '/assets/mascot/sprint.gif';   // something is being hauled
+const ART_WORK = '/assets/mascot/mine.gif';       // something is being worked on
 
 const CARRYING = /upload|download|fetch|batch|pack file|push|pull|carr/i;
 
@@ -214,8 +214,12 @@ export function follow(jobId, { title, onEnd, onFrame, quiet, kind } = {}) {
   live.set(jobId, record);
 
   openStream(record);
-  showDrawer();
+  // The tray along the bottom shows every job as a slip. Only the long,
+  // many-phased ones -- an install, a new server -- also open the drawer
+  // with their road; a backup or a restart is a slip and nothing more.
+  if (record.kind && PHASES[record.kind]) showDrawer();
   render();
+  paintTray();
   notify();
   return record;
 }
@@ -234,6 +238,7 @@ function openStream(record) {
     try { frame = JSON.parse(event.data); } catch { return; }
     applyFrame(record, frame);
     render();
+    paintTray();
     record.handlers.onFrame.forEach((fn) => {
       try { fn(frame, record); } catch { /* a view that has been torn down
         must not kill the stream */ }
@@ -358,6 +363,7 @@ function finish(record, frame) {
   trimFinished();
   notify();
   render();
+  paintTray();
 }
 
 function trimFinished() {
@@ -422,6 +428,9 @@ function forget(id) {
   live.delete(id);
   const view = views.get(id);
   if (view) { view.root.remove(); views.delete(id); }
+  const slip = slips.get(id);
+  if (slip) { slip.root.remove(); slips.delete(id); }
+  paintTray();
 }
 
 export function dismissJob(id) {
@@ -917,6 +926,88 @@ setInterval(() => {
     patchTime(view, rec, now);
   }
 }, 1000);
+
+/* --- the tray -------------------------------------------------
+   A rope along the bottom edge with one paper slip hanging from it per job
+   (the combined design, from the redesign's jobs tray). A slip sways while
+   its job runs and is stamped when it ends -- 済 done, ✕ failed, 止
+   stopped. Clicking anywhere on the tray opens the drawer with the detail.
+
+   Same discipline as the drawer: one node per job, patched, never rebuilt,
+   so a slip's bar eases rather than snaps and its sway is not restarted by
+   every log line. Painted on a timer rather than rAF, because rAF does not
+   fire in a hidden tab and the tray must be right when you come back. */
+
+let trayEl = null;
+let slipsEl = null;
+let trayCount = null;
+const slips = new Map();       // job id -> { root, name, pct, fill, stamp, state }
+let trayQueued = false;
+
+export function mountTray(host) {
+  if (!host) return;
+  slipsEl = h('div.tray-slips');
+  trayCount = h('span.tray-count');
+  trayEl = h('div.tray', {
+    role: 'button', tabIndex: 0, hidden: true,
+    'aria-label': 'Jobs -- open the activity drawer',
+    onclick: () => openDrawer(),
+    onkeydown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrawer(); }
+    },
+  },
+    h('span.tray-rope', { 'aria-hidden': 'true' }),
+    h('span.tray-label', h('b', 'Jobs'), trayCount),
+    slipsEl);
+  host.append(trayEl);
+  paintTray();
+}
+
+function paintTray() {
+  if (!trayEl || trayQueued) return;
+  trayQueued = true;
+  setTimeout(() => { trayQueued = false; trayNow(); }, 120);
+}
+
+const STAMP = { done: '済', error: '✕', cancelled: '止' };
+
+function trayNow() {
+  if (!trayEl) return;
+  const jobs = [...live.values()].sort((a, b) => a.startedAt - b.startedAt);
+  for (const id of [...slips.keys()]) {
+    if (!live.has(id)) { slips.get(id).root.remove(); slips.delete(id); }
+  }
+  trayEl.hidden = jobs.length === 0;
+  document.body.classList.toggle('has-tray', jobs.length > 0);
+  const running = jobs.filter((j) => j.status === 'running').length;
+  setText(trayCount, running ? `${running} running` : `${jobs.length} finished`);
+  trayEl.classList.toggle('busy', running > 0);
+  jobs.slice(-6).forEach((rec, i) => {
+    let v = slips.get(rec.id);
+    if (!v) {
+      v = { name: h('span.slip-name'), pct: h('span.slip-pct'), fill: h('i'),
+        stamp: h('span.slip-stamp', { 'aria-hidden': 'true' }), state: '' };
+      v.root = h('span.slip', { title: rec.title },
+        h('span.slip-cord', { 'aria-hidden': 'true' }), v.stamp, v.name, v.pct,
+        h('span.slip-bar', v.fill));
+      v.root.style.setProperty('--sway-delay', `-${(i * 0.7).toFixed(1)}s`);
+      slips.set(rec.id, v);
+    }
+    setText(v.name, rec.title);
+    const st = rec.status === 'running' ? 'running' : rec.status;
+    if (v.state !== st) {
+      v.root.classList.remove(`s-${v.state}`);
+      v.root.classList.add(`s-${st}`);
+      v.state = st;
+      setText(v.stamp, STAMP[st] || '');
+    }
+    const pct = rec.status === 'done' ? 100 : Math.round(rec.percent || 0);
+    setText(v.pct, rec.status === 'running' ? `${pct}%` : (st === 'done' ? 'done'
+      : st === 'cancelled' ? 'stopped' : 'failed'));
+    setStyle(v.fill, 'width', `${pct}%`);
+    if (slipsEl.children[i] !== v.root) slipsEl.insertBefore(v.root, slipsEl.children[i] || null);
+  });
+}
 
 /* Adopt anything already running on the server — a job survives a browser
    reload, and a page that forgets about it looks like the work was lost.

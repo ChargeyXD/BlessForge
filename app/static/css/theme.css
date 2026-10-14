@@ -57,6 +57,18 @@
   --shrine:#B23F5C;
   --shrine-deep:#8E3049;
   --shrine-soft:#F3D7DE;
+  --on-shrine:var(--paper);
+
+  /* The combined design's objects (design/UI-COMBINED.md). The redesign drew
+     them in torii vermilion and wood; here they are the same pinks as
+     everything else -- aliases only, no new colour. An ema plaque is
+     sakura-washed paper with a deeper sakura edge, and the shimenawa rope is
+     a twisted cord of the three sakura tones. */
+  --ema:linear-gradient(170deg,var(--card) 0%,var(--card-2) 55%,var(--sakura-soft) 100%);
+  --ema-edge:var(--sakura-deep);
+  --ema-ink:var(--text);
+  --rope:repeating-linear-gradient(115deg,var(--sakura-soft) 0 7px,var(--sakura-deep) 7px 12px,
+    var(--rose) 12px 14px);
 
   /* Woven ground. The asanoha (hemp-leaf) lattice reduced to its three
      base axes -- 0, 60 and 120 degrees -- which is all that survives at
@@ -94,6 +106,9 @@
      box with no route out falls back to vendored Space Grotesk and paints
      immediately rather than waiting out a DNS timeout on a font. */
   --disp:"Archivo Black","Space Grotesk",Impact,"Arial Black",sans-serif;
+  /* The brush: page titles, server names and section heads only. Everything
+     read closely stays in the body face. */
+  --brush:"Potta One","Archivo Black","Space Grotesk",serif;
   --num:"Archivo","Space Grotesk","Helvetica Neue",Arial,sans-serif;
   --body:"Plus Jakarta Sans","Space Grotesk","Segoe UI",system-ui,-apple-system,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
@@ -133,6 +148,7 @@
     --danger:#FF8A93; --danger-soft:#3B2126;
     --info:#9EC1F0; --info-soft:#1F2739;
     --shrine:#F2879F; --shrine-deep:#D9788F; --shrine-soft:#3C232D;
+    --on-shrine:var(--slab-fg);
   --pattern-ink:rgba(239,174,192,.042);
   --backdrop:url('/assets/backdrop/dark');
     --lift-1:3px 3px 0 var(--slab-bg), 0 4px 16px -6px rgba(0,0,0,.7);
@@ -159,6 +175,7 @@
   --danger:#FF8A93; --danger-soft:#3B2126;
   --info:#9EC1F0; --info-soft:#1F2739;
   --shrine:#F2879F; --shrine-deep:#D9788F; --shrine-soft:#3C232D;
+  --on-shrine:var(--slab-fg);
   --pattern-ink:rgba(239,174,192,.042);
   --backdrop:url('/assets/backdrop/dark');
   --lift-1:3px 3px 0 var(--slab-bg), 0 4px 16px -6px rgba(0,0,0,.7);

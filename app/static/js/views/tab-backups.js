@@ -53,11 +53,12 @@ export async function render(ctx) {
         h('b', 'This is not a world backup'),
         'A snapshot records which mods were installed and whether each was '
         + 'enabled, plus the previous contents of any config file edited here. '
-        + 'It cannot bring back a deleted world: download the world folder '
-        + 'from Files to keep a copy of that.'),
+        + 'It cannot bring back a world: ',
+        h('a', { href: `#/i/${ctx.id}/backups` }, 'Backups'),
+        ' keeps copies of the world itself.'),
 
       !items.length
-        ? empty('shulker-guard.gif', 'Nothing to undo yet',
+        ? empty('nod', 'Nothing to undo yet',
           'Snapshots are taken automatically before a bulk disable, an '
           + 'assistant fix, a config edit or a pack version switch.',
           h('button.btn.primary', { onclick: take }, hl(),

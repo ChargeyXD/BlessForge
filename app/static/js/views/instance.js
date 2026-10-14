@@ -19,36 +19,97 @@
 
 import {
   h, hl, mount, clear, icon, api, toast, toastError, pill, bytes, num,
-  duration, empty, loadingFox, confirmDialog, prefs, ago,
-  pageSkeleton, heldFor, dissolve,
+  duration, empty, loadingFox, confirmDialog, prefs, ago, titleCase, copyText,
+  pageSkeleton, heldFor, dissolve, mascot, seal, stateInfo,
 } from '../core.js';
 import { run } from '../jobs.js';
 import { state, go, topActions, refreshInstances } from '../app.js';
-import { action, retryLoader } from './fleet.js';
+import { may, isAdmin } from '../auth.js';
+import { action, retryLoader, loaderArt } from './fleet.js';
 
-const TABS = [
-  { key: 'overview', label: 'Overview', icon: 'server' },
-  { key: 'mods', label: 'Mods', icon: 'box', when: (i) => !i.plugins },
-  { key: 'plugins', label: 'Plugins', icon: 'puzzle', when: (i) => i.plugins },
-  { key: 'files', label: 'Files', icon: 'folder' },
-  { key: 'players', label: 'Players', icon: 'users' },
-  { key: 'console', label: 'Console', icon: 'terminal' },
-  { key: 'configs', label: 'Configs', icon: 'fileText' },
-  { key: 'tune', label: 'Tune', icon: 'sliders' },
-  { key: 'diagnose', label: 'Diagnose', icon: 'wrench' },
-  { key: 'backups', label: 'Undo', icon: 'refresh' },
+/* The ofuda shelf: every tab is a slip with its kanji, hung in three groups
+   -- Run (what it is doing), Build (what it is made of), Care (keeping it
+   well). `needs` hides a slip from an account that cannot use it on this
+   server; `down` greys it out, with the reason, when the state means it
+   cannot work. */
+const GROUPS = [
+  ['Run', [
+    { key: 'overview', label: 'Overview', kanji: '祭' },
+    { key: 'console', label: 'Console', kanji: '声', needs: 'console.read', down: true },
+    { key: 'players', label: 'Players', kanji: '人', down: true },
+    { key: 'history', label: 'History', kanji: '史' },
+  ]],
+  ['Build', [
+    { key: 'mods', label: 'Mods', kanji: '具', when: (i) => !i.plugins, down: true },
+    { key: 'plugins', label: 'Plugins', kanji: '具', when: (i) => i.plugins, down: true },
+    { key: 'files', label: 'Files', kanji: '蔵', needs: 'files.read', down: true },
+    { key: 'configs', label: 'Configs', kanji: '巻', needs: 'files.read', down: true },
+  ]],
+  ['Care', [
+    { key: 'tune', label: 'Tune', kanji: '調', down: true },
+    { key: 'diagnose', label: 'Diagnose', kanji: '診' },
+    { key: 'backups', label: 'Backups', kanji: '守', down: true },
+    { key: 'schedules', label: 'Schedules', kanji: '暦' },
+    { key: 'undo', label: 'Undo', kanji: '戻', down: true },
+    { key: 'rules', label: 'Rules', kanji: '札' },
+  ]],
 ];
-
-const LOADERS = {
-  fabric: '/assets/loader-fabric.png',
-  forge: '/assets/loader-forge.jpg',
-  neoforge: '/assets/loader-neoforge.png',
-  vanilla: '/assets/loader-vanilla.svg',
-  paper: '/assets/loader-paper.png',
-  purpur: '/assets/loader-purpur.png',
-  folia: '/assets/loader-paper.png',
-};
 const PLUGIN_FAMILIES = new Set(['paper', 'purpur', 'folia', 'spigot', 'bukkit']);
+
+/* What each state says in its banner, and which mascot says it. */
+function bannerFor(ctx, st) {
+  const s = ctx.stats || {};
+  const exit = s.last_exit || {};
+  const live = s.state;
+  if (st === 'running' && live === 'starting') {
+    return { art: 'run', tone: 'warn', title: 'Starting up',
+      text: 'The process is up and loading. It counts as running once the world '
+        + 'is ready to join.' };
+  }
+  if (live === 'stopping') {
+    return { art: 'sneakwalk', tone: 'warn', title: 'Stopping',
+      text: 'It was asked to stop the normal way: it saves the world, then the '
+        + 'process exits. If it hangs past its grace period, it is stopped for it.' };
+  }
+  if (st === 'running') return null;
+  if (st === 'crashed') {
+    return { art: 'death', tone: 'bad',
+      title: exit.oom ? 'Killed for its memory limit' : 'It crashed',
+      text: exit.oom
+        ? 'The kernel stopped it because it used all the memory this server may '
+          + 'use. That is a sizing problem, not a broken mod: give it more room in '
+          + 'Tune, or lower the heap so it fits.'
+        : `It stopped on its own${exit.code !== undefined && exit.code !== null
+          ? ` (exit code ${exit.code})` : ''}. Diagnose reads the crash report and `
+          + 'names what broke.',
+      acts: [
+        exit.oom ? ['Fix the memory in Tune', 'tune', 'sliders'] : null,
+        ['Diagnose', 'diagnose', 'wrench'],
+      ].filter(Boolean) };
+  }
+  if (st === 'orphan') {
+    return { art: 'vanish', tone: 'plum', title: 'Lost',
+      text: 'There is a record for this server, but its node cannot read its folder '
+        + 'or is not answering. Every request about it fails until the node is back '
+        + 'or the record is deleted.' };
+  }
+  if (st === 'incomplete') {
+    return { art: 'placeblock', tone: 'gold', title: 'Setup unfinished',
+      text: 'The loader install stopped half-way. Finishing retries just the loader '
+        + 'and keeps the name, the port and anything already uploaded.',
+      finish: true };
+  }
+  if (st === 'installing') {
+    return { art: 'mine', tone: 'info', title: 'Being built',
+      text: 'An install is running. The Activity tray along the bottom shows how far '
+        + 'it has got.' };
+  }
+  return { art: 'idle', tone: 'dead', title: 'Resting',
+    text: exit.at
+      ? `Stopped ${ago(exit.at)}${exit.asked === false ? ', on its own' : ''}. `
+        + 'A stopped server costs nothing.'
+      : 'Not running. A stopped server costs nothing.' };
+}
 
 /* ============================================================
    THE VITALS RAIL
@@ -432,15 +493,16 @@ export async function render({ params }) {
      levels transition across a poll instead of snapping — see the note on
      the vitals rail above. */
   const vitalsHost = h('div');
-  const tabsHost = h('div.tabs', { role: 'tablist', 'aria-label': 'Instance sections' });
+  const tabsHost = h('nav.shelf', { role: 'tablist', 'aria-label': 'Server sections' });
   const bodyHost = h('div.tabbody');
-  mount(node, headHost, vitalsHost, tabsHost, bodyHost);
+  const bannerHost = h('div');
+  mount(node, headHost, bannerHost, vitalsHost, tabsHost, bodyHost);
   mount(bodyHost, pageSkeleton({ kpis: 4, panels: 2 }));
 
   try {
     detail = await api.get(`/api/instances/${id}`);
   } catch (e) {
-    mount(node, empty('chargey-failed.png', 'This server is not answering',
+    mount(node, empty('vanish', 'This server is not answering',
       e.message + ' — if its folder was removed, or its node is down, the '
       + 'record stays and every request about it fails until the node is back '
       + 'or the record is deleted.',
@@ -476,80 +538,119 @@ export async function render({ params }) {
   const rail = vitalsRail();
   mount(vitalsHost, rail.node);
 
+  /* The threshold: the server stands inside a torii -- kasagi and nuki
+     across the top, a pillar each side, paper shide hanging from the beam --
+     with its state stamped as a hanko seal. The seal only stamps when the
+     state changes, so a six-second poll does not keep re-stamping it. */
+  let stampedState = null;
   function paintHead() {
-    const art = LOADERS[(ctx.loader || '').toLowerCase()];
+    const art = loaderArt(ctx.loader);
     const st = ctx.detail.state || 'stopped';
-    const tone = { running: 'ok', stopped: 'dead', crashed: 'bad',
-      orphan: 'plum', incomplete: 'warn' }[st] || 'dead';
+    const live = ctx.stats.state;
+    const shown = st === 'running' && live === 'starting' ? 'starting'
+      : live === 'stopping' ? 'stopping' : st;
+    const powerOk = may('server.power', id);
+    const port = ctx.server.server_port;
+    const host = location.hostname || 'this machine';
+    const join = port ? (port === 25565 ? host : `${host}:${port}`) : '';
+    const sealEl = seal(shown, { size: 'lg' });
+    if (stampedState !== shown) { sealEl.classList.add('stamp'); stampedState = shown; }
 
-    mount(headHost, h('div.inst-head',
-      h('div.shimenawa', { 'aria-hidden': 'true',
-        style: { opacity: st === 'running' ? '.85' : '.35' } }),
-      h('div', { style: { paddingTop: '10px', display: 'flex', gap: '14px',
-        alignItems: 'flex-start', flex: 1, flexWrap: 'wrap' } },
-        h('div.loader-art', { style: { width: '46px', height: '46px' } },
-          art ? h('img', { src: art, alt: '' })
-            : icon(ctx.plugins ? 'puzzle' : 'box', 20)),
-        h('div.idn',
-          h('h1', ctx.name),
+    mount(headHost, h(`header.threshold.st-${shown}`,
+      h('div.th-beam', { 'aria-hidden': 'true' },
+        h('i.kasagi'), h('i.nuki'), h('i.post.l'), h('i.post.r'),
+        h('i.shide.s1'), h('i.shide.s2'), h('i.shide.s3'), h('i.shide.s4')),
+      h('div.th-body',
+        h('div.th-art', art ? h('img', { src: art, alt: '' })
+          : icon(ctx.plugins ? 'puzzle' : 'box', 22)),
+        h('div.th-id',
+          h('p.eyebrow', 'Server · ', h('b', id.slice(0, 8)),
+            isAdmin() && ctx.detail.server?.node ? ` · node ${ctx.detail.server.node}` : ''),
+          h('h1.brush.th-name', ctx.name),
           h('div.chiprow',
-            pill(st, tone),
-            ctx.loader && pill(ctx.loader, 'ghost'),
-            ctx.minecraft && pill(ctx.minecraft, 'ghost'),
-            ctx.server.server_port && pill(`:${ctx.server.server_port}`, 'ghost'),
+            ctx.loader && pill([titleCase(ctx.loader), ctx.minecraft].filter(Boolean).join(' '),
+              'ghost'),
+            port && pill(`:${port}`, 'ghost'),
             ctx.detail.java?.major
               ? pill(`Java ${ctx.detail.java.major}`,
                 ctx.detail.java.ok === false ? 'bad'
                   : ctx.detail.java.ok === true ? 'ok' : 'warn',
                 ctx.detail.java.ok === false
-                  ? `Minecraft ${ctx.minecraft} needs Java `
-                    + `${ctx.detail.java.required}`
+                  ? `Minecraft ${ctx.minecraft} needs Java ${ctx.detail.java.required}`
                   : null)
               : null,
             ctx.running && ctx.detail.uptime_s
               ? pill(`up ${duration(ctx.detail.uptime_s)}`, 'info') : null,
           ),
           ctx.manifest.pack?.name
-            ? h('div.mono.muted', { style: { marginTop: '8px' } },
-              ctx.manifest.pack.name,
-              ctx.manifest.pack.version ? ` · ${ctx.manifest.pack.version}` : '')
+            ? h('div.th-pack.mono', icon('box', 12), h('span', ctx.manifest.pack.name,
+              ctx.manifest.pack.version ? ` · ${ctx.manifest.pack.version}` : ''))
             : null,
+          join ? h('button.th-join', {
+            type: 'button', title: 'Copy the address players join with',
+            onclick: () => copyText(join, 'The join address'),
+          }, icon('globe', 13), h('span.mono', join), icon('copy', 12)) : null,
         ),
-        h('div.inst-actions',
-          ctx.running
-            ? h('button.btn.sm', {
-              onclick: () => act('stop_server'),
-            }, hl(), icon('stop', 13), h('span', 'Stop'))
-            : h('button.btn.sm.primary', {
-              disabled: st === 'orphan',
-              onclick: () => act('start_server'),
-            }, hl(), icon('play', 13), h('span', 'Start')),
-          ctx.running && h('button.btn.sm.ghost', {
-            onclick: () => act('restart_server'),
-          }, icon('restart', 13), h('span', 'Restart')),
-          ctx.running && h('button.btn.icon.sm.danger', {
-            'aria-label': 'Kill the process',
-            title: 'Kill — stops it without saving',
-            onclick: async () => {
-              const ok = await confirmDialog({
-                title: 'Kill the server process?',
-                message: 'This stops the JVM without letting Minecraft save. '
-                  + 'Recent world changes will be lost. Use Stop unless the '
-                  + 'server has genuinely hung.',
-                confirmLabel: 'Kill it', danger: true,
-              });
-              if (ok) act('kill_server');
-            },
-          }, icon('power', 14)),
-          st === 'incomplete' && h('button.btn.sm.gold', {
-            onclick: () => retryLoader({ server_id: id, name: ctx.name }),
-          }, hl(), icon('wrench', 13), h('span', 'Finish setup')),
+        h('div.th-side',
+          sealEl,
+          h('div.inst-actions',
+            ctx.running
+              ? h('button.btn.sm', { disabled: !powerOk,
+                onclick: () => act('stop_server') }, hl(), icon('stop', 13), h('span', 'Stop'))
+              : h('button.btn.sm.primary', {
+                disabled: st === 'orphan' || st === 'incomplete' || !powerOk,
+                onclick: () => act('start_server'),
+              }, hl(), icon('play', 13), h('span', 'Start')),
+            ctx.running && h('button.btn.sm.ghost', { disabled: !powerOk,
+              onclick: () => act('restart_server') }, icon('restart', 13), h('span', 'Restart')),
+            ctx.running && may('server.kill', id) && h('button.btn.icon.sm.danger', {
+              'aria-label': 'Kill the process',
+              title: 'Kill — stops it without saving',
+              onclick: async () => {
+                const ok = await confirmDialog({
+                  title: 'Kill the server process?',
+                  message: 'This stops the JVM without letting Minecraft save. '
+                    + 'Recent world changes will be lost. Use Stop unless the '
+                    + 'server has genuinely hung.',
+                  confirmLabel: 'Kill it', danger: true, art: 'stab',
+                });
+                if (ok) act('kill_server');
+              },
+            }, icon('power', 14)),
+            st === 'incomplete' && h('button.btn.sm.gold', {
+              onclick: () => retryLoader({ server_id: id, name: ctx.name }),
+            }, hl(), icon('wrench', 13), h('span', 'Finish setup')),
+            !powerOk ? h('span.th-note', 'Your role can look at this server but not run it.')
+              : null,
+          ),
         ),
       ),
     ));
+    paintBanner(st);
 
     /* Written into, not rebuilt. */
     rail.update(ctx.stats, st);
+  }
+
+  /* The state banner: an ofuda strip under the threshold for every state but
+     a settled, running one. Repainted only when what it says changes. */
+  let bannerKey = '';
+  function paintBanner(st) {
+    const b = bannerFor(ctx, st);
+    const key = b ? `${b.title}|${b.text}` : '';
+    if (key === bannerKey) return;
+    bannerKey = key;
+    if (!b) { clear(bannerHost); return; }
+    mount(bannerHost, h(`div.st-banner.${b.tone}`, { role: 'status' },
+      h('span.stb-seal', { 'aria-hidden': 'true' }),
+      mascot(b.art, 64, { cls: 'stb-fox' }),
+      h('div.stb-words', h('b.brush', b.title), h('p', b.text)),
+      h('div.btnrow',
+        ...(b.acts || []).map(([label, tab, ic]) => h('a.btn.sm', { href: `#/i/${id}/${tab}` },
+          hl(), icon(ic, 13), h('span', label))),
+        b.finish ? h('button.btn.sm.gold', {
+          onclick: () => retryLoader({ server_id: id, name: ctx.name }),
+        }, hl(), icon('wrench', 13), h('span', 'Finish setup')) : null)));
   }
 
   async function act(a) {
@@ -559,14 +660,37 @@ export async function render({ params }) {
   }
 
   function paintTabs() {
-    const visible = TABS.filter((t) => !t.when || t.when(ctx));
-    mount(tabsHost, ...visible.map((t) => h('button', {
-      type: 'button', role: 'tab',
-      'aria-selected': String(t.key === params.tab),
-      onclick: () => ctx.go(t.key),
-    }, hl(), icon(t.icon, 15), h('span', t.label),
-      t.key === 'diagnose' && (ctx.manifest.problems || []).length
-        ? h('span.n', String(ctx.manifest.problems.length)) : null)));
+    const st = ctx.detail.state || 'stopped';
+    const why = st === 'orphan' ? 'Its node cannot read this server right now.'
+      : st === 'incomplete' ? 'Finish setup first: the loader is not installed yet.' : '';
+    const counts = {
+      players: ctx.running ? ctx.stats.online : null,
+      mods: ctx.manifest.mods?.length || null,
+      plugins: ctx.manifest.mods?.length || null,
+      diagnose: (ctx.manifest.problems || []).length || null,
+    };
+    mount(tabsHost,
+      h('span.shelf-rope', { 'aria-hidden': 'true' }),
+      ...GROUPS.map(([group, tabs]) => {
+        const shown = tabs.filter((t) => (!t.when || t.when(ctx))
+          && (!t.needs || may(t.needs, id)));
+        if (!shown.length) return null;
+        return h('div.shelf-group', { role: 'presentation' },
+          h('span.sg-label', group),
+          ...shown.map((t) => {
+            const off = t.down && why && !(st === 'incomplete' && t.key === 'files');
+            const n = counts[t.key];
+            return h('button.slipbtn', {
+              type: 'button', role: 'tab',
+              'aria-selected': String(t.key === params.tab),
+              disabled: off, title: off ? why : t.label,
+              onclick: () => ctx.go(t.key),
+            }, h('span.sl-cord', { 'aria-hidden': 'true' }),
+            h('span.sl-kanji', { 'aria-hidden': 'true' }, t.kanji),
+            h('span.sl-label', t.label),
+            n ? h('span.n', String(n)) : null);
+          }));
+      }));
   }
 
   paintHead();
@@ -583,7 +707,11 @@ export async function render({ params }) {
     configs: () => import('./tab-configs.js'),
     tune: () => import('./tab-tune.js'),
     diagnose: () => import('./tab-diagnose.js'),
-    backups: () => import('./tab-backups.js'),
+    history: () => import('./tab-history.js'),
+    backups: () => import('./tab-worldbackups.js'),
+    schedules: () => import('./tab-schedules.js'),
+    undo: () => import('./tab-backups.js'),
+    rules: () => import('./tab-rules.js'),
   };
   const load = loaders[params.tab] || loaders.overview;
 
@@ -601,7 +729,11 @@ export async function render({ params }) {
     configs: { bar: 1, rows: 8 },
     tune: { kpis: 4, panels: 2 },
     diagnose: { panels: 2 },
+    history: { kpis: 4, panels: 2 },
     backups: { bar: 1, rows: 5 },
+    schedules: { bar: 1, rows: 5 },
+    undo: { bar: 1, rows: 5 },
+    rules: { panels: 3 },
   };
   const tabShownAt = Date.now();
   mount(bodyHost, pageSkeleton(TAB_SHAPES[params.tab] || { rows: 6 }));
@@ -615,7 +747,7 @@ export async function render({ params }) {
     dissolve(bodyHost, tabView.node);
   } catch (e) {
     console.error(e);
-    mount(bodyHost, empty('chargey-failed.png', 'That tab would not open',
+    mount(bodyHost, empty('hurt', 'That tab would not open',
       e.message || String(e),
       h('button.btn.primary', { onclick: () => ctx.go(params.tab) },
         hl(), h('span', 'Try again'))));
@@ -634,6 +766,7 @@ export async function render({ params }) {
         : s.crashed ? 'crashed' : ctx.detail.state === 'incomplete'
           ? 'incomplete' : 'stopped';
       paintHead();
+      if (wasRunning !== !!s.running) paintTabs();
       if (wasRunning !== !!s.running) {
         tabView?.onRunningChanged?.(!!s.running);
         refreshInstances({ quiet: true }).catch(() => {});
@@ -647,9 +780,9 @@ export async function render({ params }) {
       onclick: () => ctx.reload().then(() => toast('Reloaded', 'ok', { timeout: 1400 }))
         .catch((e) => toastError(e)),
     }, icon('refresh', 15)),
-    h('button.btn.sm.danger', {
+    may('server.delete', id) ? h('button.btn.sm.danger', {
       onclick: () => deleteInstance(id, ctx.name),
-    }, icon('trash', 14), h('span', 'Delete')),
+    }, icon('trash', 14), h('span', 'Delete')) : null,
   );
 
   return {
@@ -683,7 +816,7 @@ export async function deleteInstance(id, name) {
     confirmLabel: 'Delete permanently',
     danger: true,
     requireText: 'DELETE',
-    art: 'creeper-delete-2x.png',
+    art: 'vanish',
   });
   if (!ok) return;
   try {
