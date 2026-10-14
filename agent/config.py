@@ -65,6 +65,9 @@ class AgentConfig:
     # --- where servers live --------------------------------------------------
     servers_root: Path = Path("/srv/blessforge/servers")
     state_dir: Path = Path("/var/lib/blessforge-agent")
+    # World backups (agent/worldbackup.py). Blank: <state_dir>/backups. Put it
+    # on another disk to survive the one the worlds are on failing.
+    backups_root: str = ""
 
     # --- how they run --------------------------------------------------------
     runtime: str = "docker"              # docker | process (development only)
@@ -133,6 +136,9 @@ class AgentConfig:
             return self.images[major]
         newer = sorted(m for m in self.images if m >= major)
         return self.images[newer[0] if newer else max(self.images)]
+
+    def backups_dir(self) -> Path:
+        return Path(self.backups_root) if self.backups_root else self.state_dir / "backups"
 
     def server_dir(self, uuid: str) -> Path:
         return self.servers_root / uuid

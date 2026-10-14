@@ -93,6 +93,9 @@ class MockEngine:
         self.fetched_many: list[str] = []
         self.installs: list[dict] = []
         self.commands: list[tuple[str, str]] = []
+        # World backups: server -> [(summary, deep copy of the tree)].
+        self.world_snaps: dict[str, list[tuple[dict, Any]]] = {}
+        self.backup_jobs: dict[str, dict] = {}
         if seed:
             _seed(self)
 
@@ -511,6 +514,94 @@ class MockEngine:
         parts = _clean(dest_rel)
         self._put(server_id, "/".join(parts[:-1]) or ".", parts[-1], buf.getvalue())
         return dest_rel
+
+    # --- world backups ------------------------------------------------------------
+
+    def _tree_size(self, node) -> tuple[int, int]:
+        if isinstance(node, _Dir):
+            files = size = 0
+            for child in node.values():
+                f, s = self._tree_size(child)
+                files, size = files + f, size + s
+            return files, size
+        return 1, node.size
+
+    async def world_backups(self, server_id: str) -> dict:
+        self._record(server_id)
+        snaps = [s for s, _t in self.world_snaps.get(server_id, [])]
+        return {"snapshots": snaps, "store_bytes": sum(s["size"] for s in snaps),
+                "running": []}
+
+    async def world_backup_start(self, server_id: str, opts: dict) -> str:
+        import copy
+        import uuid as _uuid
+        tree = copy.deepcopy(self._root(server_id))
+        count, size = self._tree_size(tree)
+        snap = {"id": time.strftime("%Y%m%d-%H%M%S") + "-" + _uuid.uuid4().hex[:6],
+                "created": time.time(), "reason": opts.get("reason") or "",
+                "files": count, "size": size, "new_bytes": size, "reused": 0,
+                "skipped": 0, "status": "done"}
+        snaps = self.world_snaps.setdefault(server_id, [])
+        snaps.insert(0, (snap, tree))
+        keep = int(opts.get("keep") or 0)
+        pruned = [s["id"] for s, _t in snaps[keep:]] if keep else []
+        if keep:
+            del snaps[keep:]
+        job = _uuid.uuid4().hex[:12]
+        self.backup_jobs[job] = {"id": job, "status": "done", "kind": "backup",
+                                 "result": {**snap, "pruned": pruned}, "log": []}
+        return job
+
+    async def world_backup_job(self, job_id: str) -> dict:
+        if job_id not in self.backup_jobs:
+            raise EngineError("no such backup job", 404)
+        return self.backup_jobs[job_id]
+
+    async def world_backup_restore(self, server_id: str, snapshot_id: str, opts: dict) -> str:
+        import copy
+        import uuid as _uuid
+        found = [t for s, t in self.world_snaps.get(server_id, []) if s["id"] == snapshot_id]
+        if not found:
+            raise EngineError(f"no backup {snapshot_id}", 404)
+        was_running = bool((self.stats.get(server_id) or {}).get("running"))
+        if was_running:
+            await self.power(server_id, "stop")
+        job = _uuid.uuid4().hex[:12]
+        rec = {"id": job, "status": "done", "kind": "restore", "log": []}
+        if opts.get("safety", True):
+            safety = await self.world_backup_start(server_id, {"reason":
+                                                              f"Before restoring {snapshot_id}"})
+            rec["safety_backup"] = self.backup_jobs[safety]["result"]["id"]
+        self.fs[server_id] = copy.deepcopy(found[0])
+        count, size = self._tree_size(self.fs[server_id])
+        rec["result"] = {"id": snapshot_id, "files": count, "bytes": size}
+        if was_running and opts.get("start_after", True):
+            await self.power(server_id, "start")
+        self.backup_jobs[job] = rec
+        return job
+
+    async def world_backup_delete(self, server_id: str, snapshot_id: str) -> None:
+        snaps = self.world_snaps.get(server_id, [])
+        if not any(s["id"] == snapshot_id for s, _t in snaps):
+            raise EngineError(f"no backup {snapshot_id}", 404)
+        self.world_snaps[server_id] = [(s, t) for s, t in snaps if s["id"] != snapshot_id]
+
+    async def world_backup_stream(self, server_id: str, snapshot_id: str
+                                  ) -> AsyncIterator[bytes]:
+        found = [t for s, t in self.world_snaps.get(server_id, []) if s["id"] == snapshot_id]
+        if not found:
+            raise EngineError(f"no backup {snapshot_id}", 404)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            def add(node, prefix):
+                for name, child in node.items():
+                    path = f"{prefix}{name}"
+                    if isinstance(child, _Dir):
+                        add(child, path + "/")
+                    else:
+                        zf.writestr(path, child.data)
+            add(found[0], "")
+        yield buf.getvalue()
 
     async def download_file(self, server_id: str, rel_path: str) -> bytes:
         _, _, node = self._get(server_id, rel_path)

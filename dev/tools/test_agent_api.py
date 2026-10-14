@@ -23,6 +23,7 @@ isolation rules -- is covered by test_agent_security.py, and a Docker node
 is still to be proven (NEXT-SESSION.md).
 """
 import asyncio
+import io
 import json
 import os
 import pathlib
@@ -31,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -409,6 +411,43 @@ async def main():
         await c.post(f"/api/instances/{huge}/action/stop_server")
         await until(lambda: _stopped(c, huge), 20)
         await eng.delete_server(huge)
+
+        # --- world backups, end to end: panel -> node -> disk and back ------------------
+        keep = await eng.create_server(name="Backed up", port=free_port(), memory_mb=1024)
+        await eng.upload_file(keep, "world", "level.dat", b"the real world")
+
+        async def finished(job_id):
+            async def done():
+                j = (await c.get(f"/api/jobs/{job_id}")).json()
+                return j if j.get("status") not in ("running", "queued", "pending") else None
+            return await until(done, 60)
+
+        r = await c.post(f"/api/instances/{keep}/worldbackups", json={"reason": "api test"})
+        job = await finished(r.json()["job_id"])
+        listing = (await c.get(f"/api/instances/{keep}/worldbackups")).json()
+        snap = (listing.get("snapshots") or [{}])[0]
+        check("a world backup taken through the API lands on the node and is listed",
+              job and job.get("status") == "done" and snap.get("reason") == "api test"
+              and snap.get("files", 0) >= 1 and listing.get("store_bytes", 0) > 0,
+              (job and job.get("error"), listing))
+        z = await c.get(f"/api/instances/{keep}/worldbackups/{snap.get('id')}/download")
+        with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
+            got = zf.read("world/level.dat")
+        check("...downloads as a zip streamed from the node", got == b"the real world")
+        await eng.upload_file(keep, "world", "level.dat", b"griefed")
+        r = await c.post(f"/api/instances/{keep}/worldbackups/{snap.get('id')}/restore",
+                         json={})
+        job = await finished(r.json()["job_id"])
+        world = await eng.download_file(keep, "world/level.dat")
+        check("...and restores, with the griefed world kept as a backup of its own",
+              job and job.get("status") == "done" and world == b"the real world"
+              and len((await c.get(f"/api/instances/{keep}/worldbackups")).json()
+                      ["snapshots"]) == 2, (job and job.get("error"), world))
+        r = await c.delete(f"/api/instances/{keep}/worldbackups/{snap.get('id')}")
+        check("...and a backup can be deleted",
+              r.status_code == 200 and len((await c.get(
+                  f"/api/instances/{keep}/worldbackups")).json()["snapshots"]) == 1, r.text)
+        await eng.delete_server(keep)
 
         # --- a token is for one server and one node -----------------------------------------
         other = await eng.create_server(name="Other", port=free_port(), memory_mb=1024)

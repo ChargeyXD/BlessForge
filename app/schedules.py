@@ -1,6 +1,6 @@
 """Scheduled tasks: restarts, commands and backups on a clock, or chained.
 
-From the Crafty comparison (design/CRAFTY-COMPARISON.md, item 2). BlessForge's
+From the server-manager comparison in design/ (item 2). BlessForge's
 own performance advice says "a daily restart keeps the heap from creeping up",
 and until now nothing could do it but a person.
 

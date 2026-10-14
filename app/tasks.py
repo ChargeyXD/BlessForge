@@ -173,6 +173,20 @@ async def smoke_test(job: Job, server_id: str, timeout: int = 300) -> dict:
     return await smoketest.run(job, server_id, timeout=timeout)
 
 
+@task("world_backup")
+async def world_backup(job: Job, server_id: str, reason: str = "") -> dict:
+    from app import worldbackups
+    return await worldbackups.take(server_id, reason=reason or "manual", job=job)
+
+
+@task("world_restore")
+async def world_restore(job: Job, server_id: str, snapshot_id: str,
+                        start_after: bool = True) -> dict:
+    from app import worldbackups
+    return await worldbackups.restore(server_id, snapshot_id, start_after=start_after,
+                                      job=job)
+
+
 @task("export_instance")
 async def export_instance(job: Job, server_id: str, include_disabled: bool = False,
                           bundle_others: bool = True, include_configs: bool = True) -> dict:

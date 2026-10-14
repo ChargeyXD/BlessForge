@@ -418,6 +418,39 @@ class AgentEngine:
                                timeout=3600)
         return (out or {}).get("path") or dest_rel
 
+    # --- world backups (agent/worldbackup.py) ---------------------------------------
+
+    async def world_backups(self, server_id: str) -> dict:
+        return await self._call("GET", f"/v1/servers/{server_id}/backups", timeout=120)
+
+    async def world_backup_start(self, server_id: str, opts: dict) -> str:
+        out = await self._call("POST", f"/v1/servers/{server_id}/backups", json=opts)
+        return out["job_id"]
+
+    async def world_backup_job(self, job_id: str) -> dict:
+        return await self._call("GET", f"/v1/backup-jobs/{job_id}")
+
+    async def world_backup_restore(self, server_id: str, snapshot_id: str, opts: dict) -> str:
+        out = await self._call("POST", f"/v1/servers/{server_id}/backups/{snapshot_id}/restore",
+                               json=opts)
+        return out["job_id"]
+
+    async def world_backup_delete(self, server_id: str, snapshot_id: str) -> None:
+        await self._call("DELETE", f"/v1/servers/{server_id}/backups/{snapshot_id}",
+                         timeout=600)
+
+    async def world_backup_stream(self, server_id: str, snapshot_id: str
+                                  ) -> AsyncIterator[bytes]:
+        async with self._client().stream(
+                "GET", f"/v1/servers/{server_id}/backups/{snapshot_id}/download",
+                timeout=7200) as r:
+            if r.status_code >= 400:
+                await r.aread()
+                raise EngineError(f"backup {snapshot_id} could not be downloaded",
+                                  r.status_code)
+            async for chunk in r.aiter_bytes(256 * 1024):
+                yield chunk
+
     async def download_file(self, server_id: str, rel_path: str) -> bytes:
         return await self._call("GET", f"/v1/servers/{server_id}/files/raw",
                                 params={"path": rel_path}, timeout=600)

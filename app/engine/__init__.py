@@ -321,6 +321,40 @@ async def extract(server_id: str, rel_zip_path: str) -> None:
     await (await _driver(server_id)).extract(server_id, rel_zip_path)
 
 
+async def world_backups(server_id: str) -> dict:
+    return await (await _driver(server_id)).world_backups(server_id)
+
+
+async def world_backup_start(server_id: str, opts: dict) -> str:
+    return await (await _driver(server_id)).world_backup_start(server_id, opts)
+
+
+async def world_backup_job(job_id: str) -> dict:
+    """A node's backup job. Every node is asked until one knows it: job ids
+    are random, and a panel with one node asks once."""
+    last: Exception | None = None
+    for drv in drivers().values():
+        try:
+            return await drv.world_backup_job(job_id)
+        except EngineError as e:
+            last = e
+    raise last or EngineError("no such backup job", 404)
+
+
+async def world_backup_restore(server_id: str, snapshot_id: str, opts: dict) -> str:
+    return await (await _driver(server_id)).world_backup_restore(server_id, snapshot_id,
+                                                                  opts)
+
+
+async def world_backup_delete(server_id: str, snapshot_id: str) -> None:
+    await (await _driver(server_id)).world_backup_delete(server_id, snapshot_id)
+
+
+async def world_backup_stream(server_id: str, snapshot_id: str) -> AsyncIterator[bytes]:
+    async for chunk in (await _driver(server_id)).world_backup_stream(server_id, snapshot_id):
+        yield chunk
+
+
 async def compress(server_id: str, rel_paths: list[str], dest_rel: str) -> str:
     """Zip files or folders into dest_rel, in the server folder, on the node."""
     return await (await _driver(server_id)).compress(server_id, rel_paths, dest_rel)

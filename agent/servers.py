@@ -28,6 +28,7 @@ import os
 import re
 import time
 import uuid as uuidlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,13 @@ CONSOLE_LINES = 2000
 CRASH_BACKOFF = (5, 15, 45)
 CRASH_LOOP_WINDOW = 600
 CRASH_LOOP_COUNT = 3
+# World backups: blocking disk work, a couple at a time across the node.
+_BACKUP_POOL = ThreadPoolExecutor(2, thread_name_prefix="bf-backup")
+# How long a running server gets to finish `save-all flush` before the copy
+# goes ahead anyway (and says so).
+SAVE_WAIT = 180
+_SAVED = re.compile(r"Saved the game|Saved the world|All dimensions are saved|"
+                    r"ThreadedAnvilChunkStorage.*All chunks are saved")
 
 
 def lifecycle_of(spec: dict, default_timeout: int) -> dict:
@@ -248,6 +256,8 @@ class Supervisor:
         self.events = events
         self.servers: dict[str, Server] = {}
         self.installs: dict[str, dict] = {}
+        self.backup_jobs: dict[str, dict] = {}
+        self.backup_locks: dict[str, asyncio.Lock] = {}
         self.specs_dir = cfg.state_dir / "servers"
         # The sampler's latest CPU and memory reading per running server.
         self.samples: dict[str, dict] = {}
@@ -981,6 +991,158 @@ class Supervisor:
         if out.get("mem_percent") is None and out.get("mem"):
             out["mem_percent"] = round(out["mem"] / out["mem_limit"] * 100, 1)
         return out
+
+    # --- world backups ---------------------------------------------------------------
+
+    def backup_store(self, uuid: str):
+        from agent.worldbackup import Store
+        return Store(self.cfg.backups_dir(), check_uuid(uuid))
+
+    def _backup_lock(self, uuid: str) -> asyncio.Lock:
+        return self.backup_locks.setdefault(uuid, asyncio.Lock())
+
+    async def backups(self, uuid: str) -> dict:
+        self.get(uuid)
+        store = self.backup_store(uuid)
+        loop = asyncio.get_running_loop()
+        size = await loop.run_in_executor(_BACKUP_POOL, store.store_bytes)
+        busy = [{k: j.get(k) for k in ("id", "kind", "status", "started", "progress")}
+                for j in self.backup_jobs.values()
+                if j.get("server") == uuid and j.get("status") == "running"]
+        return {"snapshots": store.index(), "store_bytes": size, "running": busy}
+
+    async def _flush_saves(self, srv: Server, out) -> bool:
+        """save-off and save-all flush; True once the server says it saved."""
+        q = srv.console.subscribe()
+        try:
+            await srv.running.send("save-off")
+            await srv.running.send("save-all flush")
+            deadline = time.time() + SAVE_WAIT
+            while time.time() < deadline:
+                try:
+                    _seq, line = await asyncio.wait_for(q.get(), 5)
+                except asyncio.TimeoutError:
+                    if srv.running is None:
+                        return False
+                    continue
+                if _SAVED.search(line):
+                    return True
+            out(f"the server did not confirm its save within {SAVE_WAIT}s; copying anyway")
+            return False
+        finally:
+            srv.console.unsubscribe(q)
+
+    def start_backup(self, uuid: str, opts: dict) -> str:
+        srv = self.get(uuid)
+        job_id = uuidlib.uuid4().hex[:12]
+        record = {"id": job_id, "server": uuid, "kind": "backup", "status": "running",
+                  "started": time.time(), "progress": None, "result": None, "error": None,
+                  "log": []}
+        self.backup_jobs[job_id] = record
+        asyncio.create_task(self._backup(srv, opts, record))
+        return job_id
+
+    async def _backup(self, srv: Server, opts: dict, record: dict) -> None:
+        def out(line: str) -> None:
+            record["log"].append(line)
+            del record["log"][:-50]
+
+        def progress(n: int, size: int) -> None:
+            record["progress"] = {"files": n, "bytes": size}
+
+        store = self.backup_store(srv.uuid)
+        loop = asyncio.get_running_loop()
+        saving_off = False
+        try:
+            async with self._backup_lock(srv.uuid):
+                if srv.running is not None and srv.state == "running":
+                    srv.console.feed("[BlessForge] Backing up the world: saving first")
+                    saving_off = True
+                    if await self._flush_saves(srv, out):
+                        out("the server saved everything to disk")
+                result = await loop.run_in_executor(
+                    _BACKUP_POOL, lambda: store.take(
+                        self.folder(srv.uuid), reason=str(opts.get("reason") or ""),
+                        exclude=opts.get("exclude") or (), compress=bool(opts.get("compress")),
+                        progress=progress))
+                keep = opts.get("keep")
+                if keep:
+                    gone = await loop.run_in_executor(_BACKUP_POOL, store.keep_only, int(keep))
+                    if gone:
+                        out(f"kept the newest {keep}; removed {len(gone)} older")
+                        result["pruned"] = gone
+                record["result"] = result
+                record["status"] = "done"
+                self.events.emit("backup", srv.uuid, phase="done", id=result["id"],
+                                 size=result["size"], new_bytes=result["new_bytes"])
+        except Exception as e:      # noqa: BLE001 -- reported on the record
+            record["status"] = "error"
+            record["error"] = str(e)[:300]
+            self.events.emit("backup", srv.uuid, phase="error", error=str(e)[:300])
+        finally:
+            if saving_off and srv.running is not None:
+                try:
+                    await srv.running.send("save-on")
+                    srv.console.feed("[BlessForge] Backup done; saving is back on")
+                except Exception:       # noqa: BLE001
+                    pass
+            record["finished"] = time.time()
+
+    def start_restore(self, uuid: str, snap_id: str, opts: dict) -> str:
+        srv = self.get(uuid)
+        self.backup_store(uuid).manifest(snap_id)       # 404 before anything moves
+        job_id = uuidlib.uuid4().hex[:12]
+        record = {"id": job_id, "server": uuid, "kind": "restore", "status": "running",
+                  "started": time.time(), "progress": None, "result": None, "error": None,
+                  "log": []}
+        self.backup_jobs[job_id] = record
+        asyncio.create_task(self._restore(srv, snap_id, opts, record))
+        return job_id
+
+    async def _restore(self, srv: Server, snap_id: str, opts: dict, record: dict) -> None:
+        def progress(n: int, size: int) -> None:
+            record["progress"] = {"files": n, "bytes": size}
+
+        store = self.backup_store(srv.uuid)
+        loop = asyncio.get_running_loop()
+        was_running = False
+        try:
+            async with srv.lock, self._backup_lock(srv.uuid):
+                was_running = srv.running is not None
+                if was_running:
+                    srv.console.feed(f"[BlessForge] Restoring backup {snap_id}: stopping")
+                    await self._stop(srv)
+                if srv.running is not None:
+                    raise RuntimeError_("the server would not stop, so nothing was restored",
+                                        409)
+                if opts.get("safety", True):
+                    safety = await loop.run_in_executor(
+                        _BACKUP_POOL, lambda: store.take(
+                            self.folder(srv.uuid), reason=f"Before restoring {snap_id}"))
+                    record["safety_backup"] = safety["id"]
+                result = await loop.run_in_executor(
+                    _BACKUP_POOL, lambda: store.restore(self.folder(srv.uuid), snap_id,
+                                                        progress=progress))
+                srv.console.feed(f"[BlessForge] Restored backup {snap_id} "
+                                 f"({result['files']} files)")
+                record["result"] = result
+                record["status"] = "done"
+                self.events.emit("backup", srv.uuid, phase="restored", id=snap_id)
+                if was_running and opts.get("start_after", True):
+                    await self._start(srv)
+        except Exception as e:      # noqa: BLE001
+            record["status"] = "error"
+            record["error"] = str(e)[:300]
+            self.events.emit("backup", srv.uuid, phase="error", error=str(e)[:300])
+        finally:
+            record["finished"] = time.time()
+
+    async def delete_backup(self, uuid: str, snap_id: str) -> None:
+        self.get(uuid)
+        store = self.backup_store(uuid)
+        async with self._backup_lock(uuid):
+            await asyncio.get_running_loop().run_in_executor(_BACKUP_POOL, store.delete,
+                                                             snap_id)
 
     # --- installs -----------------------------------------------------------------
 

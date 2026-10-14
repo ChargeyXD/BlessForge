@@ -2084,6 +2084,89 @@ async def set_port(server_id: str, body: dict = Body(...)) -> dict:
         raise _err(e)
 
 
+# --- world backups -----------------------------------------------------------
+
+
+@app.get("/api/instances/{server_id}/worldbackups")
+async def list_world_backups(server_id: str) -> dict:
+    """Snapshots of the whole server folder (newest first), what the store
+    costs on disk, and this server's backup settings."""
+    from app import worldbackups
+    try:
+        return await worldbackups.listing(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/worldbackups")
+async def take_world_backup(server_id: str, request: Request,
+                            body: dict = Body(default={})) -> dict:
+    """Back the world up now (a running server saves first). A job."""
+    job = await _job_for("world_backup", "Back up the world", server_id)
+    await registry.submit(job, "world_backup", server_id=server_id,
+                          reason=str((body or {}).get("reason") or "")[:200])
+    await auth.audit(actor=request.state.user["username"], action="backup.world",
+                     server_id=server_id, detail=str((body or {}).get("reason") or "manual"),
+                     ip=_client_ip(request))
+    return {"job_id": job.id}
+
+
+@app.get("/api/instances/{server_id}/worldbackups/settings")
+async def world_backup_settings(server_id: str) -> dict:
+    from app import worldbackups
+    try:
+        return await worldbackups.settings(server_id)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/worldbackups/settings")
+async def save_world_backup_settings(server_id: str, body: dict = Body(...)) -> dict:
+    """{keep, exclude, compress, before_risky} -- any of them."""
+    from app import worldbackups
+    try:
+        return await worldbackups.save_settings(server_id, body)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/worldbackups/{snapshot_id}/restore")
+async def restore_world_backup(server_id: str, snapshot_id: str, request: Request,
+                               body: dict = Body(default={})) -> dict:
+    """Make the server folder exactly this backup. The server is stopped
+    (and started again after, unless start_after is false); the world as it
+    is now is backed up first. A job."""
+    job = await _job_for("world_restore", f"Restore {snapshot_id}", server_id)
+    await registry.submit(job, "world_restore", server_id=server_id, snapshot_id=snapshot_id,
+                          start_after=(body or {}).get("start_after", True) is not False)
+    await auth.audit(actor=request.state.user["username"], action="backup.restore",
+                     server_id=server_id, detail=snapshot_id, ip=_client_ip(request))
+    return {"job_id": job.id}
+
+
+@app.delete("/api/instances/{server_id}/worldbackups/{snapshot_id}")
+async def delete_world_backup(server_id: str, snapshot_id: str, request: Request) -> dict:
+    from app import worldbackups
+    try:
+        await worldbackups.delete(server_id, snapshot_id)
+    except Exception as e:
+        raise _err(e)
+    await auth.audit(actor=request.state.user["username"], action="backup.delete",
+                     server_id=server_id, detail=snapshot_id, ip=_client_ip(request))
+    return {"deleted": snapshot_id}
+
+
+@app.get("/api/instances/{server_id}/worldbackups/{snapshot_id}/download")
+async def download_world_backup(server_id: str, snapshot_id: str):
+    """The backup as a zip, streamed from the node as it is built."""
+    from app import worldbackups
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "", snapshot_id) or "backup"
+    return StreamingResponse(worldbackups.stream(server_id, snapshot_id),
+                             media_type="application/zip",
+                             headers={"Content-Disposition":
+                                      f'attachment; filename="{safe}.zip"'})
+
+
 # --- scheduled tasks ---------------------------------------------------------
 
 

@@ -1608,6 +1608,10 @@ async def switch_pack_version(
     job.set_step("Reading current install", 2)
     current = await engine.read_manifest(server_id)
     server = await engine.get_server(server_id)
+    # A version switch replaces mods and configs wholesale: back the world up
+    # first (the server's "before risky changes" setting), or do not switch.
+    from app import worldbackups
+    safety = await worldbackups.before_risky(server_id, "switching the pack version", job)
 
     job.log_line(
         f"Current: {(current.get('pack') or {}).get('name','unknown')} "

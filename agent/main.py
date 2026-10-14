@@ -375,11 +375,54 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
 
     # --- backups: WP-11 ------------------------------------------------------------
 
+    # World backups (agent/worldbackup.py): content-addressed snapshots.
+
+    def _backup_error(e: Exception):
+        from agent.worldbackup import BackupError
+        if isinstance(e, BackupError):
+            raise RuntimeError_(str(e), e.status)
+        raise e
+
+    @app.get("/v1/servers/{uuid}/backups")
+    async def list_backups(uuid: str):
+        return await sup().backups(uuid)
+
     @app.post("/v1/servers/{uuid}/backups")
+    async def take_backup(uuid: str, body: dict = Body(default={})):
+        return {"job_id": sup().start_backup(uuid, body or {})}
+
+    @app.get("/v1/backup-jobs/{job_id}")
+    async def backup_job(job_id: str):
+        job = sup().backup_jobs.get(job_id)
+        if job is None:
+            raise RuntimeError_("no such backup job", 404)
+        return job
+
     @app.post("/v1/servers/{uuid}/backups/{backup_id}/restore")
+    async def restore_backup(uuid: str, backup_id: str, body: dict = Body(default={})):
+        try:
+            return {"job_id": sup().start_restore(uuid, backup_id, body or {})}
+        except Exception as e:      # noqa: BLE001
+            _backup_error(e)
+
     @app.delete("/v1/servers/{uuid}/backups/{backup_id}")
-    async def backups(uuid: str, backup_id: str | None = None):
-        raise RuntimeError_("world backups (restic) arrive with WP-11", 501)
+    async def delete_backup(uuid: str, backup_id: str):
+        try:
+            await sup().delete_backup(uuid, backup_id)
+        except Exception as e:      # noqa: BLE001
+            _backup_error(e)
+        return {"deleted": backup_id}
+
+    @app.get("/v1/servers/{uuid}/backups/{backup_id}/download")
+    def download_backup(uuid: str, backup_id: str):
+        store = sup().backup_store(uuid)
+        try:
+            store.manifest(backup_id)
+        except Exception as e:      # noqa: BLE001
+            _backup_error(e)
+        return StreamingResponse(store.zip_stream(backup_id), media_type="application/zip",
+                                 headers={"Content-Disposition":
+                                          f'attachment; filename="{backup_id}.zip"'})
 
     # --- what a browser reaches directly ------------------------------------------------
 
