@@ -39,11 +39,14 @@ ITS SHA-256: a leaked sessions table is then a list of useless hashes
 rather than a set of working keys, exactly as for passwords. Tokens expire
 after 30 days and are checked against that on every request.
 
+Two-factor sign-in, API tokens and per-server grants live in app/access.py;
+the permission checks here take them into account.
+
 What is deliberately NOT here (yet)
 -----------------------------------
 No self-service signup and no password reset by email: those arrive with
-public accounts (WP-07), with email verification, rate limits and 2FA in
-front of them. Until then an admin sets passwords.
+public accounts (WP-07), with email verification and rate limits in front of
+them. Until then an admin sets passwords.
 """
 from __future__ import annotations
 
@@ -56,10 +59,10 @@ import time
 import unicodedata
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 
 from app import db
-from app.db.models import AuditEntry, Session as SessionRow, User
+from app.db.models import AuditEntry, ServerUser, Session as SessionRow, User
 
 # scrypt parameters. Stored alongside every hash so these can be raised
 # without locking anyone out -- an old hash keeps verifying with the
@@ -225,31 +228,48 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
         "last_login": user.get("last_login"),
         "locked_until": user.get("locked_until") or 0,
         "is_admin": user.get("role") == "admin",
+        "two_factor": bool(user.get("two_factor")),
+        # Per-server grants (app/access.py), so the front end can show a
+        # server's controls to somebody whose role alone would hide them.
+        "server_permissions": {sid: sorted(effective_permissions(user, sid))
+                               for sid in (user.get("grants") or {})},
+        "via_token": ({k: user["via_token"][k] for k in ("name", "prefix")}
+                      if user.get("via_token") else None),
     }
 
 
-def effective_permissions(user: dict[str, Any]) -> set[str]:
-    """Role grants, plus anything named explicitly.
+def effective_permissions(user: dict[str, Any], server_id: str | None = None) -> set[str]:
+    """Role grants, plus anything named explicitly; on one server, plus what
+    the account was granted on that server (app/access.py). Through an API
+    token, only what the token was given as well.
 
     An admin is every permission by definition rather than by a list that
     can drift out of date as permissions are added.
     """
     if user.get("role") == "admin":
-        return set(PERMISSIONS)
-    granted = set(ROLE_PERMISSIONS.get(user.get("role", "member"), []))
-    extra = user.get("permissions")
-    if isinstance(extra, list):
-        granted |= {p for p in extra if p in PERMISSIONS}
-    denied = user.get("denied")
-    if isinstance(denied, list):
-        granted -= set(denied)
+        granted = set(PERMISSIONS)
+    else:
+        granted = set(ROLE_PERMISSIONS.get(user.get("role", "member"), []))
+        extra = user.get("permissions")
+        if isinstance(extra, list):
+            granted |= {p for p in extra if p in PERMISSIONS}
+        denied = user.get("denied")
+        if isinstance(denied, list):
+            granted -= set(denied)
+        if server_id is not None:
+            granted |= {p for p in (user.get("grants") or {}).get(server_id, [])
+                        if p in PERMISSIONS}
+    token = user.get("via_token")
+    if token is not None:
+        granted &= set(token.get("permissions") or [])
     return granted
 
 
-def may(user: dict[str, Any] | None, permission: str) -> bool:
+def may(user: dict[str, Any] | None, permission: str,
+        server_id: str | None = None) -> bool:
     if not user or user.get("disabled"):
         return False
-    return permission in effective_permissions(user)
+    return permission in effective_permissions(user, server_id)
 
 
 def in_scope(user: dict[str, Any] | None, server_id: str | None,
@@ -265,6 +285,10 @@ def in_scope(user: dict[str, Any] | None, server_id: str | None,
     """
     if not user or user.get("disabled"):
         return False
+    token = user.get("via_token")
+    if token and token.get("servers") and server_id is not None \
+            and server_id not in token["servers"]:
+        return False                    # a token kept to some servers
     if user.get("role") == "admin":
         return True
     scope = user.get("scope") or {}
@@ -274,6 +298,8 @@ def in_scope(user: dict[str, Any] | None, server_id: str | None,
         return True                     # not a per-server action
     if server_id in (scope.get("servers") or []):
         return True
+    if server_id in (user.get("grants") or {}):
+        return True                     # granted rights on this one server
     racks = scope.get("racks") or []
     if racks and callable(rack_of):
         try:
@@ -311,6 +337,9 @@ def _as_dict(row: User) -> dict[str, Any]:
         "failures": int(row.failures or 0),
         "locked_until": db.epoch(row.locked_until) or 0,
         "disabled": bool(row.disabled),
+        "two_factor": bool(row.totp_secret and row.totp_enabled_at),
+        "totp_enabled_at": db.epoch(row.totp_enabled_at),
+        "grants": {},
     }
 
 
@@ -397,7 +426,15 @@ async def _lock_admins(s) -> None:
     changes each hold one row and wait on the other -- a deadlock, which
     Postgres resolves by failing one of them with a 500. Taking the whole
     set first, always in the same order, makes them queue instead.
+
+    SQLite has no row locks, and its driver only opens a transaction at the
+    first write, so there the SELECT ... FOR UPDATE locks nothing and two
+    demotions both counted two admins. A write that changes nothing takes
+    the database's write lock first; the second change waits for the first
+    to commit, then counts what it left.
     """
+    if db.dialect() == "sqlite":
+        await s.execute(update(User).where(User.role == "admin").values(role=User.role))
     await s.execute(select(User.id).where(User.role == "admin")
                     .order_by(User.id).with_for_update())
 
@@ -515,7 +552,17 @@ async def session_user(token: str | None) -> dict[str, Any] | None:
             return None
         if now - (db.epoch(rec.last_seen) or 0) > LAST_SEEN_EVERY:
             rec.last_seen = _now()
-        return _as_dict(user)
+        out = _as_dict(user)
+        out["grants"] = await _grants_of(s, user.id)
+        return out
+
+
+async def _grants_of(s, user_id: int) -> dict[str, list[str]]:
+    """Per-server grants (server_users), read with the session like the
+    rest of the account: no cache, so taking one away takes effect at once."""
+    rows = (await s.execute(select(ServerUser.server_id, ServerUser.permissions)
+                            .where(ServerUser.user_id == user_id))).all()
+    return {sid: list(perms or []) for sid, perms in rows}
 
 
 async def revoke(token: str) -> None:
@@ -589,6 +636,11 @@ async def authenticate(username: str, password: str) -> dict[str, Any]:
                 hashlib.scrypt(b"decoy", salt=b"decoy-salt-16byt", n=SCRYPT_N,
                                r=SCRYPT_R, p=SCRYPT_P, dklen=KEY_BYTES)
             failure = AuthError("That username and password do not match.", 401)
+        elif row.totp_secret and row.totp_enabled_at:
+            # The password was right but the sign-in is not done: the code
+            # step (app/access.py) clears the count. Clearing it here would
+            # let "password, seven wrong codes, password, ..." run for ever.
+            failure = None
         else:
             row.failures = 0
             row.locked_until = None

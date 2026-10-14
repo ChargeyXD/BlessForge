@@ -66,7 +66,12 @@ class User(Base):
     email_verified_at: Mapped[dt.datetime | None] = mapped_column(TS)
     display: Mapped[str] = mapped_column(String(60), nullable=False, default="")
     password_hash: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    # Two-factor sign-in (app/access.py): the secret is sealed with the app
+    # secret; set but not yet enabled while the account is setting it up.
+    # `totp_last_step` is the last code's time step, so a code works once.
     totp_secret: Mapped[str | None] = mapped_column(String(128))
+    totp_enabled_at: Mapped[dt.datetime | None] = mapped_column(TS)
+    totp_last_step: Mapped[int | None] = mapped_column(BigInteger)
     recovery_codes: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
     role: Mapped[str] = mapped_column(String(24), nullable=False, default="member")
     permissions: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
@@ -79,6 +84,25 @@ class User(Base):
     last_login: Mapped[dt.datetime | None] = mapped_column(TS)
     disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[dt.datetime] = _created()
+
+
+class ApiToken(Base):
+    """A key for scripts and bots, acting as its owner with less: its own
+    permission subset and, optionally, only some servers. Stored as the
+    SHA-256 of the token, like a session; `prefix` is what a list shows."""
+    __tablename__ = "api_tokens"
+    id: Mapped[int] = _pk()
+    user_id: Mapped[int] = mapped_column(
+        BigID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    token_sha256: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    permissions: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    servers: Mapped[list] = mapped_column(JSONType, nullable=False, default=list)
+    created_at: Mapped[dt.datetime] = _created()
+    expires_at: Mapped[dt.datetime | None] = mapped_column(TS)
+    last_used: Mapped[dt.datetime | None] = mapped_column(TS)
+    last_ip: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
 
 class Session(Base):
@@ -248,7 +272,8 @@ class Server(Base):
 
 
 class ServerUser(Base):
-    """A subuser the customer invited onto one server."""
+    """Permissions one account has on one server, on top of its role: an
+    account that is a guest everywhere can run its own server (app/access.py)."""
     __tablename__ = "server_users"
     server_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("servers.uuid", ondelete="CASCADE"), primary_key=True)

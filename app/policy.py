@@ -66,9 +66,20 @@ RULES: list[Rule] = [
     # --- open, because they are what the login screen itself needs ------
     _r("GET", "/api/healthz", PUBLIC),
     _r("POST", "/api/auth/login", PUBLIC),
+    _r("POST", "/api/auth/login/2fa", PUBLIC),  # the code step (challenge-bound)
     _r("GET", "/api/auth/session", PUBLIC),     # answers "are you logged in"
     _r("POST", "/api/auth/logout", ANY),
     _r("POST", "/api/auth/password", ANY),      # changing your OWN password
+    # Your own two-factor sign-in and API tokens (app/access.py). The guard
+    # refuses everything under /api/auth to an API token.
+    _r("GET", "/api/auth/2fa", ANY),
+    _r("POST", "/api/auth/2fa/setup", ANY),
+    _r("POST", "/api/auth/2fa/enable", ANY),
+    _r("POST", "/api/auth/2fa/disable", ANY),
+    _r("POST", "/api/auth/2fa/recovery", ANY),
+    _r("GET", "/api/auth/tokens", ANY),
+    _r("POST", "/api/auth/tokens", ANY),
+    _r("DELETE", "/api/auth/tokens/{token_id}", ANY),
 
     # --- the node agents (node token, checked in the route) -------------
     _r("GET", "/api/agent/servers", NODE),
@@ -82,6 +93,12 @@ RULES: list[Rule] = [
     _r("*", "/api/admin/users/{username}", ADMIN),
     _r("*", "/api/admin/users/{username}/password", ADMIN),
     _r("*", "/api/admin/users/{username}/sessions", ADMIN),
+    _r("*", "/api/admin/users/{username}/2fa", ADMIN),
+    _r("*", "/api/admin/users/{username}/servers", ADMIN),
+    _r("*", "/api/admin/users/{username}/servers/{server_id}", ADMIN),
+    _r("*", "/api/admin/tokens", ADMIN),
+    _r("*", "/api/admin/tokens/{token_id}", ADMIN),
+    _r("GET", "/api/instances/{server_id}/access", ADMIN),
     _r("GET", "/api/admin/audit", ADMIN),
     _r("GET", "/api/admin/audit/actions", ADMIN),
     _r("GET", "/api/admin/permissions", ADMIN),

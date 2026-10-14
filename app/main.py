@@ -1502,7 +1502,7 @@ async def console_socket(server_id: str, request: Request) -> dict:
     user = request.state.user
     return {"available": True, "url": None,
             "path": f"/api/instances/{server_id}/console/ws",
-            "may_type": auth.may(user, "console.command")}
+            "may_type": auth.may(user, "console.command", server_id)}
 
 
 def _same_origin(socket: WebSocket) -> bool:
@@ -1533,7 +1533,8 @@ async def _socket_user(socket: WebSocket, server_id: str) -> dict | None:
         return None
     permission, scoped = policy.required("GET", path)
     if user.get("must_change") or permission == policy.DENY or (
-            permission not in (policy.ANY,) and not auth.may(user, permission)):
+            permission not in (policy.ANY,)
+            and not auth.may(user, permission, server_id if scoped else None)):
         await auth.audit(actor=user["username"], action="denied.permission",
                          detail=f"WS {path} needs {permission}", ok=False)
         await socket.close(code=4403, reason="forbidden")
@@ -1556,7 +1557,7 @@ async def console_ws(socket: WebSocket, server_id: str) -> None:
     user = await _socket_user(socket, server_id)
     if user is None:
         return
-    may_type = auth.may(user, "console.command")
+    may_type = auth.may(user, "console.command", server_id)
     await socket.accept()
     q = hub.join(server_id)
 
@@ -1604,7 +1605,7 @@ async def files_transfer(server_id: str, request: Request,
     if mode not in ("download", "upload"):
         raise HTTPException(400, "mode must be download or upload")
     user = request.state.user
-    if mode == "upload" and not auth.may(user, "files.write"):
+    if mode == "upload" and not auth.may(user, "files.write", server_id):
         raise HTTPException(403, "You do not have permission to do that (files.write).")
     path = files.guard_path(body.get("path"), allow_root=False)
     drv = await engine._driver(server_id)
@@ -3693,8 +3694,21 @@ async def guard(request: Request, call_next):
 
     user = await auth.session_user(request.cookies.get(COOKIE))
     if not user:
+        # A script or bot: an API token (app/access.py), acting as its owner
+        # with only what the token was given.
+        bearer = request.headers.get("authorization", "")
+        if bearer[:7].lower() == "bearer ":
+            from app import access
+            user = await access.token_user(bearer[7:].strip(), _client_ip(request))
+    if not user:
         return JSONResponse({"detail": "Sign in to continue.",
                              "error": "unauthenticated"}, status_code=401)
+    if user.get("via_token") and (permission == policy.ADMIN
+                                  or path.startswith("/api/auth/")):
+        # A token cannot run accounts, mint tokens or turn 2FA off: those
+        # need the person, signed in.
+        return JSONResponse({"detail": "API tokens cannot do that; sign in instead.",
+                             "error": "forbidden"}, status_code=403)
 
     # A password that must change is a half-open door: allow exactly the
     # calls needed to close it, and nothing else.
@@ -3714,7 +3728,8 @@ async def guard(request: Request, call_next):
                        ok=False)
             return JSONResponse({"detail": "Admins only.",
                                  "error": "forbidden"}, status_code=403)
-    elif permission != policy.ANY and not auth.may(user, permission):
+    elif permission != policy.ANY and not auth.may(
+            user, permission, policy.server_id_of(path) if scoped else None):
         await auth.audit(actor=user["username"], action="denied.permission",
                    detail=f"{method} {path} needs {permission}",
                    ip=_client_ip(request), ok=False)
@@ -3740,9 +3755,12 @@ async def guard(request: Request, call_next):
     # every poll appears is a log nobody reads.
     if method != "GET" and response.status_code < 400 \
             and permission not in (policy.ANY, policy.PUBLIC):
+        token = user.get("via_token")
         await auth.audit(actor=user["username"], action=_action_for(method, path),
                    server_id=policy.server_id_of(path) or "",
-                   detail=f"{method} {path}", ip=_client_ip(request))
+                   detail=f"{method} {path}"
+                          + (f" (token {token['prefix']}, {token['name']})" if token else ""),
+                   ip=_client_ip(request))
     return response
 
 
@@ -3792,12 +3810,46 @@ async def auth_login(request: Request, body: dict = Body(...)) -> Response:
                    detail=str(e), ip=_client_ip(request), ok=False)
         raise HTTPException(status_code=e.status, detail=str(e))
 
+    if user.get("two_factor"):
+        # Right password; the session waits for the code (app/access.py).
+        from app import access
+        challenge, until = access.make_challenge(user)
+        await auth.audit(actor=user["username"], action="auth.login",
+                         detail="password accepted, waiting for the code",
+                         ip=_client_ip(request))
+        return JSONResponse({"two_factor": True, "challenge": challenge,
+                             "expires": until})
+
+    return await _signed_in(request, user, "signed in")
+
+
+@app.post("/api/auth/login/2fa")
+async def auth_login_code(request: Request, body: dict = Body(...)) -> Response:
+    """The second step: the challenge from the password step and a code from
+    the authenticator app, or one of the recovery codes."""
+    from app import access
+    try:
+        user, how, left = await access.finish_login(str(body.get("challenge") or ""),
+                                                    str(body.get("code") or ""))
+    except auth.AuthError as e:
+        await auth.audit(actor="?", action="auth.login.2fa", detail=str(e),
+                         ip=_client_ip(request), ok=False)
+        raise HTTPException(status_code=e.status, detail=str(e))
+    if how == "recovery":
+        return await _signed_in(request, user,
+                                f"signed in with a recovery code ({left} left)",
+                                {"recovery_left": left})
+    return await _signed_in(request, user, "signed in (two-factor)")
+
+
+async def _signed_in(request: Request, user: dict, detail: str,
+                     extra: dict | None = None) -> Response:
     token, expires = await auth.start_session(
         user, agent=request.headers.get("user-agent", ""),
         ip=_client_ip(request))
     await auth.audit(actor=user["username"], action="auth.login",
-               detail="signed in", ip=_client_ip(request))
-    payload = {"user": auth.public_user(user), "expires": expires}
+               detail=detail, ip=_client_ip(request))
+    payload = {"user": auth.public_user(user), "expires": expires, **(extra or {})}
     response = JSONResponse(payload)
     _set_session_cookie(response, token, request, auth.SESSION_TTL)
     return response
@@ -3860,6 +3912,113 @@ async def auth_password(request: Request, body: dict = Body(...)) -> dict:
     _set_session_cookie(response, token, request, auth.SESSION_TTL)
     del kept
     return response
+
+
+# --- two-factor sign-in and API tokens (your own) ----------------------------
+
+
+def _auth_err(e: Exception) -> HTTPException:
+    return HTTPException(status_code=getattr(e, "status", 400), detail=str(e))
+
+
+@app.get("/api/auth/2fa")
+async def twofa_status(request: Request) -> dict:
+    from app import access
+    return await access.status(request.state.user["username"])
+
+
+@app.post("/api/auth/2fa/setup")
+async def twofa_setup(request: Request, body: dict = Body(...)) -> dict:
+    """A new secret and its QR code. Not in force until a code from it is
+    typed back (/enable)."""
+    from app import access
+    try:
+        return await access.begin_setup(request.state.user["username"],
+                                         str(body.get("password") or ""))
+    except auth.AuthError as e:
+        raise _auth_err(e)
+
+
+@app.post("/api/auth/2fa/enable")
+async def twofa_enable(request: Request, body: dict = Body(...)) -> dict:
+    """Turn it on. The answer holds the recovery codes -- shown this once."""
+    from app import access
+    user = request.state.user
+    try:
+        out = await access.enable(user["username"], str(body.get("code") or ""))
+    except auth.AuthError as e:
+        raise _auth_err(e)
+    await auth.audit(actor=user["username"], action="auth.2fa",
+                     detail="turned two-factor sign-in on", ip=_client_ip(request))
+    return out
+
+
+@app.post("/api/auth/2fa/disable")
+async def twofa_disable(request: Request, body: dict = Body(...)) -> dict:
+    from app import access
+    user = request.state.user
+    try:
+        await access.disable(user["username"], str(body.get("password") or ""),
+                             str(body.get("code") or ""))
+    except auth.AuthError as e:
+        raise _auth_err(e)
+    await auth.audit(actor=user["username"], action="auth.2fa",
+                     detail="turned two-factor sign-in off", ip=_client_ip(request))
+    return {"enabled": False}
+
+
+@app.post("/api/auth/2fa/recovery")
+async def twofa_recovery(request: Request, body: dict = Body(...)) -> dict:
+    """A fresh set of recovery codes; the old ones stop working."""
+    from app import access
+    user = request.state.user
+    try:
+        codes = await access.regenerate_recovery(
+            user["username"], str(body.get("password") or ""), str(body.get("code") or ""))
+    except auth.AuthError as e:
+        raise _auth_err(e)
+    await auth.audit(actor=user["username"], action="auth.2fa",
+                     detail="made new recovery codes", ip=_client_ip(request))
+    return {"recovery_codes": codes}
+
+
+@app.get("/api/auth/tokens")
+async def tokens_mine(request: Request) -> dict:
+    from app import access
+    user = request.state.user
+    return {"items": await access.list_tokens(user["id"]),
+            "grantable": sorted(access.grantable_for(user)),
+            "max_days": access.MAX_TOKEN_DAYS}
+
+
+@app.post("/api/auth/tokens")
+async def tokens_create(request: Request, body: dict = Body(...)) -> dict:
+    """A new API token. The answer holds the token itself -- shown this once."""
+    from app import access
+    user = request.state.user
+    try:
+        made = await access.create_token(
+            user, name=body.get("name"), permissions=body.get("permissions"),
+            servers=body.get("servers"), expires_days=body.get("expires_days"),
+            rack_of=_rack_of)
+    except auth.AuthError as e:
+        raise _auth_err(e)
+    await auth.audit(actor=user["username"], action="auth.tokens.create",
+                     detail=f"made token {made['item']['prefix']} ({made['item']['name']}): "
+                            + ", ".join(made["item"]["permissions"]),
+                     ip=_client_ip(request))
+    return made
+
+
+@app.delete("/api/auth/tokens/{token_id}")
+async def tokens_revoke(token_id: int, request: Request) -> dict:
+    from app import access
+    user = request.state.user
+    if not await access.revoke_token(token_id, user["id"]):
+        raise HTTPException(404, "No such token.")
+    await auth.audit(actor=user["username"], action="auth.tokens.revoke",
+                     detail=f"revoked token {token_id}", ip=_client_ip(request))
+    return {"ok": True}
 
 
 # --- administration -----------------------------------------------------
@@ -3992,6 +4151,89 @@ async def admin_delete_user(username: str, request: Request) -> dict:
         raise HTTPException(status_code=e.status, detail=str(e))
     await auth.audit(actor=request.state.user["username"], action="admin.users.delete",
                detail=f"deleted {username}", ip=_client_ip(request))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{username}/2fa")
+async def admin_reset_2fa(username: str, request: Request) -> dict:
+    """Turn somebody's two-factor sign-in off (a lost phone and no recovery
+    codes). Their sessions end; they sign in with the password and can set
+    it up again."""
+    from app import access
+    try:
+        was = await access.admin_reset(username)
+    except auth.AuthError as e:
+        raise _auth_err(e)
+    dropped = await auth.revoke_all(username)
+    await auth.audit(actor=request.state.user["username"], action="admin.users.2fa",
+                     detail=f"reset two-factor for {username} (it was "
+                            f"{'on' if was else 'off'}); {dropped} session(s) ended",
+                     ip=_client_ip(request))
+    return {"ok": True, "was_enabled": was, "sessions_ended": dropped}
+
+
+@app.get("/api/admin/users/{username}/servers")
+async def admin_user_grants(username: str) -> dict:
+    from app import access
+    try:
+        return {"items": await access.grants_of(username), "grantable": access.GRANTABLE}
+    except auth.AuthError as e:
+        raise _auth_err(e)
+
+
+@app.post("/api/admin/users/{username}/servers/{server_id}")
+async def admin_set_grant(username: str, server_id: str, request: Request,
+                          body: dict = Body(...)) -> dict:
+    """What `username` may do on this one server, on top of their role. An
+    empty list takes it away."""
+    from app import access
+    try:
+        grant = await access.set_grant(username, server_id, body.get("permissions"))
+    except auth.AuthError as e:
+        raise _auth_err(e)
+    await auth.audit(actor=request.state.user["username"], action="admin.users.grant",
+                     server_id=server_id,
+                     detail=(f"gave {username} " + ", ".join(grant["permissions"]))
+                     if grant else f"took {username}'s rights on the server away",
+                     ip=_client_ip(request))
+    return {"grant": grant}
+
+
+@app.delete("/api/admin/users/{username}/servers/{server_id}")
+async def admin_remove_grant(username: str, server_id: str, request: Request) -> dict:
+    from app import access
+    try:
+        await access.set_grant(username, server_id, [])
+    except auth.AuthError as e:
+        raise _auth_err(e)
+    await auth.audit(actor=request.state.user["username"], action="admin.users.grant",
+                     server_id=server_id,
+                     detail=f"took {username}'s rights on the server away",
+                     ip=_client_ip(request))
+    return {"grant": None}
+
+
+@app.get("/api/instances/{server_id}/access")
+async def instance_access(server_id: str) -> dict:
+    """Who can reach this server, how, and with which permissions (admins)."""
+    from app import access
+    return {"items": await access.server_access(server_id, _rack_of),
+            "grantable": access.GRANTABLE}
+
+
+@app.get("/api/admin/tokens")
+async def admin_tokens() -> dict:
+    from app import access
+    return {"items": await access.list_tokens()}
+
+
+@app.delete("/api/admin/tokens/{token_id}")
+async def admin_revoke_token(token_id: int, request: Request) -> dict:
+    from app import access
+    if not await access.revoke_token(token_id):
+        raise HTTPException(404, "No such token.")
+    await auth.audit(actor=request.state.user["username"], action="admin.tokens.revoke",
+                     detail=f"revoked token {token_id}", ip=_client_ip(request))
     return {"ok": True}
 
 
