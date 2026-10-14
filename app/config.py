@@ -57,6 +57,10 @@ GAME_PORT_RANGE = _port_range(os.environ.get("GAME_PORT_RANGE", "") or "25500-25
 # default, shown so the panel can say what an unset value means.
 AGENT_STOP_TIMEOUT = 60
 
+# The time zone a scheduled task's clock is read in when it does not name
+# its own (the browser sends the viewer's). The container's TZ, else UTC.
+SCHEDULE_TZ = (os.environ.get("TZ", "") or "UTC").strip()
+
 # --- The database ---------------------------------------------------------
 # postgresql+asyncpg://user:password@host:5432/blessforge in production.
 # Blank falls back to a SQLite file under STATE_DIR, for a node-less dev run

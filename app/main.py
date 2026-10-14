@@ -85,6 +85,8 @@ async def _lifespan(_app: FastAPI):
     background = [asyncio.create_task(jobs_heartbeat())]
     if not config.REDIS_URL:
         background.append(asyncio.create_task(watcher.run_forever()))
+        from app import schedules
+        background.append(asyncio.create_task(schedules.run_forever()))
     try:
         yield
     finally:
@@ -2080,6 +2082,109 @@ async def set_port(server_id: str, body: dict = Body(...)) -> dict:
         )
     except Exception as e:
         raise _err(e)
+
+
+# --- scheduled tasks ---------------------------------------------------------
+
+
+def _sched_err(e: Exception) -> HTTPException:
+    from app import schedules
+    if isinstance(e, schedules.ScheduleError):
+        return HTTPException(400, str(e))
+    if isinstance(e, LookupError):
+        return HTTPException(404, str(e))
+    return _err(e)
+
+
+@app.get("/api/schedules/preview")
+async def schedule_preview(cron: str, tz: str = "") -> dict:
+    """The next five times a schedule would fire, for the form to show."""
+    from app import schedules
+    try:
+        return {"cron": cron, "next": schedules.upcoming(cron, tz or None)}
+    except Exception as e:
+        raise _sched_err(e)
+
+
+@app.get("/api/instances/{server_id}/schedules")
+async def list_schedules(server_id: str) -> dict:
+    from app import schedules
+    return {"tasks": await schedules.list_for(server_id), "tz": config.SCHEDULE_TZ,
+            "actions": list(schedules.ACTIONS)}
+
+
+@app.post("/api/instances/{server_id}/schedules")
+async def create_schedule(server_id: str, request: Request, body: dict = Body(...)) -> dict:
+    """{action, cron | parent+delay, name, command | message, tz, one_time,
+    enabled}. A step with a parent runs `delay` seconds after it."""
+    from app import schedules
+    payload = {k: v for k, v in body.items() if k not in ("action", "cron", "enabled")}
+    try:
+        row = await schedules.create(server_id, action=str(body.get("action") or ""),
+                                     cron=str(body.get("cron") or ""), payload=payload,
+                                     enabled=body.get("enabled", True) is not False)
+    except Exception as e:
+        raise _sched_err(e)
+    await auth.audit(actor=request.state.user["username"], action="schedule.create",
+                     server_id=server_id, detail=f"{row['name']} ({row['action']}, "
+                     f"{row['cron'] or 'after ' + str(row.get('parent'))})",
+                     ip=_client_ip(request))
+    return row
+
+
+@app.post("/api/instances/{server_id}/schedules/preset")
+async def preset_schedule(server_id: str, request: Request, body: dict = Body(...)) -> dict:
+    """One click: {preset: daily_restart, time: "05:00", warn: [5, 1], tz} |
+    {preset: announce, cron, message} | {preset: backup_every, hours, keep}."""
+    from app import schedules
+    try:
+        made = await schedules.preset(server_id, str(body.get("preset") or ""), body)
+    except Exception as e:
+        raise _sched_err(e)
+    await auth.audit(actor=request.state.user["username"], action="schedule.create",
+                     server_id=server_id, detail=f"preset {body.get('preset')}: "
+                     f"{len(made)} step(s)", ip=_client_ip(request))
+    return {"tasks": made}
+
+
+@app.patch("/api/instances/{server_id}/schedules/{schedule_id}")
+async def update_schedule(server_id: str, schedule_id: int, request: Request,
+                          body: dict = Body(...)) -> dict:
+    """{cron, action, enabled, payload: {...}} -- any of them."""
+    from app import schedules
+    try:
+        row = await schedules.update_task(server_id, schedule_id, body)
+    except Exception as e:
+        raise _sched_err(e)
+    await auth.audit(actor=request.state.user["username"], action="schedule.update",
+                     server_id=server_id, detail=row["name"], ip=_client_ip(request))
+    return row
+
+
+@app.delete("/api/instances/{server_id}/schedules/{schedule_id}")
+async def delete_schedule(server_id: str, schedule_id: int, request: Request) -> dict:
+    """Delete a task and the steps chained after it."""
+    from app import schedules
+    try:
+        gone = await schedules.remove(server_id, schedule_id)
+    except Exception as e:
+        raise _sched_err(e)
+    await auth.audit(actor=request.state.user["username"], action="schedule.delete",
+                     server_id=server_id, detail=f"{len(gone)} task(s)",
+                     ip=_client_ip(request))
+    return {"deleted": gone}
+
+
+@app.post("/api/instances/{server_id}/schedules/{schedule_id}/run")
+async def run_schedule_now(server_id: str, schedule_id: int, request: Request) -> dict:
+    """Run a task now; its chained steps follow on their delays."""
+    from app import schedules
+    from app.db.models import Schedule
+    async with db.session() as s:
+        row = await s.get(Schedule, schedule_id)
+    if row is None or row.server_id != server_id:
+        raise HTTPException(404, "no such task")
+    return await schedules.run_task(row, actor=request.state.user["username"])
 
 
 _LIFECYCLE_KEYS = ("stop_command", "stop_timeout", "ignored_exits", "crash_restart")
