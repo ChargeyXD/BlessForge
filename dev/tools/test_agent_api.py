@@ -348,6 +348,34 @@ async def main():
         r2 = await c.post(f"/api/instances/{sid}/autostart", json={"enabled": False})
         check("...anything but true/false is a 400, and it turns off again",
               r.status_code == 400 and r2.json() == {"auto_start": False}, r.text[:200])
+
+        # --- how it stops, and what counts as a crash -------------------------------------
+        life = (await c.get(f"/api/instances/{sid}/lifecycle")).json()
+        check("stop settings default to stop, 60 s, exit 0 clean, restart follows auto-start",
+              life.get("stop_command") == "stop" and life.get("stop_timeout") == 60
+              and life.get("ignored_exits") == [0]
+              and life.get("crash_restart_follows_autostart") is True, life)
+        r = await c.post(f"/api/instances/{sid}/lifecycle", json={
+            "stop_command": "/end", "stop_timeout": 240, "ignored_exits": "0, 3",
+            "crash_restart": True})
+        saved = r.json()
+        check("...each can be set; a leading slash is dropped, exit codes parsed",
+              r.status_code == 200 and saved["stop_command"] == "end"
+              and saved["stop_timeout"] == 240 and saved["ignored_exits"] == [0, 3]
+              and saved["crash_restart"] is True
+              and saved["crash_restart_follows_autostart"] is False, r.text[:300])
+        bad = [await c.post(f"/api/instances/{sid}/lifecycle", json=b) for b in (
+            {"stop_timeout": 5}, {"stop_command": "say hi" + chr(10) + "stop"},
+            {"ignored_exits": "zero"}, {"crash_restart": "yes"}, {"colour": "pink"})]
+        check("...and nonsense is a 400 that says what is allowed",
+              all(b.status_code == 400 for b in bad), [b.status_code for b in bad])
+        r = await c.post(f"/api/instances/{sid}/lifecycle", json={
+            "crash_restart": None, "stop_command": "", "stop_timeout": 60,
+            "ignored_exits": [0]})
+        check("...null puts restart-after-crash back to following auto-start, and an "
+              "empty stop command back to stop",
+              r.json().get("crash_restart_follows_autostart") is True
+              and r.json().get("stop_command") == "stop", r.text[:200])
         r = await c.post(f"/api/instances/{twin}/port", json={"auto": True})
         r2 = await c.post(f"/api/instances/{twin}/action/start_server")
 

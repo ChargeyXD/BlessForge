@@ -52,6 +52,11 @@ def _port_range(raw: str) -> tuple[int, int]:
 
 GAME_PORT_RANGE = _port_range(os.environ.get("GAME_PORT_RANGE", "") or "25500-25600")
 
+# Seconds a server gets to save and exit after its stop command before it is
+# killed, unless the server sets its own (Tune -> Stopping). The agent's
+# default, shown so the panel can say what an unset value means.
+AGENT_STOP_TIMEOUT = 60
+
 # --- The database ---------------------------------------------------------
 # postgresql+asyncpg://user:password@host:5432/blessforge in production.
 # Blank falls back to a SQLite file under STATE_DIR, for a node-less dev run

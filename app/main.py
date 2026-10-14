@@ -2082,6 +2082,73 @@ async def set_port(server_id: str, body: dict = Body(...)) -> dict:
         raise _err(e)
 
 
+_LIFECYCLE_KEYS = ("stop_command", "stop_timeout", "ignored_exits", "crash_restart")
+
+
+def _lifecycle_view(server: dict) -> dict:
+    lim = server.get("limits") or {}
+    restart = lim.get("crash_restart")
+    return {"stop_command": lim.get("stop_command") or "stop",
+            "stop_timeout": int(lim.get("stop_timeout") or config.AGENT_STOP_TIMEOUT),
+            "ignored_exits": lim.get("ignored_exits", [0]),
+            "crash_restart": bool(server.get("auto_start")) if restart is None
+            else bool(restart),
+            "crash_restart_follows_autostart": restart is None}
+
+
+@app.get("/api/instances/{server_id}/lifecycle")
+async def get_lifecycle(server_id: str) -> dict:
+    """How this server stops, and what counts as a crash."""
+    try:
+        return _lifecycle_view(await engine.get_server(server_id))
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/instances/{server_id}/lifecycle")
+async def set_lifecycle(server_id: str, body: dict = Body(...)) -> dict:
+    """Stop command, seconds to save before a kill, exit codes that are a
+    clean stop, and restart-after-crash (null: follow auto-start). Take
+    effect at the next stop or exit; nothing needs restarting."""
+    fields: dict = {}
+    if "stop_command" in body:
+        cmd = str(body["stop_command"] or "stop").strip().lstrip("/")
+        if len(cmd.splitlines()) != 1 or not 1 <= len(cmd) <= 64:
+            raise HTTPException(400, "the stop command is one line, up to 64 characters")
+        fields["stop_command"] = cmd
+    if "stop_timeout" in body:
+        try:
+            seconds = int(body["stop_timeout"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "stop_timeout is a number of seconds")
+        if not 10 <= seconds <= 1800:
+            raise HTTPException(400, "stop_timeout is between 10 and 1800 seconds")
+        fields["stop_timeout"] = seconds
+    if "ignored_exits" in body:
+        raw = body["ignored_exits"]
+        items = raw if isinstance(raw, list) else str(raw or "").split(",")
+        try:
+            codes = sorted({int(str(c).strip()) for c in items if str(c).strip()})
+        except ValueError:
+            raise HTTPException(400, "exit codes are whole numbers, e.g. 0, 1")
+        if any(not -255 <= c <= 255 for c in codes) or len(codes) > 16:
+            raise HTTPException(400, "up to 16 exit codes between -255 and 255")
+        fields["ignored_exits"] = codes
+    if "crash_restart" in body:
+        value = body["crash_restart"]
+        if value is not None and not isinstance(value, bool):
+            raise HTTPException(400, "crash_restart is true, false or null (follow auto-start)")
+        fields["crash_restart"] = value
+    unknown = set(body) - set(_LIFECYCLE_KEYS)
+    if unknown:
+        raise HTTPException(400, f"unknown settings: {', '.join(sorted(unknown))}")
+    try:
+        await engine.update_server(server_id, {"limits": fields})
+        return _lifecycle_view(await engine.get_server(server_id))
+    except Exception as e:
+        raise _err(e)
+
+
 @app.post("/api/instances/{server_id}/autostart")
 async def set_autostart(server_id: str, body: dict = Body(...)) -> dict:
     """Start this server by itself: when its node comes up (after a reboot or

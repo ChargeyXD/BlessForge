@@ -397,8 +397,8 @@ class FakeRunning:
     async def send(self, line):
         self.calls.append(("send", line))
 
-    async def stop(self, timeout):
-        self.calls.append(("stop", timeout))
+    async def stop(self, timeout, command="stop"):
+        self.calls.append(("stop", timeout, command))
 
     async def kill(self):
         self.calls.append(("kill",))
@@ -836,6 +836,81 @@ class PortsDocker(FakeDocker):
                                 409, taken=int(server["port"]))
         self.started.append(server["uuid"])
         return FakeRunning()
+
+
+async def test_lifecycle():
+    section("Crafty 4: how a server stops, and what counts as a crash")
+    from agent.servers import Supervisor, lifecycle_of
+    check("defaults: stop, the node's timeout, exit 0 is a clean stop, restart "
+          "after a crash follows auto-start",
+          lifecycle_of({"auto_start": True}, 60) == {
+              "stop_command": "stop", "stop_timeout": 60, "ignored_exits": [0],
+              "crash_restart": True}, lifecycle_of({"auto_start": True}, 60))
+    odd = lifecycle_of({"limits": {"stop_command": "say hi" + chr(10) + "stop", "stop_timeout": 99999,
+                                   "ignored_exits": "0, 3, x", "crash_restart": False}}, 60)
+    check("...a two-line command falls back to stop, the timeout is capped at 30 min, "
+          "junk exit codes are dropped",
+          odd == {"stop_command": "stop", "stop_timeout": 1800, "ignored_exits": [0, 3],
+                  "crash_restart": False}, odd)
+
+    sid = "dededede-0000-0000-0000-00000000000a"
+    cfg = process_cfg("lifecycle")
+    runtime = FakeDocker({})
+    events = FakeEvents()
+    sup = Supervisor(cfg, runtime, events)
+    sup.put(sid, {"name": "Proxy", "port": 30500, "auto_start": True,
+                  "execution_command": "java -jar velocity.jar",
+                  "limits": {"stop_command": "/shutdown", "stop_timeout": 300,
+                             "ignored_exits": [0, 3], "crash_restart": False}})
+    srv = sup.servers[sid]
+    await sup.power(sid, "start")
+    handle = srv.running
+    srv.state = "running"
+    stopper = asyncio.create_task(sup.power(sid, "stop"))
+    await asyncio.sleep(0.05)
+    check("stop types the server's own command and waits its own timeout",
+          ("stop", 300, "shutdown") in handle.calls, handle.calls)
+    await sup._exited(srv, 0, {})
+    await stopper
+
+    for code, label in ((0, "/stop typed in the game"), (3, "a code this server counts")):
+        await sup.power(sid, "start")
+        srv.state = "running"
+        events.sent.clear()
+        await sup._exited(srv, code, {})
+        kinds = [k for k, u, d in events.sent if u == sid]
+        check(f"an exit with {label} is a clean stop, not a crash",
+              srv.state == "offline" and "crash" not in kinds and srv.last_exit["asked"],
+              (srv.state, kinds))
+
+    await sup.power(sid, "start")
+    srv.state = "starting"          # never logged Done
+    events.sent.clear()
+    await sup._exited(srv, 0, {})
+    check("exit 0 before the server was up is a crash: a failed modded boot exits 0",
+          srv.state == "crashed" and any(k == "crash" for k, u, d in events.sent),
+          (srv.state, [k for k, u, d in events.sent]))
+
+    await sup.power(sid, "start")
+    srv.state = "running"
+    events.sent.clear()
+    srv.restart_task = None
+    await sup._exited(srv, 1, {})
+    check("exit 1 is a crash, and with restart-after-crash off nothing restarts it, "
+          "auto-start or not",
+          srv.state == "crashed" and srv.restart_task is None
+          and any(k == "crash" for k, u, d in events.sent), (srv.state, srv.restart_task))
+
+    sup.put(sid, {**srv.spec, "limits": {"crash_restart": None}})
+    srv.crashes.clear()
+    await sup.power(sid, "start")
+    srv.state = "running"
+    await sup._exited(srv, 1, {})
+    restarting = srv.restart_task is not None
+    if restarting:
+        srv.restart_task.cancel()
+    check("...unset, it follows auto-start, as before: an auto-start server is "
+          "restarted after a crash", restarting)
 
 
 async def test_ports():
@@ -1935,6 +2010,7 @@ async def main():
     await test_readopt()
     await test_console()
     await test_shared_port()
+    await test_lifecycle()
     await test_ports()
     await test_boot_queue()
     await test_install_slots()

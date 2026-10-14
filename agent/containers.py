@@ -323,7 +323,7 @@ class Running:
     """A handle on one running server."""
 
     async def send(self, line: str) -> None: ...
-    async def stop(self, timeout: int) -> None: ...
+    async def stop(self, timeout: int, command: str = "stop") -> None: ...
     async def kill(self) -> None: ...
     async def stats(self) -> dict: ...
 
@@ -409,8 +409,9 @@ class DockerRunning(Running):
         self.writer.write((line.rstrip("\n") + "\n").encode())
         await self.writer.drain()
 
-    async def stop(self, timeout: int) -> None:
-        """`stop` on the console, then wait for the server to save and exit.
+    async def stop(self, timeout: int, command: str = "stop") -> None:
+        """`stop` (or the server's own stop command) on the console, then wait
+        for the server to save and exit.
 
         Only if it has not exited after `timeout` seconds does Docker's own
         stop follow. That is SIGTERM at once and SIGKILL ten seconds later --
@@ -419,7 +420,7 @@ class DockerRunning(Running):
         JVM shutdown hook instead of by the server's own stop.
         """
         try:
-            await self.send("stop")
+            await self.send(command)
         except Exception:       # noqa: BLE001 -- the fallback below still happens
             pass
         try:
@@ -794,9 +795,9 @@ class ProcessRunning(Running):
         self.proc.stdin.write((line.rstrip("\n") + "\n").encode())
         await self.proc.stdin.drain()
 
-    async def stop(self, timeout: int) -> None:
+    async def stop(self, timeout: int, command: str = "stop") -> None:
         try:
-            await self.send("stop")
+            await self.send(command)
         except Exception:       # noqa: BLE001
             pass
         try:

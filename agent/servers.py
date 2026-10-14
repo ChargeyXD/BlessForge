@@ -43,6 +43,44 @@ CONSOLE_LINES = 2000
 CRASH_BACKOFF = (5, 15, 45)
 CRASH_LOOP_WINDOW = 600
 CRASH_LOOP_COUNT = 3
+
+
+def lifecycle_of(spec: dict, default_timeout: int) -> dict:
+    """How this server stops and what counts as a crash, from its limits.
+
+      * stop_command -- what is typed to stop it: `stop` for a game server,
+        `end` for BungeeCord, `shutdown` for Velocity. One line, no slash.
+      * stop_timeout -- seconds to save and exit before it is killed. The
+        node's one value (60 s) killed big packs mid-save.
+      * ignored_exits -- exit codes that are a clean stop, not a crash, for a
+        server that was up. 0 by default: someone typing /stop in the game is
+        not a crash to be restarted. Some restart scripts and mods exit with
+        another code. A server that never came up has crashed, whatever its
+        code -- a failed modded boot exits 0.
+      * crash_restart -- start it again after a crash. Its own switch; unset,
+        it follows auto_start, as before.
+    """
+    lim = spec.get("limits") or {}
+    command = str(lim.get("stop_command") or "stop").strip().lstrip("/")
+    if not command or len(command.splitlines()) != 1 or len(command) > 64:
+        command = "stop"
+    try:
+        timeout = int(lim.get("stop_timeout") or default_timeout)
+    except (TypeError, ValueError):
+        timeout = default_timeout
+    ignored = lim.get("ignored_exits")
+    if ignored is None:
+        ignored = [0]
+    codes = set()
+    for code in ignored if isinstance(ignored, (list, tuple)) else str(ignored).split(","):
+        try:
+            codes.add(int(str(code).strip()))
+        except ValueError:
+            continue
+    restart = lim.get("crash_restart")
+    return {"stop_command": command, "stop_timeout": max(10, min(1800, timeout)),
+            "ignored_exits": sorted(codes),
+            "crash_restart": bool(spec.get("auto_start")) if restart is None else bool(restart)}
 MAX_DOWNLOAD = 1024 * 1024 * 1024
 
 _UUID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
@@ -704,7 +742,8 @@ class Supervisor:
                 continue
             srv.stopping = True
             try:
-                await running.stop(min(self.cfg.stop_timeout, 30))
+                life = lifecycle_of(srv.spec, self.cfg.stop_timeout)
+                await running.stop(min(life["stop_timeout"], 30), life["stop_command"])
             except Exception:       # noqa: BLE001
                 pass
 
@@ -722,7 +761,8 @@ class Supervisor:
         srv.state = "stopping"
         srv.console.feed("[BlessForge] Stopping")
         running = srv.running
-        await running.stop(self.cfg.stop_timeout)
+        life = lifecycle_of(srv.spec, self.cfg.stop_timeout)
+        await running.stop(life["stop_timeout"], life["stop_command"])
         for _ in range(100):
             if srv.running is None:
                 return
@@ -730,6 +770,10 @@ class Supervisor:
         await running.kill()
 
     async def _exited(self, srv: Server, code: int | None, info: dict | None = None) -> None:
+        # Up (it had logged "Done") before it exited: only then can an exit
+        # code be a clean stop. A modded server that fails to start logs
+        # "Failed to start the minecraft server" and exits 0.
+        was_up = srv.state == "running"
         srv.running = None
         srv.started_at = None
         self.samples.pop(srv.uuid, None)
@@ -746,6 +790,16 @@ class Supervisor:
             srv.console.feed(f"[BlessForge] Stopped (exit code {code})")
             self.events.emit("status", srv.uuid, state="offline", exit_code=code)
             return
+        life = lifecycle_of(srv.spec, self.cfg.stop_timeout)
+        if was_up and code is not None and not oom and code in life["ignored_exits"]:
+            # It stopped itself cleanly: /stop typed in the game, or a script
+            # that exits with a code this server counts as clean.
+            srv.state = "offline"
+            srv.last_exit["asked"] = True
+            srv.console.feed(f"[BlessForge] The server stopped itself (exit code {code}, "
+                             "a clean stop for this server)")
+            self.events.emit("status", srv.uuid, state="offline", exit_code=code)
+            return
         now = time.time()
         srv.crashes.append(now)
         recent = [t for t in srv.crashes if now - t < CRASH_LOOP_WINDOW]
@@ -758,7 +812,7 @@ class Supervisor:
             self.events.emit("crash_loop", srv.uuid, exit_code=code, crashes=len(recent))
             return
         self.events.emit("crash", srv.uuid, exit_code=code, crashes=len(recent))
-        if srv.spec.get("auto_start"):
+        if life["crash_restart"]:
             delay = CRASH_BACKOFF[min(len(recent) - 1, len(CRASH_BACKOFF) - 1)]
             srv.console.feed(f"[BlessForge] Restarting in {delay}s")
 
